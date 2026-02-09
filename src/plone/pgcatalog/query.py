@@ -52,6 +52,43 @@ def build_query(query_dict):
     return builder.result()
 
 
+def apply_security_filters(query_dict, roles, show_inactive=False):
+    """Inject security and effectiveRange filters into a query dict.
+
+    This function is meant to be called by the catalog tool's searchResults()
+    before passing the query to build_query().
+
+    Args:
+        query_dict: ZCatalog-style query dict (will NOT be mutated)
+        roles: list of allowed roles/users (e.g. ["Anonymous", "user:admin"])
+        show_inactive: if True, skip effectiveRange injection
+
+    Returns:
+        new query dict with security filters added
+    """
+    from datetime import datetime
+    from datetime import timezone
+
+    result = dict(query_dict)
+
+    # Inject allowedRolesAndUsers (always, unless already present)
+    if "allowedRolesAndUsers" not in result:
+        result["allowedRolesAndUsers"] = {
+            "query": list(roles),
+            "operator": "or",
+        }
+
+    # Inject effectiveRange (unless show_inactive or already present)
+    if not show_inactive and "effectiveRange" not in result:
+        if not result.get("show_inactive"):
+            result["effectiveRange"] = datetime.now(timezone.utc)
+
+    # Remove show_inactive from the dict (it's a meta-key, not an index)
+    result.pop("show_inactive", None)
+
+    return result
+
+
 def execute_query(conn, query_dict, columns="zoid, path, idx, state"):
     """Execute a catalog query and return result rows.
 
