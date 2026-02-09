@@ -1,21 +1,17 @@
-"""PGCatalogTool — PostgreSQL-backed catalog for Plone.
+"""PlonePGCatalogTool — PostgreSQL-backed catalog for Plone.
 
-Two classes:
+Subclass of Products.CMFPlone.CatalogTool that delegates index extraction
+to plone.indexer and obtains its PG connection from the zodb-pgjsonb
+storage's connection pool.  Registered as ``portal_catalog`` via GenericSetup.
 
-- ``PGCatalogTool``: standalone, testable without Plone.  Callers
-  provide idx dicts and a psycopg connection directly.
-
-- ``PlonePGCatalogTool``: subclass of Products.CMFPlone.CatalogTool that
-  delegates index extraction to plone.indexer and obtains its PG
-  connection from the zodb-pgjsonb storage.  Registered as
-  ``portal_catalog`` via GenericSetup.  Only available when Plone is
-  installed.
+Module-level functions (_run_search, refresh_catalog, reindex_index,
+clear_catalog_data) are testable without Plone.
 """
 
 from AccessControl import ClassSecurityInfo
+from contextlib import contextmanager
 from plone.pgcatalog.brain import CatalogSearchResults
 from plone.pgcatalog.brain import PGCatalogBrain
-from plone.pgcatalog.columns import ALL_IDX_KEYS
 from plone.pgcatalog.columns import convert_value
 from plone.pgcatalog.columns import KNOWN_INDEXES
 from plone.pgcatalog.indexing import catalog_object as _sql_catalog
@@ -38,7 +34,7 @@ _SELECT_COLS_COUNTED = "zoid, path, idx, state, COUNT(*) OVER() AS _total_count"
 
 
 # ---------------------------------------------------------------------------
-# Shared search execution (DRY)
+# Module-level functions (testable without Plone)
 # ---------------------------------------------------------------------------
 
 
@@ -87,189 +83,81 @@ def _run_search(conn, query, catalog=None):
     return CatalogSearchResults(brains, actual_result_count=actual_count)
 
 
-class PGCatalogTool:
-    """PostgreSQL-backed catalog tool.
+def refresh_catalog(conn):
+    """Re-catalog all objects that have catalog data.
 
-    This class provides the catalog API using direct SQL operations on the
-    object_state table.  It works standalone (without Plone) — callers
-    provide idx dicts directly.
+    Re-reads idx/path from each cataloged row and re-applies.
+    This is a lightweight refresh — it does NOT re-extract values
+    from the actual Zope objects (that requires Plone integration).
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT zoid, path, idx, searchable_text "
+            "FROM object_state WHERE idx IS NOT NULL"
+        )
+        rows = cur.fetchall()
+
+    count = 0
+    for row in rows:
+        if row["path"] and row["idx"]:
+            _sql_catalog(
+                conn,
+                zoid=row["zoid"],
+                path=row["path"],
+                idx=row["idx"],
+            )
+            count += 1
+
+    log.info("refresh_catalog: re-indexed %d objects", count)
+    return count
+
+
+def reindex_index(conn, name):
+    """Re-apply a specific idx key across all cataloged objects.
 
     Args:
-        conn: psycopg connection (dict_row factory recommended)
+        conn: psycopg connection
+        name: index name (idx JSONB key) to refresh
     """
-
-    def __init__(self, conn):
-        self._conn = conn
-
-    # -- Write path ----------------------------------------------------------
-
-    def catalog_object(
-        self, zoid, path, idx, searchable_text=None, language="simple"
-    ):
-        """Index an object into the catalog.
-
-        Args:
-            zoid: integer object ID (must already exist in object_state)
-            path: physical path string, e.g. "/plone/folder/doc"
-            idx: dict of index/metadata values for idx JSONB
-            searchable_text: plain text for full-text search (optional)
-            language: PostgreSQL text search config name (default "simple")
-        """
-        safe_idx = {k: convert_value(v) for k, v in idx.items() if k in ALL_IDX_KEYS}
-        _sql_catalog(
-            self._conn,
-            zoid=zoid,
-            path=path,
-            idx=safe_idx,
-            searchable_text=searchable_text,
-            language=language,
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT zoid, idx FROM object_state "
+            "WHERE idx IS NOT NULL AND idx ? %(key)s",
+            {"key": name},
         )
+        rows = cur.fetchall()
 
-    def uncatalog_object(self, zoid):
-        """Remove an object from the catalog.
+    count = 0
+    for row in rows:
+        value = row["idx"].get(name)
+        if value is not None:
+            _sql_reindex(conn, zoid=row["zoid"], idx_updates={name: value})
+            count += 1
 
-        Clears path, idx, and searchable_text to NULL.
-        The base object_state row is preserved.
+    log.info("reindex_index(%r): updated %d objects", name, count)
+    return count
 
-        Args:
-            zoid: integer object ID
-        """
-        _sql_uncatalog(self._conn, zoid=zoid)
 
-    def reindex_object(
-        self, zoid, idxs=None, idx_updates=None, searchable_text=None, language="simple"
-    ):
-        """Reindex specific fields for an object.
+def clear_catalog_data(conn):
+    """Clear all catalog data (path, idx, searchable_text).
 
-        Args:
-            zoid: integer object ID
-            idxs: list of index names to reindex (for compatibility)
-            idx_updates: dict of idx keys to update (merged into existing idx)
-            searchable_text: if provided, update the tsvector
-            language: PostgreSQL text search config name
-        """
-        if idx_updates is None:
-            idx_updates = {}
+    The base object_state rows are preserved.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE object_state SET "
+            "path = NULL, parent_path = NULL, path_depth = NULL, "
+            "idx = NULL, searchable_text = NULL "
+            "WHERE idx IS NOT NULL"
+        )
+        count = cur.rowcount
 
-        safe_updates = {k: convert_value(v) for k, v in idx_updates.items()}
-
-        kwargs = {"conn": self._conn, "zoid": zoid, "idx_updates": safe_updates}
-        if searchable_text is not None:
-            kwargs["searchable_text"] = searchable_text
-            kwargs["language"] = language
-        _sql_reindex(**kwargs)
-
-    # -- Read path -----------------------------------------------------------
-
-    def searchResults(self, query=None, secured=False, roles=None, **kw):
-        """Search the catalog.
-
-        Args:
-            query: ZCatalog-style query dict
-            secured: if True, inject security filters (requires roles)
-            roles: list of allowed roles/users for security filtering
-            **kw: additional query parameters (merged into query)
-
-        Returns:
-            CatalogSearchResults with PGCatalogBrain instances
-        """
-        if query is None:
-            query = {}
-        query.update(kw)
-
-        if secured and roles is not None:
-            show_inactive = query.pop("show_inactive", False)
-            query = apply_security_filters(query, roles, show_inactive=show_inactive)
-
-        return _run_search(self._conn, query, catalog=self)
-
-    def __call__(self, query=None, **kw):
-        """Alias for searchResults."""
-        return self.searchResults(query, **kw)
-
-    def unrestrictedSearchResults(self, query=None, **kw):
-        """Search without security filters."""
-        return self.searchResults(query, secured=False, **kw)
-
-    # -- Maintenance ---------------------------------------------------------
-
-    def refreshCatalog(self, conn=None):
-        """Re-catalog all objects that have catalog data.
-
-        Re-reads idx/path from each cataloged row and re-applies.
-        This is a lightweight refresh — it does NOT re-extract values
-        from the actual Zope objects (that requires Plone integration).
-        """
-        conn = conn or self._conn
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT zoid, path, idx, searchable_text "
-                "FROM object_state WHERE idx IS NOT NULL"
-            )
-            rows = cur.fetchall()
-
-        count = 0
-        for row in rows:
-            if row["path"] and row["idx"]:
-                _sql_catalog(
-                    conn,
-                    zoid=row["zoid"],
-                    path=row["path"],
-                    idx=row["idx"],
-                )
-                count += 1
-
-        log.info("refreshCatalog: re-indexed %d objects", count)
-        return count
-
-    def reindexIndex(self, name, conn=None):
-        """Re-apply a specific idx key across all cataloged objects.
-
-        Args:
-            name: index name (idx JSONB key) to refresh
-        """
-        conn = conn or self._conn
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT zoid, idx FROM object_state "
-                "WHERE idx IS NOT NULL AND idx ? %(key)s",
-                {"key": name},
-            )
-            rows = cur.fetchall()
-
-        count = 0
-        for row in rows:
-            value = row["idx"].get(name)
-            if value is not None:
-                _sql_reindex(conn, zoid=row["zoid"], idx_updates={name: value})
-                count += 1
-
-        log.info("reindexIndex(%r): updated %d objects", name, count)
-        return count
-
-    def clearFindAndRebuild(self, conn=None):
-        """Clear all catalog data and rebuild from scratch.
-
-        Clears all idx/path/searchable_text columns to NULL.  In standalone
-        mode this is all we can do — the Plone subclass overrides this to
-        re-walk the content tree.
-        """
-        conn = conn or self._conn
-        with conn.cursor() as cur:
-            cur.execute(
-                "UPDATE object_state SET "
-                "path = NULL, parent_path = NULL, path_depth = NULL, "
-                "idx = NULL, searchable_text = NULL "
-                "WHERE idx IS NOT NULL"
-            )
-            count = cur.rowcount
-
-        log.info("clearFindAndRebuild: cleared %d objects", count)
-        return count
+    log.info("clear_catalog_data: cleared %d objects", count)
+    return count
 
 
 # ---------------------------------------------------------------------------
-# Plone-aware subclass
+# Plone CatalogTool subclass
 # ---------------------------------------------------------------------------
 
 
@@ -281,27 +169,23 @@ class PlonePGCatalogTool(CatalogTool):
     Plone compatibility (manage UI, plone.indexer, security).
     Overrides both read and write methods to use PG queries.
 
-    The PG connection is obtained from the zodb-pgjsonb storage.
+    PG connections are borrowed from the zodb-pgjsonb storage's pool.
     """
 
     meta_type = "PG Catalog Tool"
     security = ClassSecurityInfo()
 
-    def _get_pg_conn(self):
-        """Get a psycopg connection from the ZODB storage."""
-        from plone.pgcatalog.config import get_dsn
+    @contextmanager
+    def _pg_connection(self):
+        """Borrow a connection from the storage's connection pool."""
+        from plone.pgcatalog.config import get_pool
 
-        dsn = get_dsn(self)
-        if dsn is None:
-            raise RuntimeError(
-                "Cannot determine PG DSN. "
-                "Set PGCATALOG_DSN or use zodb-pgjsonb storage."
-            )
-        from psycopg.rows import dict_row
-
-        import psycopg
-
-        return psycopg.connect(dsn, row_factory=dict_row)
+        pool = get_pool(self)
+        conn = pool.getconn()
+        try:
+            yield conn
+        finally:
+            pool.putconn(conn)
 
     # -- Write path (PG + parent BTrees for compatibility) -------------------
 
@@ -326,41 +210,35 @@ class PlonePGCatalogTool(CatalogTool):
             idx = self._extract_idx(wrapper, idxs)
             searchable_text = self._extract_searchable_text(wrapper)
 
-            conn = self._get_pg_conn()
             try:
-                _sql_catalog(
-                    conn,
-                    zoid=zoid,
-                    path=uid,
-                    idx=idx,
-                    searchable_text=searchable_text,
-                )
-                conn.commit()
+                with self._pg_connection() as conn:
+                    _sql_catalog(
+                        conn,
+                        zoid=zoid,
+                        path=uid,
+                        idx=idx,
+                        searchable_text=searchable_text,
+                    )
             except Exception:
                 log.debug("PG catalog_object failed for %s", uid, exc_info=True)
-            finally:
-                conn.close()
 
         # Always call parent for BTrees compatibility
         return super().catalog_object(object, uid, idxs, update_metadata, pghandler)
 
     def uncatalog_object(self, uid):
         """Remove an object from both PG and BTrees."""
-        conn = self._get_pg_conn()
         try:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT zoid FROM object_state WHERE path = %(path)s",
-                    {"path": uid},
-                )
-                row = cur.fetchone()
-            if row:
-                _sql_uncatalog(conn, zoid=row["zoid"])
-                conn.commit()
+            with self._pg_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT zoid FROM object_state WHERE path = %(path)s",
+                        {"path": uid},
+                    )
+                    row = cur.fetchone()
+                if row:
+                    _sql_uncatalog(conn, zoid=row["zoid"])
         except Exception:
             log.debug("PG uncatalog_object failed for %s", uid, exc_info=True)
-        finally:
-            conn.close()
 
         return super().uncatalog_object(uid)
 
@@ -391,11 +269,8 @@ class PlonePGCatalogTool(CatalogTool):
             query, roles, show_inactive=show_inactive
         )
 
-        conn = self._get_pg_conn()
-        try:
+        with self._pg_connection() as conn:
             return _run_search(conn, query, catalog=self)
-        finally:
-            conn.close()
 
     __call__ = searchResults
 
@@ -405,11 +280,27 @@ class PlonePGCatalogTool(CatalogTool):
             REQUEST = {}
         REQUEST.update(kw)
 
-        conn = self._get_pg_conn()
-        try:
+        with self._pg_connection() as conn:
             return _run_search(conn, REQUEST, catalog=self)
-        finally:
-            conn.close()
+
+    # -- Maintenance ---------------------------------------------------------
+
+    def refreshCatalog(self, clear=0):
+        """Re-catalog all objects from their stored idx data."""
+        with self._pg_connection() as conn:
+            if clear:
+                clear_catalog_data(conn)
+            return refresh_catalog(conn)
+
+    def reindexIndex(self, name, REQUEST=None):
+        """Re-apply a specific idx key across all cataloged objects."""
+        with self._pg_connection() as conn:
+            return reindex_index(conn, name)
+
+    def clearFindAndRebuild(self):
+        """Clear all catalog data."""
+        with self._pg_connection() as conn:
+            return clear_catalog_data(conn)
 
     # -- Helpers -------------------------------------------------------------
 

@@ -1,5 +1,6 @@
 """Tests for PlonePGCatalogTool — helper methods and write path."""
 
+from contextlib import contextmanager
 from plone.pgcatalog.catalog import PlonePGCatalogTool
 from plone.pgcatalog.interfaces import IPGCatalogTool
 from unittest import mock
@@ -121,6 +122,16 @@ class TestWrapObject:
             assert result is obj
 
 
+def _mock_pg_connection(mock_conn):
+    """Create a mock _pg_connection context manager that yields mock_conn."""
+
+    @contextmanager
+    def _cm(_self):
+        yield mock_conn
+
+    return _cm
+
+
 class TestCatalogObjectWritePath:
 
     def test_skips_pg_without_p_oid(self):
@@ -128,13 +139,16 @@ class TestCatalogObjectWritePath:
         obj = mock.Mock(spec=["getPhysicalPath"])
         obj.getPhysicalPath.return_value = ("", "plone", "doc")
         # No _p_oid → skip PG write
+        mock_conn = mock.Mock()
         with mock.patch.object(
-            PlonePGCatalogTool, "_get_pg_conn"
-        ) as pg_mock, mock.patch.object(
+            PlonePGCatalogTool, "_pg_connection", _mock_pg_connection(mock_conn)
+        ), mock.patch.object(
             PlonePGCatalogTool.__bases__[0], "catalog_object"
-        ):
+        ), mock.patch(
+            "plone.pgcatalog.catalog._sql_catalog"
+        ) as sql_mock:
             tool.catalog_object(obj)
-            pg_mock.assert_not_called()
+            sql_mock.assert_not_called()
 
     def test_skips_pg_on_exception(self):
         tool = PlonePGCatalogTool.__new__(PlonePGCatalogTool)
@@ -143,24 +157,24 @@ class TestCatalogObjectWritePath:
         obj._p_oid = b"\x00\x00\x00\x00\x00\x00\x00\x01"
 
         mock_conn = mock.Mock()
-        mock_conn.commit.side_effect = RuntimeError("PG down")
 
         with mock.patch.object(
-            PlonePGCatalogTool, "_get_pg_conn", return_value=mock_conn
+            PlonePGCatalogTool, "_pg_connection", _mock_pg_connection(mock_conn)
         ), mock.patch.object(
             PlonePGCatalogTool, "_wrap_object", return_value=obj
         ), mock.patch.object(
             PlonePGCatalogTool, "_extract_idx", return_value={}
         ), mock.patch.object(
             PlonePGCatalogTool, "_extract_searchable_text", return_value=None
+        ), mock.patch(
+            "plone.pgcatalog.catalog._sql_catalog",
+            side_effect=RuntimeError("PG down"),
         ), mock.patch.object(
             PlonePGCatalogTool.__bases__[0], "catalog_object"
         ) as parent_mock:
             tool.catalog_object(obj)
             # Parent is still called even if PG fails
             parent_mock.assert_called_once()
-            # Connection is closed
-            mock_conn.close.assert_called_once()
 
     def test_falls_back_to_parent_without_path(self):
         tool = PlonePGCatalogTool.__new__(PlonePGCatalogTool)
@@ -183,7 +197,7 @@ class TestUncatalogObjectWritePath:
         mock_cursor.fetchone.return_value = {"zoid": 42}
 
         with mock.patch.object(
-            PlonePGCatalogTool, "_get_pg_conn", return_value=mock_conn
+            PlonePGCatalogTool, "_pg_connection", _mock_pg_connection(mock_conn)
         ), mock.patch(
             "plone.pgcatalog.catalog._sql_uncatalog"
         ) as uncatalog_mock, mock.patch.object(
@@ -191,6 +205,4 @@ class TestUncatalogObjectWritePath:
         ) as parent_mock:
             tool.uncatalog_object("/plone/doc")
             uncatalog_mock.assert_called_once_with(mock_conn, zoid=42)
-            mock_conn.commit.assert_called_once()
             parent_mock.assert_called_once_with("/plone/doc")
-            mock_conn.close.assert_called_once()
