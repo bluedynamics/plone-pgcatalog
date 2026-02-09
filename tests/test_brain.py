@@ -32,6 +32,19 @@ class TestBrainBasics:
         brain = PGCatalogBrain(_make_row(path="/plone/doc"))
         assert brain.getURL() == "/plone/doc"
 
+    def test_get_url_with_request(self):
+        from unittest import mock
+        catalog = mock.Mock()
+        catalog.REQUEST.physicalPathToURL.return_value = "http://example.com/plone/doc"
+        brain = PGCatalogBrain(_make_row(path="/plone/doc"), catalog=catalog)
+        assert brain.getURL() == "http://example.com/plone/doc"
+
+    def test_get_url_catalog_without_request(self):
+        from unittest import mock
+        catalog = mock.Mock(spec=[])
+        brain = PGCatalogBrain(_make_row(path="/plone/doc"), catalog=catalog)
+        assert brain.getURL() == "/plone/doc"
+
     def test_get_rid(self):
         brain = PGCatalogBrain(_make_row(zoid=42))
         assert brain.getRID() == 42
@@ -44,8 +57,38 @@ class TestBrainBasics:
         brain = PGCatalogBrain(_make_row())
         assert brain.getObject() is None
 
+    def test_get_object_with_catalog(self):
+        from unittest import mock
+        obj = mock.Mock()
+        catalog = mock.Mock()
+        catalog.restrictedTraverse.return_value = obj
+        brain = PGCatalogBrain(_make_row(path="/plone/doc"), catalog=catalog)
+        assert brain.getObject() is obj
+
+    def test_get_object_traversal_error(self):
+        from unittest import mock
+        catalog = mock.Mock()
+        catalog.restrictedTraverse.side_effect = KeyError("not found")
+        brain = PGCatalogBrain(_make_row(path="/plone/doc"), catalog=catalog)
+        assert brain.getObject() is None
+
     def test_unrestricted_get_object_without_catalog(self):
         brain = PGCatalogBrain(_make_row())
+        assert brain._unrestrictedGetObject() is None
+
+    def test_unrestricted_get_object_with_catalog(self):
+        from unittest import mock
+        obj = mock.Mock()
+        catalog = mock.Mock()
+        catalog.unrestrictedTraverse.return_value = obj
+        brain = PGCatalogBrain(_make_row(path="/plone/doc"), catalog=catalog)
+        assert brain._unrestrictedGetObject() is obj
+
+    def test_unrestricted_get_object_traversal_error(self):
+        from unittest import mock
+        catalog = mock.Mock()
+        catalog.unrestrictedTraverse.side_effect = AttributeError("nope")
+        brain = PGCatalogBrain(_make_row(path="/plone/doc"), catalog=catalog)
         assert brain._unrestrictedGetObject() is None
 
 

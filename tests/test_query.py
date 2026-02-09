@@ -421,6 +421,103 @@ class TestEdgeCases:
 
 
 # ---------------------------------------------------------------------------
+# None query values (early return branches)
+# ---------------------------------------------------------------------------
+
+
+class TestNoneQueryValues:
+
+    def test_keyword_none_query(self):
+        qr = build_query({"Subject": {"query": None}})
+        assert "?|" not in qr["where"]
+
+    def test_date_none_query(self):
+        qr = build_query({"modified": {"query": None}})
+        assert "pgcatalog_to_timestamptz" not in qr["where"]
+
+    def test_boolean_none_query(self):
+        qr = build_query({"is_folderish": {"query": None}})
+        assert "is_folderish" not in qr["where"]
+
+    def test_date_range_none_query(self):
+        qr = build_query({"effectiveRange": {"query": None}})
+        assert "effective" not in qr["where"]
+
+    def test_uuid_none_query(self):
+        qr = build_query({"UID": {"query": None}})
+        assert "UID" not in qr["where"]
+
+    def test_path_none_query(self):
+        qr = build_query({"path": {"query": None}})
+        assert qr["where"] == "idx IS NOT NULL"
+
+
+class TestSortEdgeCases:
+
+    def test_sort_boolean_index(self):
+        qr = build_query({
+            "portal_type": "Document",
+            "sort_on": "is_folderish",
+        })
+        assert "::boolean" in qr["order_by"]
+
+    def test_sort_composite_index_ignored(self):
+        """effectiveRange has idx_key=None — can't sort on it."""
+        qr = build_query({
+            "portal_type": "Document",
+            "sort_on": "effectiveRange",
+        })
+        assert qr["order_by"] is None
+
+
+class TestDateCoercion:
+
+    def test_date_object_coerced_to_datetime(self):
+        from datetime import date
+        qr = build_query({"modified": {"query": date(2025, 6, 15), "range": "min"}})
+        assert len(qr["params"]) >= 1
+
+    def test_iso8601_duck_type(self):
+        class FakeDateTime:
+            def ISO8601(self):
+                return "2025-06-15T00:00:00+00:00"
+        qr = build_query({"modified": {"query": FakeDateTime(), "range": "min"}})
+        param_vals = list(qr["params"].values())
+        assert "2025-06-15" in str(param_vals)
+
+    def test_string_date_passthrough(self):
+        qr = build_query({"modified": {"query": "2025-06-15", "range": "min"}})
+        param_vals = list(qr["params"].values())
+        assert "2025-06-15" in str(param_vals)
+
+
+class TestPathValidation:
+
+    def test_invalid_path_type_raises(self):
+        import pytest
+        from plone.pgcatalog.query import _validate_path
+        with pytest.raises(ValueError, match="must be a string"):
+            _validate_path(123)
+
+
+class TestNavtreeEdgeCases:
+
+    def test_navtree_breadcrumbs_empty(self):
+        """navtree_start beyond path length produces FALSE clause."""
+        qr = build_query({
+            "path": {"query": "/a", "navtree": True, "depth": 0, "navtree_start": 10},
+        })
+        assert "FALSE" in qr["where"]
+
+    def test_navtree_parents_empty(self):
+        """navtree_start beyond path length with depth=1 produces FALSE clause."""
+        qr = build_query({
+            "path": {"query": "/a", "navtree": True, "depth": 1, "navtree_start": 10},
+        })
+        assert "FALSE" in qr["where"]
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 

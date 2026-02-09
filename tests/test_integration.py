@@ -192,6 +192,55 @@ class TestReindexObject:
         assert brain.Title == "First Document"  # preserved
         assert brain.review_state == "pending"  # updated
 
+    def test_reindex_with_searchable_text(self, pg_conn_with_catalog):
+        conn = pg_conn_with_catalog
+        cat = _make_catalog(conn)
+        _setup_objects(conn, cat)
+
+        cat.reindex_object(
+            500,
+            idx_updates={"Title": "Updated Title"},
+            searchable_text="updated full text content",
+        )
+        conn.commit()
+
+        # Full-text search should find the new text
+        results = cat.searchResults(SearchableText="updated")
+        assert len(results) == 1
+        assert results[0].getRID() == 500
+
+    def test_reindex_without_searchable_text_preserves_tsvector(self, pg_conn_with_catalog):
+        """Reindex without searchable_text leaves existing tsvector unchanged."""
+        conn = pg_conn_with_catalog
+        cat = _make_catalog(conn)
+        _setup_objects(conn, cat)
+
+        # Object 500 has searchable_text set. Reindex idx only.
+        cat.reindex_object(500, idx_updates={"review_state": "draft"})
+        conn.commit()
+
+        # The old text should still be searchable (unchanged)
+        results = cat.searchResults(SearchableText="Python")
+        zoids = {b.getRID() for b in results}
+        assert 500 in zoids
+
+    def test_reindex_clear_searchable_text_directly(self, pg_conn_with_catalog):
+        """Low-level reindex with searchable_text=None clears the tsvector."""
+        from plone.pgcatalog.indexing import reindex_object as sql_reindex
+
+        conn = pg_conn_with_catalog
+        cat = _make_catalog(conn)
+        _setup_objects(conn, cat)
+
+        # Explicitly pass searchable_text=None to clear it
+        sql_reindex(conn, zoid=500, idx_updates={}, searchable_text=None)
+        conn.commit()
+
+        # Full-text search should no longer find it
+        results = cat.searchResults(SearchableText="Python")
+        zoids = {b.getRID() for b in results}
+        assert 500 not in zoids
+
 
 # ---------------------------------------------------------------------------
 # Security
