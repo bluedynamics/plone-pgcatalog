@@ -4,14 +4,15 @@ Translates Plone/ZCatalog-style query dicts into parameterized SQL queries
 against the object_state table (with catalog columns from plone.pgcatalog).
 
 All user-supplied values go through psycopg parameterized queries — never
-string-formatted into SQL.  Index key names are whitelisted via KNOWN_INDEXES.
+string-formatted into SQL.  Index names are resolved dynamically via the
+``IndexRegistry`` populated from ZCatalog's registered indexes.
 """
 
 from datetime import date
 from datetime import datetime
 from datetime import UTC
+from plone.pgcatalog.columns import get_registry
 from plone.pgcatalog.columns import IndexType
-from plone.pgcatalog.columns import KNOWN_INDEXES
 from psycopg.types.json import Json
 from typing import ClassVar
 
@@ -33,6 +34,20 @@ _QUERY_META_KEYS = frozenset({
 
 # Path validation pattern
 _PATH_RE = re.compile(r"^/[a-zA-Z0-9._/@+\-]*$")
+
+
+def _lookup_translator(name):
+    """Look up an IPGIndexTranslator utility for a given index name.
+
+    Returns the translator or None if not found.
+    """
+    try:
+        from plone.pgcatalog.interfaces import IPGIndexTranslator
+        from zope.component import queryUtility
+
+        return queryUtility(IPGIndexTranslator, name=name)
+    except Exception:
+        return None
 
 
 def build_query(query_dict):
@@ -188,11 +203,21 @@ class _QueryBuilder:
     }
 
     def _process_index(self, name, raw):
-        if name not in KNOWN_INDEXES:
+        registry = get_registry()
+        entry = registry.get(name)
+        if entry is None:
+            # Fallback: look for an IPGIndexTranslator utility
+            translator = _lookup_translator(name)
+            if translator is not None:
+                spec = _normalize_query(raw)
+                sql_fragment, params = translator.query(name, raw, spec)
+                self.clauses.append(sql_fragment)
+                self.params.update(params)
+                return
             log.warning("Unknown catalog index %r — skipping", name)
             return
 
-        idx_type, idx_key = KNOWN_INDEXES[name]
+        idx_type, idx_key, _source_attrs = entry
         spec = _normalize_query(raw)
         handler = getattr(self, self._HANDLERS[idx_type])
         handler(name, idx_key, spec)
@@ -485,11 +510,21 @@ class _QueryBuilder:
     # -- sort ---------------------------------------------------------------
 
     def _process_sort(self, sort_on, sort_order):
-        if sort_on not in KNOWN_INDEXES:
+        registry = get_registry()
+        entry = registry.get(sort_on)
+        if entry is None:
+            # Fallback: look for an IPGIndexTranslator utility
+            translator = _lookup_translator(sort_on)
+            if translator is not None:
+                expr = translator.sort(sort_on)
+                if expr is not None:
+                    direction = "DESC" if sort_order in ("descending", "reverse") else "ASC"
+                    self.order_by = f"{expr} {direction}"
+                return
             log.warning("Unknown sort index %r — ignoring", sort_on)
             return
 
-        idx_type, idx_key = KNOWN_INDEXES[sort_on]
+        idx_type, idx_key, _source_attrs = entry
         if idx_key is None:
             return  # Can't sort on composite/special indexes
 

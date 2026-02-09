@@ -1,6 +1,6 @@
 """Tests for plone.pgcatalog.setuphandlers — GenericSetup install handler."""
 
-from plone.pgcatalog.setuphandlers import _get_pg_connection
+from plone.pgcatalog.setuphandlers import _ensure_catalog_indexes
 from plone.pgcatalog.setuphandlers import install
 from unittest import mock
 
@@ -13,46 +13,38 @@ class TestInstall:
         install(context)
         context.getSite.assert_not_called()
 
-    def test_warns_without_pg_connection(self):
+    def test_calls_ensure_catalog_indexes(self):
         context = mock.Mock()
         context.readDataFile.return_value = "sentinel"
-        site = mock.Mock(spec=[])
-        context.getSite.return_value = site
-        with mock.patch("plone.pgcatalog.setuphandlers.log") as log_mock:
-            install(context)
-            log_mock.warning.assert_called_once()
-
-    def test_installs_schema(self):
-        context = mock.Mock()
-        context.readDataFile.return_value = "sentinel"
-        mock_conn = mock.Mock()
         site = mock.Mock()
         context.getSite.return_value = site
         with mock.patch(
-            "plone.pgcatalog.setuphandlers._get_pg_connection",
-            return_value=mock_conn,
-        ):
+            "plone.pgcatalog.setuphandlers._ensure_catalog_indexes"
+        ) as ensure_mock:
             install(context)
-            # DDL is applied via conn.execute() calls
-            assert mock_conn.execute.call_count >= 1
-            mock_conn.close.assert_called_once()
+            ensure_mock.assert_called_once_with(site)
 
 
-class TestGetPgConnection:
+class TestEnsureCatalogIndexes:
 
-    def test_returns_connection_from_storage(self):
+    def test_skips_if_catalog_has_indexes(self):
         site = mock.Mock()
-        site._p_jar.db().storage._dsn = "host=localhost dbname=zodb port=5433"
-        mock_conn = mock.Mock()
-        with mock.patch("psycopg.connect", return_value=mock_conn):
-            result = _get_pg_connection(site)
-            assert result is mock_conn
+        site.portal_catalog.indexes.return_value = ["UID", "Title"]
+        _ensure_catalog_indexes(site)
+        # Should not try to run import steps
+        assert not hasattr(site, "portal_setup") or \
+            not site.portal_setup.runImportStepFromProfile.called
 
-    def test_returns_none_without_storage(self):
+    def test_skips_without_catalog(self):
         site = mock.Mock(spec=[])
-        assert _get_pg_connection(site) is None
+        _ensure_catalog_indexes(site)  # Should not raise
 
-    def test_returns_none_on_exception(self):
+    def test_reapplies_profiles_for_fresh_catalog(self):
         site = mock.Mock()
-        site._p_jar.db.side_effect = RuntimeError("oops")
-        assert _get_pg_connection(site) is None
+        site.portal_catalog.indexes.return_value = []
+        _ensure_catalog_indexes(site)
+        # Should have called runImportStepFromProfile for Plone profiles
+        calls = site.portal_setup.runImportStepFromProfile.call_args_list
+        assert len(calls) >= 1
+        profile_ids = [c[0][0] for c in calls]
+        assert "profile-Products.CMFPlone:plone" in profile_ids

@@ -1,15 +1,23 @@
-"""Index name registry and value conversion for plone.pgcatalog.
+"""Dynamic index registry and value conversion for plone.pgcatalog.
 
-Maps ZCatalog index names → idx JSONB keys and defines value conversion
-from Python/Zope types to JSON-safe types.
+Provides an ``IndexRegistry`` that dynamically discovers indexes from the
+ZCatalog's registered index objects (populated via GenericSetup catalog.xml
+imports).  Each index is mapped to an ``IndexType`` for query translation
+and an ``idx_key`` for JSONB storage, plus ``source_attrs`` for value
+extraction (from ``indexed_attr`` in catalog.xml).
 
-Design: idx keys use the exact ZCatalog index/metadata name — no translation.
+Design: idx keys use the exact ZCatalog index name — no translation.
 This keeps query mapping trivial and brain attribute access natural.
 """
 
 from datetime import date
 from datetime import datetime
 from enum import Enum
+
+import logging
+
+
+log = logging.getLogger(__name__)
 
 
 class IndexType(Enum):
@@ -27,78 +35,150 @@ class IndexType(Enum):
 
 
 # --------------------------------------------------------------------------
-# Known indexes: name → (IndexType, idx_key | None)
-#
-# idx_key=None means the index is handled specially (path, searchable_text)
-# or is composite (effectiveRange uses effective + expires).
+# Meta-type → IndexType mapping
 # --------------------------------------------------------------------------
 
-KNOWN_INDEXES = {
-    # FieldIndex
-    "Creator": (IndexType.FIELD, "Creator"),
-    "Type": (IndexType.FIELD, "Type"),
-    "getId": (IndexType.FIELD, "getId"),
-    "id": (IndexType.FIELD, "id"),
-    "in_reply_to": (IndexType.FIELD, "in_reply_to"),
-    "portal_type": (IndexType.FIELD, "portal_type"),
-    "review_state": (IndexType.FIELD, "review_state"),
-    "sortable_title": (IndexType.FIELD, "sortable_title"),
-    # KeywordIndex
-    "Subject": (IndexType.KEYWORD, "Subject"),
-    "allowedRolesAndUsers": (IndexType.KEYWORD, "allowedRolesAndUsers"),
-    "getRawRelatedItems": (IndexType.KEYWORD, "getRawRelatedItems"),
-    "object_provides": (IndexType.KEYWORD, "object_provides"),
-    # DateIndex
-    "Date": (IndexType.DATE, "Date"),
-    "created": (IndexType.DATE, "created"),
-    "effective": (IndexType.DATE, "effective"),
-    "end": (IndexType.DATE, "end"),
-    "expires": (IndexType.DATE, "expires"),
-    "modified": (IndexType.DATE, "modified"),
-    "start": (IndexType.DATE, "start"),
-    # BooleanIndex
-    "is_default_page": (IndexType.BOOLEAN, "is_default_page"),
-    "is_folderish": (IndexType.BOOLEAN, "is_folderish"),
-    "exclude_from_nav": (IndexType.BOOLEAN, "exclude_from_nav"),
-    # DateRangeIndex (composite — uses effective + expires, no own key)
-    "effectiveRange": (IndexType.DATE_RANGE, None),
-    # UUIDIndex
-    "UID": (IndexType.UUID, "UID"),
-    # ZCTextIndex (full-text → separate tsvector column)
-    "SearchableText": (IndexType.TEXT, None),
-    "Title": (IndexType.TEXT, "Title"),
-    "Description": (IndexType.TEXT, "Description"),
-    # ExtendedPathIndex (separate path column)
-    "path": (IndexType.PATH, None),
-    # GopipIndex
-    "getObjPositionInParent": (IndexType.GOPIP, "getObjPositionInParent"),
+META_TYPE_MAP = {
+    "FieldIndex": IndexType.FIELD,
+    "KeywordIndex": IndexType.KEYWORD,
+    "DateIndex": IndexType.DATE,
+    "BooleanIndex": IndexType.BOOLEAN,
+    "DateRangeIndex": IndexType.DATE_RANGE,
+    "UUIDIndex": IndexType.UUID,
+    "ZCTextIndex": IndexType.TEXT,
+    "ExtendedPathIndex": IndexType.PATH,
+    "PathIndex": IndexType.PATH,
+    "GopipIndex": IndexType.GOPIP,
 }
 
+# Indexes with special PG handling (idx_key=None): dedicated columns or
+# composite logic that can't be expressed as a simple JSONB key.
+SPECIAL_INDEXES = frozenset({"SearchableText", "effectiveRange", "path"})
+
+
 # --------------------------------------------------------------------------
-# Metadata columns: names that should be stored in idx JSONB for brain access.
-# These overlap with index names where the value is the same.
-# Metadata-only entries (not indexes) are listed separately.
+# Dynamic index registry
 # --------------------------------------------------------------------------
 
-METADATA_ONLY = {
-    "CreationDate",
-    "EffectiveDate",
-    "ExpirationDate",
-    "ModificationDate",
-    "getIcon",
-    "getObjSize",
-    "getRemoteUrl",
-    "image_scales",
-    "listCreators",
-    "location",
-    "mime_type",
-}
 
-# All idx keys: union of index keys + metadata-only keys.
-ALL_IDX_KEYS = (
-    {key for _, key in KNOWN_INDEXES.values() if key is not None}
-    | METADATA_ONLY
-)
+class IndexRegistry:
+    """Dynamic index registry populated from ZCatalog's registered indexes.
+
+    Starts empty — populated via ``sync_from_catalog()`` which reads
+    ``catalog._catalog.indexes`` and ``catalog._catalog.schema``.
+
+    Each index entry is a tuple ``(IndexType, idx_key, source_attrs)`` where:
+    - ``idx_key``: JSONB key in the ``idx`` column (usually the index name),
+      or ``None`` for special indexes (SearchableText, effectiveRange, path).
+    - ``source_attrs``: list of object attribute names to extract via
+      ``getattr(wrapper, attr)``, from ``getIndexSourceNames()``.
+    """
+
+    def __init__(self):
+        self._indexes = {}
+        self._metadata = set()
+
+    def sync_from_catalog(self, catalog):
+        """Populate registry from a ZCatalog tool's internal catalog.
+
+        Reads ``catalog._catalog.indexes`` for queryable indexes and
+        ``catalog._catalog.schema`` for metadata columns.
+        """
+        try:
+            zcatalog_indexes = catalog._catalog.indexes
+        except AttributeError:
+            return
+
+        for name, index_obj in zcatalog_indexes.items():
+            if name in self._indexes:
+                continue  # already registered
+
+            meta_type = getattr(index_obj, "meta_type", None)
+            if meta_type is None:
+                continue
+
+            idx_type = META_TYPE_MAP.get(meta_type)
+            if idx_type is None:
+                log.debug("Unknown index meta_type %r for %r — skipping", meta_type, name)
+                continue
+
+            # Read source attributes from index object
+            source_attrs = None
+            if hasattr(index_obj, "getIndexSourceNames"):
+                try:
+                    source_attrs = list(index_obj.getIndexSourceNames())
+                except Exception:
+                    pass
+            if not source_attrs:
+                source_attrs = [name]
+
+            # Special indexes get idx_key=None
+            idx_key = None if name in SPECIAL_INDEXES else name
+
+            self._indexes[name] = (idx_type, idx_key, source_attrs)
+
+        # Metadata columns from catalog schema
+        try:
+            schema = catalog._catalog.schema
+            for col_name in schema:
+                self._metadata.add(col_name)
+        except AttributeError:
+            pass
+
+    def register(self, name, idx_type, idx_key, source_attrs=None):
+        """Manually register an index.
+
+        Args:
+            name: index name (query key)
+            idx_type: IndexType enum value
+            idx_key: JSONB key (usually same as name)
+            source_attrs: list of attribute names for extraction
+                          (defaults to [idx_key])
+        """
+        if source_attrs is None:
+            source_attrs = [idx_key] if idx_key is not None else [name]
+        self._indexes[name] = (idx_type, idx_key, source_attrs)
+
+    def add_metadata(self, name):
+        """Register a metadata-only column name."""
+        self._metadata.add(name)
+
+    @property
+    def metadata(self):
+        """Set of metadata column names."""
+        return self._metadata
+
+    # -- dict-like API ---
+
+    def __contains__(self, name):
+        return name in self._indexes
+
+    def __getitem__(self, name):
+        return self._indexes[name]
+
+    def __len__(self):
+        return len(self._indexes)
+
+    def get(self, name, default=None):
+        return self._indexes.get(name, default)
+
+    def items(self):
+        return self._indexes.items()
+
+    def keys(self):
+        return self._indexes.keys()
+
+    def values(self):
+        return self._indexes.values()
+
+
+# Module-level singleton
+_registry = IndexRegistry()
+
+
+def get_registry():
+    """Return the module-level IndexRegistry singleton."""
+    return _registry
 
 
 # --------------------------------------------------------------------------

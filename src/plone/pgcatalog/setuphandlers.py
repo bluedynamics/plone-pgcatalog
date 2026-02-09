@@ -1,15 +1,12 @@
 """GenericSetup install handler for plone.pgcatalog.
 
-Installs the catalog schema extension (columns + indexes) on the
-object_state table when the GenericSetup profile is applied.
+Re-applies Plone's ZCatalog index configuration after toolset.xml
+replaces portal_catalog with a fresh PlonePGCatalogTool.
 
-The DDL uses autocommit + lock_timeout to avoid blocking on the
-storage's REPEATABLE READ transactions.
+DDL (ALTER TABLE for catalog columns, functions, indexes) is applied
+by ``PGJsonbStorage.register_state_processor()`` using the storage's
+own connection — no REPEATABLE READ lock conflicts.
 """
-
-from plone.pgcatalog.schema import CATALOG_COLUMNS
-from plone.pgcatalog.schema import CATALOG_FUNCTIONS
-from plone.pgcatalog.schema import CATALOG_INDEXES
 
 import logging
 
@@ -18,66 +15,53 @@ log = logging.getLogger(__name__)
 
 
 def install(context):
-    """GenericSetup import step: install PG catalog schema.
+    """GenericSetup import step: restore Plone catalog indexes.
 
-    Reads the PG connection from the ZODB storage (zodb-pgjsonb)
-    and applies ALTER TABLE statements to add catalog columns + indexes.
-    Uses autocommit + lock_timeout to avoid deadlock with REPEATABLE READ.
+    toolset.xml creates a fresh PlonePGCatalogTool with no ZCatalog
+    indexes.  This step re-applies Plone's catalog.xml from the core
+    profiles to restore UID, Title, allowedRolesAndUsers, etc.
     """
     if context.readDataFile("install_pgcatalog.txt") is None:
         return
 
     site = context.getSite()
-    conn = _get_pg_connection(site)
-    if conn is None:
-        log.warning("Could not get PG connection — schema not installed")
+    _ensure_catalog_indexes(site)
+
+
+def _ensure_catalog_indexes(site):
+    """Re-apply Plone catalog indexes when toolset created a fresh catalog.
+
+    When toolset.xml replaces portal_catalog with PlonePGCatalogTool,
+    the ZCatalog indexes (UID, Title, etc.) are lost.  Re-importing
+    the ``catalog`` step from Plone's core profiles restores them.
+    """
+    catalog = getattr(site, "portal_catalog", None)
+    if catalog is None:
         return
 
+    # Only re-apply if catalog is fresh (no indexes configured yet)
     try:
-        _install_schema_safe(conn)
-    finally:
-        conn.close()
+        if list(catalog.indexes()):
+            log.debug("Catalog already has indexes, skipping re-apply")
+            return
+    except Exception:
+        pass
 
+    setup = getattr(site, "portal_setup", None)
+    if setup is None:
+        log.warning("No portal_setup — cannot re-apply catalog indexes")
+        return
 
-def _install_schema_safe(conn):
-    """Apply catalog DDL with error handling per statement.
-
-    Each DDL block is executed individually.  IF NOT EXISTS / CREATE OR
-    REPLACE make every statement idempotent, so partial success is safe.
-    """
-    for label, sql in [
-        ("columns", CATALOG_COLUMNS),
-        ("functions", CATALOG_FUNCTIONS),
-        ("indexes", CATALOG_INDEXES),
+    for profile_id in [
+        "profile-Products.CMFPlone:plone",
+        "profile-Products.CMFEditions:CMFEditions",
+        "profile-plone.app.contenttypes:default",
+        "profile-plone.app.event:default",
     ]:
         try:
-            conn.execute(sql)
-            log.info("plone.pgcatalog DDL: %s applied", label)
+            setup.runImportStepFromProfile(profile_id, "catalog")
+            log.info("Re-applied catalog config from %s", profile_id)
         except Exception:
-            log.warning(
-                "plone.pgcatalog DDL: %s failed (may need manual apply)",
-                label,
-                exc_info=True,
+            log.debug(
+                "Could not apply catalog from %s", profile_id, exc_info=True
             )
-
-
-def _get_pg_connection(site):
-    """Get a psycopg connection from the ZODB storage.
-
-    Uses autocommit mode + lock_timeout to avoid blocking on the
-    storage's existing REPEATABLE READ transactions.
-    """
-    try:
-        db = site._p_jar.db()
-        storage = db.storage
-        # PGJsonbStorage exposes _dsn
-        if hasattr(storage, "_dsn"):
-            import psycopg
-
-            conn = psycopg.connect(storage._dsn, autocommit=True)
-            conn.execute("SET lock_timeout = '3s'")
-            return conn
-    except Exception:
-        log.debug("Failed to get PG connection from storage", exc_info=True)
-
-    return None

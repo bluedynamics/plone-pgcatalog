@@ -4,6 +4,11 @@ Subclass of Products.CMFPlone.CatalogTool that delegates index extraction
 to plone.indexer and obtains its PG connection from the zodb-pgjsonb
 storage's connection pool.  Registered as ``portal_catalog`` via GenericSetup.
 
+Index extraction uses the dynamic ``IndexRegistry`` from ``columns.py``,
+which is populated at startup from each Plone site's ZCatalog indexes
+(via ``sync_from_catalog()``).  Custom index types not in the registry
+can be handled by ``IPGIndexTranslator`` utilities.
+
 Module-level functions (_run_search, refresh_catalog, reindex_index,
 clear_catalog_data) are testable without Plone.
 """
@@ -14,7 +19,7 @@ from plone.pgcatalog.brain import CatalogSearchResults
 from plone.pgcatalog.brain import PGCatalogBrain
 from plone.pgcatalog.columns import compute_path_info
 from plone.pgcatalog.columns import convert_value
-from plone.pgcatalog.columns import KNOWN_INDEXES
+from plone.pgcatalog.columns import get_registry
 from plone.pgcatalog.indexing import catalog_object as _sql_catalog
 from plone.pgcatalog.indexing import reindex_object as _sql_reindex
 from plone.pgcatalog.indexing import uncatalog_object as _sql_uncatalog
@@ -367,21 +372,68 @@ class PlonePGCatalogTool(CatalogTool):
         return int.from_bytes(oid, "big")
 
     def _extract_idx(self, wrapper, idxs=None):
-        """Extract all idx values from a wrapped indexable object."""
+        """Extract all idx values from a wrapped indexable object.
+
+        Iterates the dynamic ``IndexRegistry`` for indexes (using
+        ``source_attrs`` for attribute lookup) and metadata columns.
+        Indexes with ``idx_key=None`` (special: SearchableText,
+        effectiveRange, path) are skipped — they have dedicated columns.
+        """
+        registry = get_registry()
         idx = {}
-        for name, (_idx_type, idx_key) in KNOWN_INDEXES.items():
+
+        # Extract index values
+        for name, (_idx_type, idx_key, source_attrs) in registry.items():
             if idx_key is None:
                 continue  # composite/special (path, SearchableText, effectiveRange)
             if idxs and name not in idxs:
-                continue  # partial reindex - skip unrequested indexes
+                continue  # partial reindex — skip unrequested indexes
             try:
-                value = getattr(wrapper, name, None)
-                if callable(value):
-                    value = value()
+                value = None
+                for attr in source_attrs:
+                    value = getattr(wrapper, attr, None)
+                    if callable(value):
+                        value = value()
+                    if value is not None:
+                        break
                 idx[idx_key] = convert_value(value)
             except Exception:
-                pass  # indexer raised - skip this field
+                pass  # indexer raised — skip this field
+
+        # Extract metadata-only columns (not indexes, but stored in idx JSONB)
+        for meta_name in registry.metadata:
+            if meta_name in idx:
+                continue  # already extracted as an index
+            if idxs and meta_name not in idxs:
+                continue
+            try:
+                value = getattr(wrapper, meta_name, None)
+                if callable(value):
+                    value = value()
+                idx[meta_name] = convert_value(value)
+            except Exception:
+                pass
+
+        # IPGIndexTranslator fallback: custom extractors
+        self._extract_from_translators(wrapper, idx)
+
         return idx
+
+    def _extract_from_translators(self, wrapper, idx):
+        """Call IPGIndexTranslator.extract() for all registered translators."""
+        try:
+            from plone.pgcatalog.interfaces import IPGIndexTranslator
+            from zope.component import getUtilitiesFor
+
+            for name, translator in getUtilitiesFor(IPGIndexTranslator):
+                try:
+                    extra = translator.extract(wrapper, name)
+                    if extra and isinstance(extra, dict):
+                        idx.update(extra)
+                except Exception:
+                    pass  # translator raised — skip
+        except Exception:
+            pass  # no component architecture available
 
     @staticmethod
     def _extract_searchable_text(wrapper):

@@ -4,6 +4,7 @@ from datetime import datetime
 from datetime import UTC
 from plone.pgcatalog.query import build_query
 from psycopg.types.json import Json
+from unittest import mock
 
 
 # ---------------------------------------------------------------------------
@@ -535,3 +536,166 @@ def _find_list_param(params):
         if isinstance(v, list):
             return v
     return None
+
+
+# ---------------------------------------------------------------------------
+# Dynamic index tests — indexes registered at runtime via IndexRegistry
+# ---------------------------------------------------------------------------
+
+
+class TestDynamicFieldIndex:
+    """FieldIndex dynamically registered via registry."""
+
+    def test_dynamic_field_exact(self, populated_registry):
+        """Query a dynamically registered FieldIndex."""
+        from plone.pgcatalog.columns import get_registry, IndexType
+
+        get_registry().register("my_addon_field", IndexType.FIELD, "my_addon_field")
+
+        qr = build_query({"my_addon_field": "some_value"})
+        assert "idx @>" in qr["where"]
+        param = _find_json_param(qr["params"])
+        assert param.obj == {"my_addon_field": "some_value"}
+
+    def test_dynamic_field_range(self, populated_registry):
+        from plone.pgcatalog.columns import get_registry, IndexType
+
+        get_registry().register("my_addon_field", IndexType.FIELD, "my_addon_field")
+
+        qr = build_query({"my_addon_field": {"query": "b", "range": "min"}})
+        assert "idx->>'my_addon_field' >=" in qr["where"]
+
+    def test_dynamic_field_multi_value(self, populated_registry):
+        from plone.pgcatalog.columns import get_registry, IndexType
+
+        get_registry().register("my_addon_field", IndexType.FIELD, "my_addon_field")
+
+        qr = build_query({"my_addon_field": {"query": ["a", "b"]}})
+        assert "= ANY(" in qr["where"]
+
+
+class TestDynamicKeywordIndex:
+    """KeywordIndex dynamically registered via registry."""
+
+    def test_dynamic_keyword_or(self, populated_registry):
+        from plone.pgcatalog.columns import get_registry, IndexType
+
+        get_registry().register("my_tags", IndexType.KEYWORD, "my_tags")
+
+        qr = build_query({"my_tags": {"query": ["tag1", "tag2"], "operator": "or"}})
+        assert "?|" in qr["where"]
+
+    def test_dynamic_keyword_and(self, populated_registry):
+        from plone.pgcatalog.columns import get_registry, IndexType
+
+        get_registry().register("my_tags", IndexType.KEYWORD, "my_tags")
+
+        qr = build_query({"my_tags": {"query": ["tag1", "tag2"], "operator": "and"}})
+        assert "idx @>" in qr["where"]
+
+
+class TestDynamicDateIndex:
+    """DateIndex dynamically registered via registry."""
+
+    def test_dynamic_date_exact(self, populated_registry):
+        from plone.pgcatalog.columns import get_registry, IndexType
+
+        get_registry().register("event_start", IndexType.DATE, "event_start")
+
+        dt = datetime(2025, 6, 15, tzinfo=UTC)
+        qr = build_query({"event_start": dt})
+        assert "pgcatalog_to_timestamptz(idx->>'event_start')" in qr["where"]
+
+
+class TestDynamicSort:
+    """Sort on dynamically registered indexes."""
+
+    def test_sort_dynamic_field(self, populated_registry):
+        from plone.pgcatalog.columns import get_registry, IndexType
+
+        get_registry().register("my_sort_field", IndexType.FIELD, "my_sort_field")
+
+        qr = build_query({"sort_on": "my_sort_field"})
+        assert qr["order_by"] == "idx->>'my_sort_field' ASC"
+
+    def test_sort_dynamic_date(self, populated_registry):
+        from plone.pgcatalog.columns import get_registry, IndexType
+
+        get_registry().register("event_start", IndexType.DATE, "event_start")
+
+        qr = build_query({"sort_on": "event_start", "sort_order": "descending"})
+        assert "pgcatalog_to_timestamptz" in qr["order_by"]
+        assert "DESC" in qr["order_by"]
+
+
+class TestIPGIndexTranslatorQuery:
+    """IPGIndexTranslator fallback for unknown index types in query builder."""
+
+    def test_translator_query_called(self, populated_registry):
+        """If an index is not in the registry, query looks up IPGIndexTranslator."""
+        from unittest import mock
+
+        from plone.pgcatalog.interfaces import IPGIndexTranslator
+        from zope.component import getSiteManager
+
+        translator = mock.Mock()
+        translator.query.return_value = (
+            "idx->>'custom_range' BETWEEN %(cr_lo)s AND %(cr_hi)s",
+            {"cr_lo": "2025-01-01", "cr_hi": "2025-12-31"},
+        )
+
+        sm = getSiteManager()
+        sm.registerUtility(translator, IPGIndexTranslator, name="custom_range")
+        try:
+            qr = build_query({"custom_range": {"lo": "2025-01-01", "hi": "2025-12-31"}})
+            translator.query.assert_called_once_with(
+                "custom_range",
+                {"lo": "2025-01-01", "hi": "2025-12-31"},
+                mock.ANY,
+            )
+            assert "custom_range" in qr["where"]
+        finally:
+            sm.unregisterUtility(provided=IPGIndexTranslator, name="custom_range")
+
+    def test_translator_sort_called(self, populated_registry):
+        """IPGIndexTranslator.sort() is used when index not in registry."""
+        from unittest import mock
+
+        from plone.pgcatalog.interfaces import IPGIndexTranslator
+        from zope.component import getSiteManager
+
+        translator = mock.Mock()
+        translator.sort.return_value = "idx->>'custom_range'"
+
+        sm = getSiteManager()
+        sm.registerUtility(translator, IPGIndexTranslator, name="custom_range")
+        try:
+            qr = build_query({"sort_on": "custom_range"})
+            translator.sort.assert_called_once_with("custom_range")
+            assert "custom_range" in qr["order_by"]
+        finally:
+            sm.unregisterUtility(provided=IPGIndexTranslator, name="custom_range")
+
+    def test_no_translator_logs_warning(self, populated_registry):
+        """Unknown index without translator logs a warning."""
+        with mock.patch("plone.pgcatalog.query.log") as mock_log:
+            build_query({"totally_unknown_index": "val"})
+            mock_log.warning.assert_called()
+
+    def test_translator_sort_returns_none(self, populated_registry):
+        """If translator.sort() returns None, no ORDER BY is added."""
+        from unittest import mock
+
+        from plone.pgcatalog.interfaces import IPGIndexTranslator
+        from zope.component import getSiteManager
+
+        translator = mock.Mock()
+        translator.sort.return_value = None
+
+        sm = getSiteManager()
+        sm.registerUtility(translator, IPGIndexTranslator, name="unsortable")
+        try:
+            qr = build_query({"sort_on": "unsortable"})
+            assert qr["order_by"] is None
+        finally:
+            sm.unregisterUtility(provided=IPGIndexTranslator, name="unsortable")

@@ -2,8 +2,12 @@
 
 from contextlib import contextmanager
 from plone.pgcatalog.catalog import PlonePGCatalogTool
+from plone.pgcatalog.columns import IndexType
+from plone.pgcatalog.columns import get_registry
 from plone.pgcatalog.interfaces import IPGCatalogTool
 from unittest import mock
+
+import pytest
 
 
 class TestImplementsInterface:
@@ -206,3 +210,192 @@ class TestUncatalogObjectWritePath:
             tool.uncatalog_object("/plone/doc")
             uncatalog_mock.assert_called_once_with(mock_conn, zoid=42)
             parent_mock.assert_called_once_with("/plone/doc")
+
+
+# ---------------------------------------------------------------------------
+# Dynamic extraction tests (IndexRegistry-based)
+# ---------------------------------------------------------------------------
+
+
+class TestExtractIdxDynamic:
+    """Test _extract_idx with dynamic IndexRegistry instead of static KNOWN_INDEXES."""
+
+    def _make_tool(self):
+        return PlonePGCatalogTool.__new__(PlonePGCatalogTool)
+
+    def test_extracts_dynamically_registered_index(self, populated_registry):
+        """A dynamically registered FieldIndex should be extracted."""
+        registry = get_registry()
+        registry.register("my_addon_field", IndexType.FIELD, "my_addon_field")
+        try:
+            tool = self._make_tool()
+            wrapper = mock.Mock()
+            wrapper.my_addon_field = "addon_value"
+            wrapper.portal_type = "Document"
+
+            idx = tool._extract_idx(wrapper)
+            assert idx["my_addon_field"] == "addon_value"
+            assert idx["portal_type"] == "Document"
+        finally:
+            # Clean up dynamic registration
+            registry._indexes.pop("my_addon_field", None)
+
+    def test_uses_source_attrs_not_index_name(self, populated_registry):
+        """When source_attrs differs from index name, extraction uses source_attrs."""
+        registry = get_registry()
+        # Register an index "myIndex" that reads from attribute "other_attr"
+        registry.register(
+            "myIndex", IndexType.FIELD, "myIndex", source_attrs=["other_attr"]
+        )
+        try:
+            tool = self._make_tool()
+            wrapper = mock.Mock(spec=["other_attr"])
+            wrapper.other_attr = "from_other"
+
+            idx = tool._extract_idx(wrapper)
+            assert idx["myIndex"] == "from_other"
+        finally:
+            registry._indexes.pop("myIndex", None)
+
+    def test_source_attrs_multi_uses_first_non_none(self, populated_registry):
+        """With multiple source_attrs, use first non-None value."""
+        registry = get_registry()
+        registry.register(
+            "multiAttr", IndexType.FIELD, "multiAttr",
+            source_attrs=["attr_a", "attr_b"],
+        )
+        try:
+            tool = self._make_tool()
+            wrapper = mock.Mock(spec=["attr_a", "attr_b"])
+            wrapper.attr_a = None
+            wrapper.attr_b = "fallback_value"
+
+            idx = tool._extract_idx(wrapper)
+            assert idx["multiAttr"] == "fallback_value"
+        finally:
+            registry._indexes.pop("multiAttr", None)
+
+    def test_extracts_metadata_columns(self, populated_registry):
+        """Metadata-only columns should also be extracted into idx."""
+        registry = get_registry()
+        registry.add_metadata("custom_meta")
+        try:
+            tool = self._make_tool()
+            wrapper = mock.Mock()
+            wrapper.custom_meta = "meta_value"
+
+            idx = tool._extract_idx(wrapper)
+            assert idx["custom_meta"] == "meta_value"
+        finally:
+            registry._metadata.discard("custom_meta")
+
+    def test_partial_reindex_with_dynamic_index(self, populated_registry):
+        """Partial reindex (idxs param) should work with dynamic indexes."""
+        registry = get_registry()
+        registry.register("dyn_a", IndexType.FIELD, "dyn_a")
+        registry.register("dyn_b", IndexType.FIELD, "dyn_b")
+        try:
+            tool = self._make_tool()
+            wrapper = mock.Mock()
+            wrapper.dyn_a = "val_a"
+            wrapper.dyn_b = "val_b"
+
+            idx = tool._extract_idx(wrapper, idxs=["dyn_a"])
+            assert "dyn_a" in idx
+            assert "dyn_b" not in idx
+        finally:
+            registry._indexes.pop("dyn_a", None)
+            registry._indexes.pop("dyn_b", None)
+
+    def test_skips_special_indexes(self, populated_registry):
+        """Indexes with idx_key=None (special) should be skipped in extraction."""
+        tool = self._make_tool()
+        wrapper = mock.Mock()
+
+        idx = tool._extract_idx(wrapper)
+        # SearchableText, effectiveRange, path have idx_key=None → not in idx
+        assert "SearchableText" not in idx
+        assert "effectiveRange" not in idx
+        assert "path" not in idx
+
+    def test_callable_value_extracted(self, populated_registry):
+        """Callable attributes (indexers) should be called for their value."""
+        registry = get_registry()
+        registry.register("callable_idx", IndexType.FIELD, "callable_idx")
+        try:
+            tool = self._make_tool()
+            wrapper = mock.Mock()
+            wrapper.callable_idx.return_value = "called_value"
+
+            idx = tool._extract_idx(wrapper)
+            assert idx["callable_idx"] == "called_value"
+        finally:
+            registry._indexes.pop("callable_idx", None)
+
+    def test_exception_in_extraction_skipped(self, populated_registry):
+        """If an indexer raises, that field is skipped gracefully."""
+        registry = get_registry()
+        registry.register("broken_idx", IndexType.FIELD, "broken_idx")
+        try:
+            tool = self._make_tool()
+            wrapper = mock.Mock()
+            wrapper.broken_idx.side_effect = RuntimeError("broken")
+            wrapper.portal_type = "Document"
+
+            idx = tool._extract_idx(wrapper)
+            assert "broken_idx" not in idx
+            assert idx["portal_type"] == "Document"
+        finally:
+            registry._indexes.pop("broken_idx", None)
+
+
+class TestIPGIndexTranslatorExtract:
+    """IPGIndexTranslator.extract() fallback in _extract_idx."""
+
+    def _make_tool(self):
+        return PlonePGCatalogTool.__new__(PlonePGCatalogTool)
+
+    def test_translator_extract_called(self, populated_registry):
+        """Custom translator.extract() is called during indexing."""
+        from plone.pgcatalog.interfaces import IPGIndexTranslator
+        from zope.component import getSiteManager
+
+        translator = mock.Mock()
+        translator.extract.return_value = {
+            "event_start": "2025-01-15T10:00:00",
+            "event_end": "2025-01-20T18:00:00",
+        }
+
+        sm = getSiteManager()
+        sm.registerUtility(translator, IPGIndexTranslator, name="event_range")
+        try:
+            tool = self._make_tool()
+            wrapper = mock.Mock()
+
+            idx = tool._extract_idx(wrapper)
+            translator.extract.assert_called_once_with(wrapper, "event_range")
+            assert idx["event_start"] == "2025-01-15T10:00:00"
+            assert idx["event_end"] == "2025-01-20T18:00:00"
+        finally:
+            sm.unregisterUtility(provided=IPGIndexTranslator, name="event_range")
+
+    def test_translator_extract_exception_skipped(self, populated_registry):
+        """If translator.extract() raises, it's skipped gracefully."""
+        from plone.pgcatalog.interfaces import IPGIndexTranslator
+        from zope.component import getSiteManager
+
+        translator = mock.Mock()
+        translator.extract.side_effect = RuntimeError("broken translator")
+
+        sm = getSiteManager()
+        sm.registerUtility(translator, IPGIndexTranslator, name="broken_range")
+        try:
+            tool = self._make_tool()
+            wrapper = mock.Mock()
+            wrapper.portal_type = "Document"
+
+            idx = tool._extract_idx(wrapper)
+            # Doesn't crash, regular indexes still extracted
+            assert idx["portal_type"] == "Document"
+        finally:
+            sm.unregisterUtility(provided=IPGIndexTranslator, name="broken_range")

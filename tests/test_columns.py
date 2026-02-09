@@ -1,69 +1,10 @@
-"""Tests for plone.pgcatalog.columns — index registry + value conversion."""
+"""Tests for plone.pgcatalog.columns — value conversion + path utilities."""
 
 from datetime import date
 from datetime import datetime
 from datetime import UTC
-from plone.pgcatalog.columns import ALL_IDX_KEYS
 from plone.pgcatalog.columns import compute_path_info
 from plone.pgcatalog.columns import convert_value
-from plone.pgcatalog.columns import IndexType
-from plone.pgcatalog.columns import KNOWN_INDEXES
-
-
-class TestKnownIndexes:
-    """Verify the index registry is correct."""
-
-    def test_all_plone_default_indexes_present(self):
-        """All standard Plone indexes are in the registry."""
-        expected = [
-            "Creator", "Date", "Subject", "Title", "Description", "Type",
-            "UID", "allowedRolesAndUsers", "created", "effective",
-            "effectiveRange", "end", "exclude_from_nav", "expires",
-            "getId", "getObjPositionInParent", "getRawRelatedItems", "id",
-            "in_reply_to", "is_default_page", "is_folderish", "modified",
-            "object_provides", "path", "portal_type", "review_state",
-            "SearchableText", "sortable_title", "start",
-        ]
-        for name in expected:
-            assert name in KNOWN_INDEXES, f"Index {name!r} not in registry"
-
-    def test_field_indexes(self):
-        for name in ["Creator", "Type", "getId", "id", "portal_type",
-                      "review_state", "sortable_title", "in_reply_to"]:
-            assert KNOWN_INDEXES[name][0] == IndexType.FIELD
-
-    def test_keyword_indexes(self):
-        for name in ["Subject", "allowedRolesAndUsers",
-                      "getRawRelatedItems", "object_provides"]:
-            assert KNOWN_INDEXES[name][0] == IndexType.KEYWORD
-
-    def test_date_indexes(self):
-        for name in ["Date", "created", "effective", "end",
-                      "expires", "modified", "start"]:
-            assert KNOWN_INDEXES[name][0] == IndexType.DATE
-
-    def test_boolean_indexes(self):
-        for name in ["is_default_page", "is_folderish", "exclude_from_nav"]:
-            assert KNOWN_INDEXES[name][0] == IndexType.BOOLEAN
-
-    def test_special_indexes(self):
-        assert KNOWN_INDEXES["effectiveRange"][0] == IndexType.DATE_RANGE
-        assert KNOWN_INDEXES["UID"][0] == IndexType.UUID
-        assert KNOWN_INDEXES["SearchableText"][0] == IndexType.TEXT
-        assert KNOWN_INDEXES["path"][0] == IndexType.PATH
-        assert KNOWN_INDEXES["getObjPositionInParent"][0] == IndexType.GOPIP
-
-    def test_composite_indexes_have_no_key(self):
-        """effectiveRange, SearchableText, path have no direct idx key."""
-        assert KNOWN_INDEXES["effectiveRange"][1] is None
-        assert KNOWN_INDEXES["SearchableText"][1] is None
-        assert KNOWN_INDEXES["path"][1] is None
-
-    def test_all_idx_keys_include_metadata(self):
-        """ALL_IDX_KEYS includes both index keys and metadata-only keys."""
-        assert "portal_type" in ALL_IDX_KEYS
-        assert "getObjSize" in ALL_IDX_KEYS  # metadata-only
-        assert "image_scales" in ALL_IDX_KEYS  # metadata-only
 
 
 class TestConvertValue:

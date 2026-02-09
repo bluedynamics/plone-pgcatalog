@@ -134,6 +134,18 @@ class CatalogStateProcessor:
             ),
         ]
 
+    def get_schema_sql(self):
+        """Return DDL for catalog columns, functions, and indexes.
+
+        Applied by PGJsonbStorage.register_state_processor() using
+        the storage's own connection — no REPEATABLE READ lock conflicts.
+        """
+        from plone.pgcatalog.schema import CATALOG_COLUMNS
+        from plone.pgcatalog.schema import CATALOG_FUNCTIONS
+        from plone.pgcatalog.schema import CATALOG_INDEXES
+
+        return CATALOG_COLUMNS + CATALOG_FUNCTIONS + CATALOG_INDEXES
+
     def process(self, zoid, class_mod, class_name, state):
         if not isinstance(state, dict) or ANNOTATION_KEY not in state:
             return None
@@ -176,6 +188,14 @@ def register_catalog_processor(event):
     """IDatabaseOpenedWithRoot subscriber: register the processor.
 
     Called once at Zope startup when the database is opened.
+    Registers the CatalogStateProcessor on the PGJsonbStorage.
+    The processor's ``get_schema_sql()`` provides DDL which is applied
+    by the storage using its own connection (no REPEATABLE READ lock
+    conflicts).
+
+    Finally, syncs the IndexRegistry from each Plone site's
+    portal_catalog so dynamic indexes are available before
+    the first request.
     """
     db = event.database
     storage = _get_main_storage(db)
@@ -183,5 +203,44 @@ def register_catalog_processor(event):
         processor = CatalogStateProcessor()
         storage.register_state_processor(processor)
         log.info("Registered CatalogStateProcessor on %s", storage)
+        _sync_registry_from_db(db)
     else:
         log.debug("Storage %s does not support state processors", storage)
+
+
+def _sync_registry_from_db(db):
+    """Populate the IndexRegistry from portal_catalog at startup.
+
+    Opens a temporary ZODB connection, traverses the root to find
+    Plone sites with portal_catalog, and syncs the registry from
+    each catalog's registered indexes and metadata.
+    """
+    from plone.pgcatalog.columns import get_registry
+
+    registry = get_registry()
+    conn = db.open()
+    try:
+        root = conn.root()
+        app = root.get("Application", root)
+        for obj in app.values():
+            catalog = getattr(obj, "portal_catalog", None)
+            if catalog is not None and hasattr(catalog, "_catalog"):
+                try:
+                    registry.sync_from_catalog(catalog)
+                    log.info(
+                        "IndexRegistry synced from %s/portal_catalog (%d indexes, %d metadata)",
+                        getattr(obj, "getId", lambda: "?")(),
+                        len(registry),
+                        len(registry.metadata),
+                    )
+                except Exception:
+                    log.warning(
+                        "Failed to sync IndexRegistry from portal_catalog",
+                        exc_info=True,
+                    )
+    except Exception:
+        log.debug("Could not sync IndexRegistry from ZODB", exc_info=True)
+    finally:
+        conn.close()
+
+

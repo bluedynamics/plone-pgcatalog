@@ -1,5 +1,7 @@
 """Shared test configuration for plone.pgcatalog tests."""
 
+from plone.pgcatalog.columns import IndexType
+from plone.pgcatalog.columns import get_registry
 from plone.pgcatalog.schema import install_catalog_schema
 from psycopg.rows import dict_row
 from psycopg.types.json import Json
@@ -8,6 +10,72 @@ from zodb_pgjsonb.schema import HISTORY_FREE_SCHEMA
 import os
 import psycopg
 import pytest
+
+
+# Standard Plone indexes — used to populate the registry for tests.
+# In production, these come from ZCatalog via GenericSetup catalog.xml imports.
+_PLONE_DEFAULT_INDEXES = [
+    # (name, IndexType, idx_key)
+    # FieldIndex
+    ("Creator", IndexType.FIELD, "Creator"),
+    ("Type", IndexType.FIELD, "Type"),
+    ("getId", IndexType.FIELD, "getId"),
+    ("id", IndexType.FIELD, "id"),
+    ("in_reply_to", IndexType.FIELD, "in_reply_to"),
+    ("portal_type", IndexType.FIELD, "portal_type"),
+    ("review_state", IndexType.FIELD, "review_state"),
+    ("sortable_title", IndexType.FIELD, "sortable_title"),
+    # KeywordIndex
+    ("Subject", IndexType.KEYWORD, "Subject"),
+    ("allowedRolesAndUsers", IndexType.KEYWORD, "allowedRolesAndUsers"),
+    ("getRawRelatedItems", IndexType.KEYWORD, "getRawRelatedItems"),
+    ("object_provides", IndexType.KEYWORD, "object_provides"),
+    # DateIndex
+    ("Date", IndexType.DATE, "Date"),
+    ("created", IndexType.DATE, "created"),
+    ("effective", IndexType.DATE, "effective"),
+    ("end", IndexType.DATE, "end"),
+    ("expires", IndexType.DATE, "expires"),
+    ("modified", IndexType.DATE, "modified"),
+    ("start", IndexType.DATE, "start"),
+    # BooleanIndex
+    ("is_default_page", IndexType.BOOLEAN, "is_default_page"),
+    ("is_folderish", IndexType.BOOLEAN, "is_folderish"),
+    ("exclude_from_nav", IndexType.BOOLEAN, "exclude_from_nav"),
+    # DateRangeIndex (composite — idx_key=None)
+    ("effectiveRange", IndexType.DATE_RANGE, None),
+    # UUIDIndex
+    ("UID", IndexType.UUID, "UID"),
+    # ZCTextIndex
+    ("SearchableText", IndexType.TEXT, None),
+    ("Title", IndexType.TEXT, "Title"),
+    ("Description", IndexType.TEXT, "Description"),
+    # ExtendedPathIndex (idx_key=None)
+    ("path", IndexType.PATH, None),
+    # GopipIndex
+    ("getObjPositionInParent", IndexType.GOPIP, "getObjPositionInParent"),
+]
+
+_PLONE_DEFAULT_METADATA = [
+    "CreationDate", "EffectiveDate", "ExpirationDate", "ModificationDate",
+    "getIcon", "getObjSize", "getRemoteUrl", "image_scales",
+    "listCreators", "location", "mime_type",
+]
+
+
+@pytest.fixture(autouse=True, scope="session")
+def populated_registry():
+    """Populate the global index registry with standard Plone indexes.
+
+    In production, this is done by sync_from_catalog() reading from the
+    ZCatalog's registered indexes.  In tests, we register them directly.
+    """
+    registry = get_registry()
+    for name, idx_type, idx_key in _PLONE_DEFAULT_INDEXES:
+        registry.register(name, idx_type, idx_key)
+    for name in _PLONE_DEFAULT_METADATA:
+        registry.add_metadata(name)
+    return registry
 
 
 # Allow DSN override via environment variable for CI.

@@ -9,10 +9,17 @@ class IPGCatalogTool(ICatalogTool):
 
 
 class IPGIndexTranslator(Interface):
-    """Adapter that translates a custom index's data for PG storage + querying.
+    """Named utility that translates a custom index's data for PG storage + querying.
 
-    Add-ons register named adapters implementing this interface to support
-    custom index types (e.g. DateRangeInRange, CompositeIndex).
+    Add-ons register named utilities implementing this interface to support
+    custom index types not covered by ``META_TYPE_MAP`` (e.g. DateRangeInRange,
+    CompositeIndex).  The utility name must match the index name.
+
+    Wired into:
+    - ``query.py``: ``_process_index()`` and ``_process_sort()`` use it as
+      a fallback when the index is not in the ``IndexRegistry``.
+    - ``catalog.py``: ``_extract_from_translators()`` calls ``extract()``
+      for all registered translators during indexing.
     """
 
     def extract(obj, index_name):
