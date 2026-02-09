@@ -15,6 +15,17 @@ ALTER TABLE object_state ADD COLUMN IF NOT EXISTS idx JSONB;
 ALTER TABLE object_state ADD COLUMN IF NOT EXISTS searchable_text TSVECTOR;
 """
 
+CATALOG_FUNCTIONS = """\
+-- Immutable timestamptz cast for expression indexes.
+-- The built-in ::timestamptz cast is STABLE (depends on session timezone),
+-- but our ISO 8601 dates always include timezone info, making the result
+-- deterministic.  This wrapper lets PG accept it in index expressions.
+CREATE OR REPLACE FUNCTION pgcatalog_to_timestamptz(text)
+RETURNS timestamptz AS $$
+    SELECT $1::timestamptz;
+$$ LANGUAGE sql IMMUTABLE STRICT;
+"""
+
 CATALOG_INDEXES = """\
 -- Path indexes (B-tree)
 CREATE INDEX IF NOT EXISTS idx_os_path
@@ -30,15 +41,15 @@ CREATE INDEX IF NOT EXISTS idx_os_path_depth
 CREATE INDEX IF NOT EXISTS idx_os_catalog
     ON object_state USING gin (idx) WHERE idx IS NOT NULL;
 
--- Expression indexes for date range queries (B-tree)
+-- Expression indexes for date range queries (B-tree via immutable wrapper)
 CREATE INDEX IF NOT EXISTS idx_os_cat_modified
-    ON object_state (((idx->>'modified')::timestamptz)) WHERE idx IS NOT NULL;
+    ON object_state (pgcatalog_to_timestamptz(idx->>'modified')) WHERE idx IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_os_cat_created
-    ON object_state (((idx->>'created')::timestamptz)) WHERE idx IS NOT NULL;
+    ON object_state (pgcatalog_to_timestamptz(idx->>'created')) WHERE idx IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_os_cat_effective
-    ON object_state (((idx->>'effective')::timestamptz)) WHERE idx IS NOT NULL;
+    ON object_state (pgcatalog_to_timestamptz(idx->>'effective')) WHERE idx IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_os_cat_expires
-    ON object_state (((idx->>'expires')::timestamptz)) WHERE idx IS NOT NULL;
+    ON object_state (pgcatalog_to_timestamptz(idx->>'expires')) WHERE idx IS NOT NULL;
 
 -- Expression indexes for common sort/filter fields
 CREATE INDEX IF NOT EXISTS idx_os_cat_sortable_title
@@ -93,4 +104,5 @@ def install_catalog_schema(conn):
         conn: psycopg connection (autocommit or in a transaction block)
     """
     conn.execute(CATALOG_COLUMNS)
+    conn.execute(CATALOG_FUNCTIONS)
     conn.execute(CATALOG_INDEXES)

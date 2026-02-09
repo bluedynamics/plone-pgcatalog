@@ -5,6 +5,8 @@ import os
 from psycopg.rows import dict_row
 from zodb_pgjsonb.schema import HISTORY_FREE_SCHEMA
 
+from psycopg.types.json import Json
+
 import psycopg
 import pytest
 
@@ -43,3 +45,35 @@ def pg_conn_with_catalog(pg_conn):
     install_catalog_schema(pg_conn)
     pg_conn.commit()
     return pg_conn
+
+
+def insert_object(conn, zoid, tid=1, class_mod="myapp", class_name="Doc", state=None):
+    """Insert a bare object_state row for testing.
+
+    Creates a transaction_log entry if needed, then inserts the object.
+    Returns the zoid.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO transaction_log (tid) VALUES (%(tid)s) ON CONFLICT DO NOTHING",
+            {"tid": tid},
+        )
+        cur.execute(
+            """
+            INSERT INTO object_state
+                (zoid, tid, class_mod, class_name, state, state_size)
+            VALUES (%(zoid)s, %(tid)s, %(mod)s, %(cls)s, %(state)s, %(size)s)
+            ON CONFLICT (zoid) DO UPDATE SET
+                tid = %(tid)s, state = %(state)s, state_size = %(size)s
+            """,
+            {
+                "zoid": zoid,
+                "tid": tid,
+                "mod": class_mod,
+                "cls": class_name,
+                "state": Json(state or {}),
+                "size": len(str(state or {})),
+            },
+        )
+    conn.commit()
+    return zoid
