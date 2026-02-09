@@ -1,0 +1,1 @@
+Sentinel file for plone.pgcatalog GenericSetup import step.

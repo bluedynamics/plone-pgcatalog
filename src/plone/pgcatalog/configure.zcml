@@ -1,0 +1,26 @@
+<configure
+    xmlns="http://namespaces.zope.org/zope"
+    xmlns:genericsetup="http://namespaces.zope.org/genericsetup"
+    >
+
+  <!-- GenericSetup extension profile -->
+  <genericsetup:registerProfile
+      name="default"
+      title="plone.pgcatalog"
+      description="PostgreSQL-backed catalog for Plone"
+      provides="Products.GenericSetup.interfaces.EXTENSION"
+      for="Products.CMFCore.interfaces.ISiteRoot"
+      directory="profiles/default"
+      />
+
+  <!-- Import step: install PG schema extensions -->
+  <genericsetup:importStep
+      name="plone.pgcatalog"
+      title="Install plone.pgcatalog schema"
+      description="Add catalog columns and indexes to object_state."
+      handler="plone.pgcatalog.setuphandlers.install"
+      >
+    <depends name="toolset" />
+  </genericsetup:importStep>
+
+</configure>
