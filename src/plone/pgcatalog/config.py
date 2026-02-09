@@ -3,9 +3,17 @@
 The PostgreSQL connection pool is discovered from:
 1. The ZODB storage's pool (if using zodb-pgjsonb)
 2. Environment variable PGCATALOG_DSN (creates a fallback pool)
+
+Also contains the CatalogStateProcessor which integrates with
+zodb-pgjsonb's state processor infrastructure to write catalog
+index data atomically alongside the object state.
 """
 
+import logging
 import os
+
+
+log = logging.getLogger(__name__)
 
 
 _fallback_pool = None
@@ -95,3 +103,84 @@ def get_dsn(context=None):
             pass
 
     return None
+
+
+# ── State Processor for zodb-pgjsonb ────────────────────────────────
+
+# Annotation key set by catalog_object() on persistent objects.
+# The processor pops it from the JSON state before writing to PG.
+ANNOTATION_KEY = "_pgcatalog_pending"
+
+
+class CatalogStateProcessor:
+    """Extracts ``_pgcatalog_pending`` from object state → extra PG columns.
+
+    Works with zodb-pgjsonb's state processor infrastructure.
+    When ``_pgcatalog_pending`` is a dict, catalog data is written.
+    When it is ``None`` (sentinel), all catalog columns are NULLed (uncatalog).
+    """
+
+    def get_extra_columns(self):
+        from zodb_pgjsonb import ExtraColumn
+
+        return [
+            ExtraColumn("path", "%(path)s"),
+            ExtraColumn("parent_path", "%(parent_path)s"),
+            ExtraColumn("path_depth", "%(path_depth)s"),
+            ExtraColumn("idx", "%(idx)s"),
+            ExtraColumn(
+                "searchable_text",
+                "to_tsvector('simple'::regconfig, %(searchable_text)s)",
+            ),
+        ]
+
+    def process(self, zoid, class_mod, class_name, state):
+        if ANNOTATION_KEY not in state:
+            return None
+
+        pending = state.pop(ANNOTATION_KEY)
+
+        if pending is None:
+            # Uncatalog sentinel: NULL all catalog columns
+            return {
+                "path": None,
+                "parent_path": None,
+                "path_depth": None,
+                "idx": None,
+                "searchable_text": None,
+            }
+
+        # Normal catalog: return column values
+        from psycopg.types.json import Json
+
+        idx = pending.get("idx")
+        return {
+            "path": pending.get("path"),
+            "parent_path": pending.get("parent_path"),
+            "path_depth": pending.get("path_depth"),
+            "idx": Json(idx) if idx else None,
+            "searchable_text": pending.get("searchable_text"),
+        }
+
+
+def _get_main_storage(db):
+    """Unwrap the main PGJsonbStorage from a ZODB.DB."""
+    storage = db.storage
+    # MVCC: db.storage may be the main storage or a wrapper
+    main = getattr(storage, "_main", storage)
+    return main
+
+
+def register_catalog_processor(event):
+    """IDatabaseOpenedWithRoot subscriber: register the processor.
+
+    Called once at Zope startup when the database is opened.
+    """
+    db = event.database
+    storage = _get_main_storage(db)
+    if hasattr(storage, "register_state_processor"):
+        processor = CatalogStateProcessor()
+        storage.register_state_processor(processor)
+        log.info("Registered CatalogStateProcessor on %s", storage)
+    else:
+        log.debug("Storage %s does not support state processors", storage)

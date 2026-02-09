@@ -12,6 +12,7 @@ from AccessControl import ClassSecurityInfo
 from contextlib import contextmanager
 from plone.pgcatalog.brain import CatalogSearchResults
 from plone.pgcatalog.brain import PGCatalogBrain
+from plone.pgcatalog.columns import compute_path_info
 from plone.pgcatalog.columns import convert_value
 from plone.pgcatalog.columns import KNOWN_INDEXES
 from plone.pgcatalog.indexing import catalog_object as _sql_catalog
@@ -192,10 +193,16 @@ class PlonePGCatalogTool(CatalogTool):
     def catalog_object(self, object, uid=None, idxs=None, update_metadata=1, pghandler=None):  # noqa: A002
         """Index an object into both PG and BTrees.
 
-        Extracts index values via plone.indexer, writes them to the
-        PG idx JSONB column, and also calls the parent CatalogTool
-        for BTrees compatibility.
+        Sets the ``_pgcatalog_pending`` annotation on the object so that
+        the catalog data is written atomically alongside the object state
+        during the ZODB commit (via zodb-pgjsonb's state processor).
+
+        The object always has ``_p_oid`` by the time this is called — Plone
+        assigns OIDs when objects are added to their container, before
+        events fire.
         """
+        from plone.pgcatalog.config import ANNOTATION_KEY
+
         if uid is None:
             try:
                 uid = "/".join(object.getPhysicalPath())
@@ -203,42 +210,62 @@ class PlonePGCatalogTool(CatalogTool):
                 log.warning("catalog_object: obj has no getPhysicalPath, skipping PG")
                 return super().catalog_object(object, uid, idxs, update_metadata, pghandler)
 
-        # Extract ZODB oid -> integer zoid
+        # Only annotate if the object has a ZODB oid
         zoid = self._obj_to_zoid(object)
         if zoid is not None:
             wrapper = self._wrap_object(object)
-            idx = self._extract_idx(wrapper, idxs)
+            # Always full reindex — annotation replaces entire idx
+            idx = self._extract_idx(wrapper)
             searchable_text = self._extract_searchable_text(wrapper)
+            parent_path, path_depth = compute_path_info(uid)
 
-            try:
-                with self._pg_connection() as conn:
-                    _sql_catalog(
-                        conn,
-                        zoid=zoid,
-                        path=uid,
-                        idx=idx,
-                        searchable_text=searchable_text,
-                    )
-            except Exception:
-                log.debug("PG catalog_object failed for %s", uid, exc_info=True)
+            # Set annotation: will be picked up by CatalogStateProcessor
+            # during storage.store() and written as extra PG columns.
+            setattr(object, ANNOTATION_KEY, {
+                "path": uid,
+                "parent_path": parent_path,
+                "path_depth": path_depth,
+                "idx": idx,
+                "searchable_text": searchable_text,
+            })
 
         # Always call parent for BTrees compatibility
         return super().catalog_object(object, uid, idxs, update_metadata, pghandler)
 
     def uncatalog_object(self, uid):
-        """Remove an object from both PG and BTrees."""
+        """Remove catalog data from both PG and BTrees.
+
+        Sets a ``None`` sentinel annotation so the state processor
+        NULLs all catalog columns during the ZODB commit.
+
+        For objects being deleted from ZODB, the row is removed entirely
+        by the storage's _batch_delete_objects() — no annotation needed.
+        """
+        from plone.pgcatalog.config import ANNOTATION_KEY
+
+        # Try to find and annotate the object for transactional uncatalog
         try:
-            with self._pg_connection() as conn:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        "SELECT zoid FROM object_state WHERE path = %(path)s",
-                        {"path": uid},
-                    )
-                    row = cur.fetchone()
-                if row:
-                    _sql_uncatalog(conn, zoid=row["zoid"])
+            obj = self.unrestrictedTraverse(uid, None)
         except Exception:
-            log.debug("PG uncatalog_object failed for %s", uid, exc_info=True)
+            obj = None
+
+        if obj is not None and getattr(obj, "_p_oid", None) is not None:
+            # Sentinel: None means "clear all catalog columns"
+            setattr(obj, ANNOTATION_KEY, None)
+        else:
+            # Object not traversable (already deleted?) — direct SQL fallback
+            try:
+                with self._pg_connection() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "SELECT zoid FROM object_state WHERE path = %(path)s",
+                            {"path": uid},
+                        )
+                        row = cur.fetchone()
+                    if row:
+                        _sql_uncatalog(conn, zoid=row["zoid"])
+            except Exception:
+                log.debug("PG uncatalog_object failed for %s", uid, exc_info=True)
 
         return super().uncatalog_object(uid)
 

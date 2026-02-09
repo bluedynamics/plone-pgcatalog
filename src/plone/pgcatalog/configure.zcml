@@ -29,4 +29,10 @@
       provides="plone.pgcatalog.interfaces.IPGCatalogTool"
       />
 
+  <!-- Register CatalogStateProcessor on the ZODB storage at startup -->
+  <subscriber
+      for="zope.processlifetime.IDatabaseOpenedWithRoot"
+      handler=".config.register_catalog_processor"
+      />
+
 </configure>
