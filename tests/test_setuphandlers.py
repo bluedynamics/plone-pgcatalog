@@ -31,12 +31,11 @@ class TestInstall:
         with mock.patch(
             "plone.pgcatalog.setuphandlers._get_pg_connection",
             return_value=mock_conn,
-        ), mock.patch(
-            "plone.pgcatalog.setuphandlers.install_catalog_schema"
-        ) as schema_mock:
+        ):
             install(context)
-            schema_mock.assert_called_once_with(mock_conn)
-            mock_conn.commit.assert_called_once()
+            # DDL is applied via conn.execute() calls
+            assert mock_conn.execute.call_count >= 1
+            mock_conn.close.assert_called_once()
 
 
 class TestGetPgConnection:

@@ -8,7 +8,12 @@ CatalogSearchResults wraps a list of brains with actual_result_count for
 batched queries where LIMIT < total matching rows.
 """
 
+from Products.ZCatalog.interfaces import ICatalogBrain
+from ZTUtils.Lazy import Lazy
+from zope.interface import implementer
 
+
+@implementer(ICatalogBrain)
 class PGCatalogBrain:
     """Lightweight catalog brain backed by a PostgreSQL row.
 
@@ -113,27 +118,23 @@ class PGCatalogBrain:
         return f"<PGCatalogBrain zoid={self._row.get('zoid')} path={self._row.get('path')!r}>"
 
 
-class CatalogSearchResults:
+class CatalogSearchResults(Lazy):
     """Result sequence from a catalog query.
 
     Wraps a list of PGCatalogBrain objects and tracks actual_result_count
     for batched queries (where LIMIT truncates results).
 
+    Inherits from ZTUtils.Lazy so plone.restapi's LazyCatalogResultSerializer
+    can serialize it via the existing ISerializeToJson adapter.
+
     Supports iteration, len, indexing, and slicing.
     """
 
-    __slots__ = ("_actual_result_count", "_brains")
-
     def __init__(self, brains, actual_result_count=None):
         self._brains = list(brains)
-        self._actual_result_count = (
+        self.actual_result_count = (
             actual_result_count if actual_result_count is not None else len(self._brains)
         )
-
-    @property
-    def actual_result_count(self):
-        """Total matching rows (before LIMIT/OFFSET)."""
-        return self._actual_result_count
 
     def __len__(self):
         return len(self._brains)
@@ -144,7 +145,7 @@ class CatalogSearchResults:
     def __getitem__(self, index):
         result = self._brains[index]
         if isinstance(index, slice):
-            return CatalogSearchResults(result, self._actual_result_count)
+            return CatalogSearchResults(result, self.actual_result_count)
         return result
 
     def __bool__(self):
@@ -153,5 +154,5 @@ class CatalogSearchResults:
     def __repr__(self):
         return (
             f"<CatalogSearchResults len={len(self._brains)}"
-            f" actual={self._actual_result_count}>"
+            f" actual={self.actual_result_count}>"
         )

@@ -188,48 +188,73 @@ class PlonePGCatalogTool(CatalogTool):
         finally:
             pool.putconn(conn)
 
-    # -- Write path (PG + parent BTrees for compatibility) -------------------
+    # -- Write path (PG annotation + parent BTrees) --------------------------
 
-    def catalog_object(self, object, uid=None, idxs=None, update_metadata=1, pghandler=None):  # noqa: A002
-        """Index an object into both PG and BTrees.
+    def _set_pg_annotation(self, obj, uid=None):
+        """Set ``_pgcatalog_pending`` annotation on a persistent object.
 
-        Sets the ``_pgcatalog_pending`` annotation on the object so that
-        the catalog data is written atomically alongside the object state
-        during the ZODB commit (via zodb-pgjsonb's state processor).
+        Must be called DURING the request (before ZODB serializes the
+        object), not from the IndexQueue's before_commit hook.
 
-        The object always has ``_p_oid`` by the time this is called — Plone
-        assigns OIDs when objects are added to their container, before
-        events fire.
+        Returns True if the annotation was set, False otherwise.
         """
         from plone.pgcatalog.config import ANNOTATION_KEY
 
         if uid is None:
             try:
-                uid = "/".join(object.getPhysicalPath())
+                uid = "/".join(obj.getPhysicalPath())
             except AttributeError:
-                log.warning("catalog_object: obj has no getPhysicalPath, skipping PG")
-                return super().catalog_object(object, uid, idxs, update_metadata, pghandler)
+                log.warning("_set_pg_annotation: no getPhysicalPath on %s", type(obj).__name__)
+                return False
 
-        # Only annotate if the object has a ZODB oid
-        zoid = self._obj_to_zoid(object)
-        if zoid is not None:
-            wrapper = self._wrap_object(object)
-            # Always full reindex — annotation replaces entire idx
-            idx = self._extract_idx(wrapper)
-            searchable_text = self._extract_searchable_text(wrapper)
-            parent_path, path_depth = compute_path_info(uid)
+        zoid = self._obj_to_zoid(obj)
+        if zoid is None:
+            log.debug("_set_pg_annotation: no _p_oid on %s at %s", type(obj).__name__, uid)
+            return False
 
-            # Set annotation: will be picked up by CatalogStateProcessor
-            # during storage.store() and written as extra PG columns.
-            setattr(object, ANNOTATION_KEY, {
-                "path": uid,
-                "parent_path": parent_path,
-                "path_depth": path_depth,
-                "idx": idx,
-                "searchable_text": searchable_text,
-            })
+        wrapper = self._wrap_object(obj)
+        idx = self._extract_idx(wrapper)
+        searchable_text = self._extract_searchable_text(wrapper)
+        parent_path, path_depth = compute_path_info(uid)
 
-        # Always call parent for BTrees compatibility
+        setattr(obj, ANNOTATION_KEY, {
+            "path": uid,
+            "parent_path": parent_path,
+            "path_depth": path_depth,
+            "idx": idx,
+            "searchable_text": searchable_text,
+        })
+        log.debug("_set_pg_annotation: SET on %s zoid=%d path=%s", type(obj).__name__, zoid, uid)
+        return True
+
+    def indexObject(self, object):  # noqa: A002
+        """Set PG annotation immediately for new objects, then delegate.
+
+        ``CatalogAware.indexObject()`` calls this for newly-added
+        content.  We set the annotation NOW because the IndexQueue
+        defers the actual ``catalog_object()`` call to ``before_commit``
+        which is too late (ZODB has already serialized the object).
+        """
+        self._set_pg_annotation(object)
+        super().indexObject(object)
+
+    def reindexObject(self, object, idxs=None, update_metadata=1, uid=None):  # noqa: A002
+        """Set PG annotation immediately, then delegate to parent.
+
+        Same timing issue as ``indexObject`` — must annotate NOW.
+        """
+        self._set_pg_annotation(object, uid)
+        super().reindexObject(
+            object, idxs=idxs or [], update_metadata=update_metadata, uid=uid,
+        )
+
+    def catalog_object(self, object, uid=None, idxs=None, update_metadata=1, pghandler=None):  # noqa: A002
+        """Index an object (called from _reindexObject / _indexObject).
+
+        Also sets PG annotation as a safety net — may be called directly
+        without going through indexObject/reindexObject.
+        """
+        self._set_pg_annotation(object, uid)
         return super().catalog_object(object, uid, idxs, update_metadata, pghandler)
 
     def uncatalog_object(self, uid):
@@ -237,23 +262,17 @@ class PlonePGCatalogTool(CatalogTool):
 
         Sets a ``None`` sentinel annotation so the state processor
         NULLs all catalog columns during the ZODB commit.
-
-        For objects being deleted from ZODB, the row is removed entirely
-        by the storage's _batch_delete_objects() — no annotation needed.
         """
         from plone.pgcatalog.config import ANNOTATION_KEY
 
-        # Try to find and annotate the object for transactional uncatalog
         try:
             obj = self.unrestrictedTraverse(uid, None)
         except Exception:
             obj = None
 
         if obj is not None and getattr(obj, "_p_oid", None) is not None:
-            # Sentinel: None means "clear all catalog columns"
             setattr(obj, ANNOTATION_KEY, None)
         else:
-            # Object not traversable (already deleted?) — direct SQL fallback
             try:
                 with self._pg_connection() as conn:
                     with conn.cursor() as cur:
@@ -286,10 +305,10 @@ class PlonePGCatalogTool(CatalogTool):
 
         # Check permission for inactive content
         if not show_inactive:
-            from AccessControl.SecurityManagement import _checkPermission
             from Products.CMFCore.permissions import AccessInactivePortalContent
 
-            if _checkPermission(AccessInactivePortalContent, self):
+            sm = getSecurityManager()
+            if sm.checkPermission(AccessInactivePortalContent, self):
                 show_inactive = True
 
         query = apply_security_filters(

@@ -135,9 +135,10 @@ class CatalogStateProcessor:
         ]
 
     def process(self, zoid, class_mod, class_name, state):
-        if ANNOTATION_KEY not in state:
+        if not isinstance(state, dict) or ANNOTATION_KEY not in state:
             return None
 
+        log.info("CatalogStateProcessor.process: zoid=%d class=%s.%s — found annotation", zoid, class_mod, class_name)
         pending = state.pop(ANNOTATION_KEY)
 
         if pending is None:

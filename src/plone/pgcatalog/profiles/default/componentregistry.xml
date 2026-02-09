@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<componentregistry>
+  <utilities>
+    <utility interface="Products.CMFCore.interfaces.ICatalogTool"
+             object="portal_catalog"
+    />
+  </utilities>
+</componentregistry>

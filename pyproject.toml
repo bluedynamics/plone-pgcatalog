@@ -32,6 +32,9 @@ dependencies = [
     "transaction",
 ]
 
+[project.entry-points."z3c.autoinclude.plugin"]
+target = "plone"
+
 [project.urls]
 Homepage = "https://github.com/bluedynamics/plone.pgcatalog"
 Repository = "https://github.com/bluedynamics/plone.pgcatalog"
