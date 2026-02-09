@@ -1,8 +1,8 @@
 """Tests for plone.pgcatalog.setuphandlers — GenericSetup install handler."""
 
+from plone.pgcatalog.setuphandlers import _get_pg_connection
+from plone.pgcatalog.setuphandlers import install
 from unittest import mock
-
-from plone.pgcatalog.setuphandlers import install, _get_pg_connection
 
 
 class TestInstall:

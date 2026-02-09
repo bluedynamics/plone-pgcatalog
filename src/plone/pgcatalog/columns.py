@@ -174,9 +174,6 @@ def compute_path_info(path):
     parts = [p for p in path.split("/") if p]
     depth = len(parts)
 
-    if depth <= 1:
-        parent = "/"
-    else:
-        parent = "/" + "/".join(parts[:-1])
+    parent = "/" if depth <= 1 else "/" + "/".join(parts[:-1])
 
     return parent, depth

@@ -2,13 +2,12 @@
 
 from datetime import date
 from datetime import datetime
-from datetime import timezone
-
+from datetime import UTC
 from plone.pgcatalog.columns import ALL_IDX_KEYS
-from plone.pgcatalog.columns import IndexType
-from plone.pgcatalog.columns import KNOWN_INDEXES
 from plone.pgcatalog.columns import compute_path_info
 from plone.pgcatalog.columns import convert_value
+from plone.pgcatalog.columns import IndexType
+from plone.pgcatalog.columns import KNOWN_INDEXES
 
 
 class TestKnownIndexes:
@@ -89,7 +88,7 @@ class TestConvertValue:
         assert convert_value("hello") == "hello"
 
     def test_datetime_with_tz(self):
-        dt = datetime(2025, 1, 15, 10, 30, 0, tzinfo=timezone.utc)
+        dt = datetime(2025, 1, 15, 10, 30, 0, tzinfo=UTC)
         result = convert_value(dt)
         assert result == "2025-01-15T10:30:00+00:00"
 

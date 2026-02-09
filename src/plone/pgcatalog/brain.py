@@ -20,7 +20,7 @@ class PGCatalogBrain:
         catalog: reference to the catalog tool (for getObject traversal)
     """
 
-    __slots__ = ("_row", "_catalog")
+    __slots__ = ("_catalog", "_row")
 
     def __init__(self, row, catalog=None):
         self._row = row
@@ -122,7 +122,7 @@ class CatalogSearchResults:
     Supports iteration, len, indexing, and slicing.
     """
 
-    __slots__ = ("_brains", "_actual_result_count")
+    __slots__ = ("_actual_result_count", "_brains")
 
     def __init__(self, brains, actual_result_count=None):
         self._brains = list(brains)

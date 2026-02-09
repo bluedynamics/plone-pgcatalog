@@ -1,0 +1,6 @@
+-c constraints.txt
+Plone
+waitress
+Paste
+-e ../../zodb-pgjsonb
+-e ../../plone-pgcatalog

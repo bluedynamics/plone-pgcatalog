@@ -134,13 +134,13 @@ class TestBrainAttributeAccess:
         import pytest
         brain = PGCatalogBrain(_make_row(idx={}, state={}))
         with pytest.raises(AttributeError):
-            brain.nonexistent_attribute
+            _ = brain.nonexistent_attribute
 
     def test_private_attrs_raise_attribute_error(self):
         import pytest
         brain = PGCatalogBrain(_make_row())
         with pytest.raises(AttributeError):
-            brain._private
+            _ = brain._private
 
     def test_repr(self):
         brain = PGCatalogBrain(_make_row(zoid=42, path="/plone/doc"))

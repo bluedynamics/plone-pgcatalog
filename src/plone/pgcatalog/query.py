@@ -7,15 +7,17 @@ All user-supplied values go through psycopg parameterized queries — never
 string-formatted into SQL.  Index key names are whitelisted via KNOWN_INDEXES.
 """
 
-import logging
-import re
 from datetime import date
 from datetime import datetime
-
-from psycopg.types.json import Json
-
-from plone.pgcatalog.columns import KNOWN_INDEXES
+from datetime import UTC
 from plone.pgcatalog.columns import IndexType
+from plone.pgcatalog.columns import KNOWN_INDEXES
+from psycopg.types.json import Json
+from typing import ClassVar
+
+import logging
+import re
+
 
 log = logging.getLogger(__name__)
 
@@ -67,7 +69,6 @@ def apply_security_filters(query_dict, roles, show_inactive=False):
         new query dict with security filters added
     """
     from datetime import datetime
-    from datetime import timezone
 
     result = dict(query_dict)
 
@@ -79,9 +80,8 @@ def apply_security_filters(query_dict, roles, show_inactive=False):
         }
 
     # Inject effectiveRange (unless show_inactive or already present)
-    if not show_inactive and "effectiveRange" not in result:
-        if not result.get("show_inactive"):
-            result["effectiveRange"] = datetime.now(timezone.utc)
+    if not show_inactive and "effectiveRange" not in result and not result.get("show_inactive"):
+        result["effectiveRange"] = datetime.now(UTC)
 
     # Remove show_inactive from the dict (it's a meta-key, not an index)
     result.pop("show_inactive", None)
@@ -175,7 +175,7 @@ class _QueryBuilder:
 
     # -- dispatch -----------------------------------------------------------
 
-    _HANDLERS = {
+    _HANDLERS: ClassVar[dict[IndexType, str]] = {
         IndexType.FIELD: "_handle_field",
         IndexType.KEYWORD: "_handle_keyword",
         IndexType.DATE: "_handle_date",
@@ -254,10 +254,7 @@ class _QueryBuilder:
 
         operator = spec.get("operator", "or")
 
-        if isinstance(query_val, str):
-            query_val = [query_val]
-        else:
-            query_val = list(query_val)
+        query_val = [query_val] if isinstance(query_val, str) else list(query_val)
 
         if operator == "and":
             # All values must be present → JSONB containment
@@ -383,10 +380,7 @@ class _QueryBuilder:
         navtree = spec.get("navtree", False)
         navtree_start = spec.get("navtree_start", 0)
 
-        if isinstance(query_val, str):
-            paths = [query_val]
-        else:
-            paths = list(query_val)
+        paths = [query_val] if isinstance(query_val, str) else list(query_val)
 
         for path in paths:
             _validate_path(path)

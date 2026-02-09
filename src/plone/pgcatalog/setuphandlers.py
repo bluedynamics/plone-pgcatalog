@@ -4,9 +4,10 @@ Installs the catalog schema extension (columns + indexes) on the
 object_state table when the GenericSetup profile is applied.
 """
 
+from plone.pgcatalog.schema import install_catalog_schema
+
 import logging
 
-from plone.pgcatalog.schema import install_catalog_schema
 
 log = logging.getLogger(__name__)
 
@@ -42,8 +43,9 @@ def _get_pg_connection(site):
         storage = db.storage
         # PGJsonbStorage exposes _dsn and _pool
         if hasattr(storage, "_dsn"):
-            import psycopg
             from psycopg.rows import dict_row
+
+            import psycopg
 
             return psycopg.connect(storage._dsn, row_factory=dict_row)
     except Exception:

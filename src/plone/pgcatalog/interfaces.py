@@ -1,10 +1,11 @@
 """Interfaces for plone.pgcatalog."""
 
+from Products.CMFCore.interfaces import ICatalogTool
 from zope.interface import Interface
 
 
-class IPGCatalogTool(Interface):
-    """Marker interface for the PostgreSQL-backed catalog tool."""
+class IPGCatalogTool(ICatalogTool):
+    """Interface for the PostgreSQL-backed catalog tool."""
 
 
 class IPGIndexTranslator(Interface):

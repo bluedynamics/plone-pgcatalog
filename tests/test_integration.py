@@ -4,14 +4,11 @@ Tests the catalog tool against real PostgreSQL: catalog, search, reindex,
 uncatalog, refresh, and maintenance operations.
 """
 
-from datetime import datetime
-from datetime import timezone
-
-from tests.conftest import insert_object
 
 from plone.pgcatalog.brain import CatalogSearchResults
 from plone.pgcatalog.brain import PGCatalogBrain
 from plone.pgcatalog.catalog import PGCatalogTool
+from tests.conftest import insert_object
 
 
 # ---------------------------------------------------------------------------
@@ -188,7 +185,7 @@ class TestReindexObject:
         conn.commit()
 
         results = cat.searchResults(portal_type="Document")
-        brain = [b for b in results if b.getRID() == 500][0]
+        brain = next(b for b in results if b.getRID() == 500)
         assert brain.Title == "First Document"  # preserved
         assert brain.review_state == "pending"  # updated
 
@@ -333,6 +330,85 @@ class TestReindexIndex:
 
         count = cat.reindexIndex("nonexistent_key")
         assert count == 0
+
+
+class TestClearFindAndRebuild:
+
+    def test_clears_all_catalog_data(self, pg_conn_with_catalog):
+        conn = pg_conn_with_catalog
+        cat = _make_catalog(conn)
+        _setup_objects(conn, cat)
+
+        # All 3 objects are cataloged
+        assert len(cat.searchResults()) == 3
+
+        count = cat.clearFindAndRebuild()
+        conn.commit()
+        assert count == 3
+
+        # No cataloged objects remain
+        assert len(cat.searchResults()) == 0
+
+    def test_preserves_base_rows(self, pg_conn_with_catalog):
+        conn = pg_conn_with_catalog
+        cat = _make_catalog(conn)
+        _setup_objects(conn, cat)
+
+        cat.clearFindAndRebuild()
+        conn.commit()
+
+        # Base object_state rows still exist (just idx/path cleared)
+        with conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) AS cnt FROM object_state WHERE zoid IN (500, 501, 502)")
+            assert cur.fetchone()["cnt"] == 3
+
+    def test_returns_zero_when_nothing_cataloged(self, pg_conn_with_catalog):
+        conn = pg_conn_with_catalog
+        cat = _make_catalog(conn)
+        assert cat.clearFindAndRebuild() == 0
+
+
+class TestWindowFunctionResultCount:
+
+    def test_limit_returns_actual_count(self, pg_conn_with_catalog):
+        conn = pg_conn_with_catalog
+        cat = _make_catalog(conn)
+        _setup_objects(conn, cat)
+
+        results = cat.searchResults(sort_on="sortable_title", sort_limit=1)
+        assert len(results) == 1
+        assert results.actual_result_count == 3
+
+    def test_limit_with_offset(self, pg_conn_with_catalog):
+        conn = pg_conn_with_catalog
+        cat = _make_catalog(conn)
+        _setup_objects(conn, cat)
+
+        results = cat.searchResults(
+            sort_on="sortable_title", sort_limit=1, b_start=1
+        )
+        assert len(results) == 1
+        assert results.actual_result_count == 3
+
+    def test_no_limit_no_window_function(self, pg_conn_with_catalog):
+        conn = pg_conn_with_catalog
+        cat = _make_catalog(conn)
+        _setup_objects(conn, cat)
+
+        results = cat.searchResults()
+        # actual_result_count == len when no limit
+        assert results.actual_result_count == len(results) == 3
+
+    def test_limit_no_results_returns_zero(self, pg_conn_with_catalog):
+        conn = pg_conn_with_catalog
+        cat = _make_catalog(conn)
+        _setup_objects(conn, cat)
+
+        results = cat.searchResults(
+            portal_type="NonExistent", sort_limit=10
+        )
+        assert len(results) == 0
+        assert results.actual_result_count == 0
 
 
 # ---------------------------------------------------------------------------

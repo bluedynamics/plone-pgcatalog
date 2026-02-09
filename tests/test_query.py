@@ -1,11 +1,9 @@
 """Unit tests for plone.pgcatalog.query — query translation (no PG needed)."""
 
 from datetime import datetime
-from datetime import timezone
-
-from psycopg.types.json import Json
-
+from datetime import UTC
 from plone.pgcatalog.query import build_query
+from psycopg.types.json import Json
 
 
 # ---------------------------------------------------------------------------
@@ -129,23 +127,23 @@ class TestBooleanIndex:
 class TestDateIndex:
 
     def test_exact(self):
-        dt = datetime(2025, 1, 15, 10, 30, 0, tzinfo=timezone.utc)
+        dt = datetime(2025, 1, 15, 10, 30, 0, tzinfo=UTC)
         qr = build_query({"created": dt})
         assert "pgcatalog_to_timestamptz(idx->>'created') =" in qr["where"]
 
     def test_range_min(self):
-        dt = datetime(2025, 1, 1, tzinfo=timezone.utc)
+        dt = datetime(2025, 1, 1, tzinfo=UTC)
         qr = build_query({"modified": {"query": dt, "range": "min"}})
         assert "pgcatalog_to_timestamptz(idx->>'modified') >=" in qr["where"]
 
     def test_range_max(self):
-        dt = datetime(2025, 12, 31, tzinfo=timezone.utc)
+        dt = datetime(2025, 12, 31, tzinfo=UTC)
         qr = build_query({"modified": {"query": dt, "range": "max"}})
         assert "pgcatalog_to_timestamptz(idx->>'modified') <=" in qr["where"]
 
     def test_range_min_max(self):
-        dt_min = datetime(2025, 1, 1, tzinfo=timezone.utc)
-        dt_max = datetime(2025, 12, 31, tzinfo=timezone.utc)
+        dt_min = datetime(2025, 1, 1, tzinfo=UTC)
+        dt_max = datetime(2025, 12, 31, tzinfo=UTC)
         qr = build_query(
             {"modified": {"query": [dt_min, dt_max], "range": "min:max"}}
         )
@@ -158,12 +156,12 @@ class TestDateIndex:
 
         class FakeDateTime:
             def asdatetime(self):
-                return datetime(2025, 6, 15, tzinfo=timezone.utc)
+                return datetime(2025, 6, 15, tzinfo=UTC)
 
         qr = build_query({"created": FakeDateTime()})
         assert "pgcatalog_to_timestamptz" in qr["where"]
-        val = list(qr["params"].values())[0]
-        assert val == datetime(2025, 6, 15, tzinfo=timezone.utc)
+        val = next(iter(qr["params"].values()))
+        assert val == datetime(2025, 6, 15, tzinfo=UTC)
 
 
 # ---------------------------------------------------------------------------
@@ -174,7 +172,7 @@ class TestDateIndex:
 class TestDateRangeIndex:
 
     def test_effective_range(self):
-        now = datetime(2025, 6, 15, tzinfo=timezone.utc)
+        now = datetime(2025, 6, 15, tzinfo=UTC)
         qr = build_query({"effectiveRange": now})
         where = qr["where"]
         assert "idx->>'effective'" in where
@@ -182,7 +180,7 @@ class TestDateRangeIndex:
         assert "IS NULL" in where
 
     def test_effective_range_sql_structure(self):
-        now = datetime(2025, 6, 15, tzinfo=timezone.utc)
+        now = datetime(2025, 6, 15, tzinfo=UTC)
         qr = build_query({"effectiveRange": now})
         # Should have: effective <= now AND (expires >= now OR expires IS NULL)
         where = qr["where"]
@@ -494,8 +492,9 @@ class TestDateCoercion:
 class TestPathValidation:
 
     def test_invalid_path_type_raises(self):
-        import pytest
         from plone.pgcatalog.query import _validate_path
+
+        import pytest
         with pytest.raises(ValueError, match="must be a string"):
             _validate_path(123)
 

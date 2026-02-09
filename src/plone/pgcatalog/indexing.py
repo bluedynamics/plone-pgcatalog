@@ -6,9 +6,8 @@ are independent of the Plone CatalogTool — the CatalogTool subclass calls
 these after extracting values via plone.indexer.
 """
 
-from psycopg.types.json import Json
-
 from plone.pgcatalog.columns import compute_path_info
+from psycopg.types.json import Json
 
 
 # Sentinel for detecting "not provided" vs None

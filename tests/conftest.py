@@ -1,16 +1,13 @@
 """Shared test configuration for plone.pgcatalog tests."""
 
-import os
-
+from plone.pgcatalog.schema import install_catalog_schema
 from psycopg.rows import dict_row
+from psycopg.types.json import Json
 from zodb_pgjsonb.schema import HISTORY_FREE_SCHEMA
 
-from psycopg.types.json import Json
-
+import os
 import psycopg
 import pytest
-
-from plone.pgcatalog.schema import install_catalog_schema
 
 
 # Allow DSN override via environment variable for CI.

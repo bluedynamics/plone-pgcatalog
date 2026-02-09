@@ -1,10 +1,9 @@
 """Tests for plone.pgcatalog.indexing — PG write operations."""
 
-from tests.conftest import insert_object
-
 from plone.pgcatalog.indexing import catalog_object
 from plone.pgcatalog.indexing import reindex_object
 from plone.pgcatalog.indexing import uncatalog_object
+from tests.conftest import insert_object
 
 
 class TestCatalogObject:

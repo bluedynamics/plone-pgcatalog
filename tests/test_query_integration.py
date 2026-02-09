@@ -5,12 +5,10 @@ return correct results.
 """
 
 from datetime import datetime
-from datetime import timezone
-
-from tests.conftest import insert_object
-
+from datetime import UTC
 from plone.pgcatalog.indexing import catalog_object
 from plone.pgcatalog.query import execute_query
+from tests.conftest import insert_object
 
 
 # ---------------------------------------------------------------------------
@@ -236,7 +234,7 @@ class TestDateIndexIntegration:
         conn = pg_conn_with_catalog
         _setup_test_data(conn)
         # Objects modified on or after 2025-07-01
-        dt = datetime(2025, 7, 1, tzinfo=timezone.utc)
+        dt = datetime(2025, 7, 1, tzinfo=UTC)
         zoids = _query_zoids(conn, {"modified": {"query": dt, "range": "min"}})
         assert set(zoids) == {102, 104}  # modified 2025-07-01 and 2025-08-01
 
@@ -244,15 +242,15 @@ class TestDateIndexIntegration:
         conn = pg_conn_with_catalog
         _setup_test_data(conn)
         # Objects modified on or before 2025-04-01
-        dt = datetime(2025, 4, 1, 9, 0, 0, tzinfo=timezone.utc)
+        dt = datetime(2025, 4, 1, 9, 0, 0, tzinfo=UTC)
         zoids = _query_zoids(conn, {"modified": {"query": dt, "range": "max"}})
         assert set(zoids) == {101, 103}  # modified 2025-03-01 and 2025-04-01
 
     def test_range_min_max(self, pg_conn_with_catalog):
         conn = pg_conn_with_catalog
         _setup_test_data(conn)
-        dt_min = datetime(2025, 3, 1, tzinfo=timezone.utc)
-        dt_max = datetime(2025, 6, 30, tzinfo=timezone.utc)
+        dt_min = datetime(2025, 3, 1, tzinfo=UTC)
+        dt_max = datetime(2025, 6, 30, tzinfo=UTC)
         zoids = _query_zoids(
             conn, {"modified": {"query": [dt_min, dt_max], "range": "min:max"}}
         )
@@ -270,7 +268,7 @@ class TestDateRangeIndexIntegration:
         conn = pg_conn_with_catalog
         _setup_test_data(conn)
         # "now" = 2025-06-15: effective <= now AND (expires >= now OR NULL)
-        now = datetime(2025, 6, 15, tzinfo=timezone.utc)
+        now = datetime(2025, 6, 15, tzinfo=UTC)
         zoids = _query_zoids(conn, {"effectiveRange": now})
         # doc1: eff=Jan15 <= Jun15 ✓, exp=Dec31 >= Jun15 ✓ → in
         # doc2: eff=Mar1 <= Jun15 ✓, exp=NULL → in
@@ -283,7 +281,7 @@ class TestDateRangeIndexIntegration:
         conn = pg_conn_with_catalog
         _setup_test_data(conn)
         # "now" = 2027-01-15: after doc1's expires (Dec31 2026)
-        now = datetime(2027, 1, 15, tzinfo=timezone.utc)
+        now = datetime(2027, 1, 15, tzinfo=UTC)
         zoids = _query_zoids(conn, {"effectiveRange": now})
         # doc1: exp=Dec31 2026 < Jan15 2027 → out
         # doc2,folder1,sub-doc: exp=NULL → in

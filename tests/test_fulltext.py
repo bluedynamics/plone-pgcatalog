@@ -3,10 +3,9 @@
 Tests multilingual text search, ranking, and edge cases.
 """
 
-from tests.conftest import insert_object
-
 from plone.pgcatalog.indexing import catalog_object
 from plone.pgcatalog.query import execute_query
+from tests.conftest import insert_object
 
 
 def _query_zoids(conn, query_dict):

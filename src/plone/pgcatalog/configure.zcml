@@ -23,4 +23,10 @@
     <depends name="toolset" />
   </genericsetup:importStep>
 
+  <!-- Register PlonePGCatalogTool as IPGCatalogTool utility -->
+  <utility
+      factory="plone.pgcatalog.catalog.PlonePGCatalogTool"
+      provides="plone.pgcatalog.interfaces.IPGCatalogTool"
+      />
+
 </configure>

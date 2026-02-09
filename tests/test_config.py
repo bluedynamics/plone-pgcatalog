@@ -1,9 +1,10 @@
 """Tests for plone.pgcatalog.config — DSN discovery."""
 
-import os
+from plone.pgcatalog.config import _dsn_from_storage
+from plone.pgcatalog.config import get_dsn
 from unittest import mock
 
-from plone.pgcatalog.config import get_dsn, _dsn_from_storage
+import os
 
 
 class TestGetDsn:

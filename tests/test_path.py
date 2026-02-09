@@ -4,10 +4,9 @@ Tests all path query modes: subtree, exact, children, limited depth,
 navtree, breadcrumbs, navtree_start, multiple paths.
 """
 
-from tests.conftest import insert_object
-
 from plone.pgcatalog.indexing import catalog_object
 from plone.pgcatalog.query import execute_query
+from tests.conftest import insert_object
 
 
 # ---------------------------------------------------------------------------

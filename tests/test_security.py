@@ -5,13 +5,11 @@ secured queries against real PG (integration).
 """
 
 from datetime import datetime
-from datetime import timezone
-
-from tests.conftest import insert_object
-
+from datetime import UTC
 from plone.pgcatalog.indexing import catalog_object
 from plone.pgcatalog.query import apply_security_filters
 from plone.pgcatalog.query import execute_query
+from tests.conftest import insert_object
 
 
 # ---------------------------------------------------------------------------
@@ -43,7 +41,7 @@ class TestApplySecurityFilters:
         assert isinstance(result["effectiveRange"], datetime)
 
     def test_does_not_overwrite_existing_effective_range(self):
-        now = datetime(2025, 6, 15, tzinfo=timezone.utc)
+        now = datetime(2025, 6, 15, tzinfo=UTC)
         query = {"portal_type": "Document", "effectiveRange": now}
         result = apply_security_filters(query, roles=["Anonymous"])
         assert result["effectiveRange"] == now
@@ -219,7 +217,7 @@ class TestEffectiveRangeIntegration:
     def test_effective_range_filters_future(self, pg_conn_with_catalog):
         conn = pg_conn_with_catalog
         _setup_security_data(conn)
-        now = datetime(2025, 6, 15, tzinfo=timezone.utc)
+        now = datetime(2025, 6, 15, tzinfo=UTC)
         query = apply_security_filters(
             {"portal_type": "Document"},
             roles=["Anonymous"],
@@ -249,7 +247,7 @@ class TestEffectiveRangeIntegration:
         """Objects with expires=None never expire."""
         conn = pg_conn_with_catalog
         _setup_security_data(conn)
-        far_future = datetime(2099, 1, 1, tzinfo=timezone.utc)
+        far_future = datetime(2099, 1, 1, tzinfo=UTC)
         query = apply_security_filters(
             {"portal_type": "Document"},
             roles=["Anonymous"],
@@ -266,7 +264,7 @@ class TestEffectiveRangeIntegration:
         """Both security AND effectiveRange applied together."""
         conn = pg_conn_with_catalog
         _setup_security_data(conn)
-        now = datetime(2025, 6, 15, tzinfo=timezone.utc)
+        now = datetime(2025, 6, 15, tzinfo=UTC)
         # Authenticated user
         query = apply_security_filters(
             {"portal_type": "Document"},
