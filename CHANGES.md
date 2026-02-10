@@ -32,6 +32,15 @@
   types not covered by `META_TYPE_MAP`. Wired into `query.py` (query +
   sort fallback) and `catalog.py` (extraction fallback).
 
+- **DateRecurringIndex support**: Built-in translator for
+  `Products.DateRecurringIndex` (Plone's `start` / `end` event indexes).
+  Stores base date + RFC 5545 RRULE string in idx JSONB; queries use
+  [rrule_plpgsql](https://github.com/sirrodgepodge/rrule_plpgsql) (pure
+  PL/pgSQL, no C extensions) for recurrence expansion at query time.
+  Translators are auto-discovered from ZCatalog at startup -- no manual
+  configuration needed. Container-friendly: works on standard `postgres:17`
+  images without additional extensions.
+
 - **DDL via `get_schema_sql()`**: `CatalogStateProcessor` now provides DDL
   through the `get_schema_sql()` method, applied by `PGJsonbStorage` using
   its own connection — no REPEATABLE READ lock conflicts during startup.

@@ -100,6 +100,17 @@ EXPECTED_INDEXES = [
 ]
 
 
+def _load_rrule_sql():
+    """Load the vendored rrule_plpgsql SQL from the package data file."""
+    import pathlib
+
+    sql_path = pathlib.Path(__file__).parent / "rrule_schema.sql"
+    return sql_path.read_text()
+
+
+RRULE_FUNCTIONS = _load_rrule_sql()
+
+
 def install_catalog_schema(conn):
     """Extend object_state with catalog columns and indexes.
 
@@ -112,3 +123,4 @@ def install_catalog_schema(conn):
     conn.execute(CATALOG_COLUMNS)
     conn.execute(CATALOG_FUNCTIONS)
     conn.execute(CATALOG_INDEXES)
+    conn.execute(RRULE_FUNCTIONS)

@@ -228,12 +228,14 @@ class CatalogStateProcessor:
 
         Applied by PGJsonbStorage.register_state_processor() using
         the storage's own connection — no REPEATABLE READ lock conflicts.
+        Includes rrule_plpgsql functions for DateRecurringIndex support.
         """
         from plone.pgcatalog.schema import CATALOG_COLUMNS
         from plone.pgcatalog.schema import CATALOG_FUNCTIONS
         from plone.pgcatalog.schema import CATALOG_INDEXES
+        from plone.pgcatalog.schema import RRULE_FUNCTIONS
 
-        return CATALOG_COLUMNS + CATALOG_FUNCTIONS + CATALOG_INDEXES
+        return CATALOG_COLUMNS + CATALOG_FUNCTIONS + CATALOG_INDEXES + RRULE_FUNCTIONS
 
     def process(self, zoid, class_mod, class_name, state):
         # Look up pending data from the thread-local store (set by
@@ -304,6 +306,41 @@ def register_catalog_processor(event):
         log.debug("Storage %s does not support state processors", storage)
 
 
+def _register_dri_translators(catalog):
+    """Discover DateRecurringIndex instances and register IPGIndexTranslator utilities.
+
+    Called during startup after sync_from_catalog.  Reads per-index config
+    (recurdef_attr, until_attr) from the ZCatalog index objects and registers
+    a DateRecurringIndexTranslator utility for each.
+    """
+    try:
+        from plone.pgcatalog.dri import DateRecurringIndexTranslator
+        from plone.pgcatalog.interfaces import IPGIndexTranslator
+        from zope.component import provideUtility
+    except ImportError:
+        return  # missing dependencies — skip
+
+    try:
+        indexes = catalog._catalog.indexes
+    except AttributeError:
+        return
+
+    for name, index_obj in indexes.items():
+        if getattr(index_obj, "meta_type", None) != "DateRecurringIndex":
+            continue
+        translator = DateRecurringIndexTranslator(
+            date_attr=name,
+            recurdef_attr=getattr(index_obj, "attr_recurdef", ""),
+            until_attr=getattr(index_obj, "attr_until", ""),
+        )
+        provideUtility(translator, IPGIndexTranslator, name=name)
+        log.info(
+            "Registered DRI translator for index %r (recurdef=%r)",
+            name,
+            translator.recurdef_attr,
+        )
+
+
 def _sync_registry_from_db(db):
     """Populate the IndexRegistry from portal_catalog at startup.
 
@@ -323,6 +360,7 @@ def _sync_registry_from_db(db):
             if catalog is not None and hasattr(catalog, "_catalog"):
                 try:
                     registry.sync_from_catalog(catalog)
+                    _register_dri_translators(catalog)
                     log.info(
                         "IndexRegistry synced from %s/portal_catalog (%d indexes, %d metadata)",
                         getattr(obj, "getId", lambda: "?")(),

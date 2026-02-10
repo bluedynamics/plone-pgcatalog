@@ -54,3 +54,40 @@ Register via ZCML:
     provides="plone.pgcatalog.interfaces.IPGIndexTranslator"
     name="MyCustomIndex" />
 ```
+
+### DateRecurringIndex (recurring events)
+
+`Products.DateRecurringIndex` is supported out of the box. Plone uses it for the `start` and `end` indexes on event content types (configured with `recurdef="recurrence"`).
+
+At startup, plone.pgcatalog discovers `DateRecurringIndex` instances from the ZCatalog and registers `DateRecurringIndexTranslator` utilities automatically. No manual configuration needed.
+
+**How it works:**
+
+- **Storage**: the base date and RFC 5545 RRULE string are stored in the `idx` JSONB column:
+  ```json
+  {
+    "start": "2025-01-06T10:00:00+00:00",
+    "start_recurrence": "FREQ=WEEKLY;BYDAY=MO;COUNT=52"
+  }
+  ```
+- **Queries**: recurrence expansion happens at query time using [rrule_plpgsql](https://github.com/sirrodgepodge/rrule_plpgsql), a pure PL/pgSQL implementation of RFC 5545 RRULE. No C extensions required -- works on any PostgreSQL 12+ (including standard `postgres:17` Docker images).
+- **Non-recurring events**: fall back to simple `timestamptz` comparison (same as `DateIndex`).
+- **Sorting**: by base date (`sort_on="start"` sorts by the first occurrence).
+
+**Query examples** (same syntax as ZCatalog):
+
+```python
+# Events happening in March 2025
+catalog(start={
+    "query": [DateTime("2025-03-01"), DateTime("2025-03-31")],
+    "range": "min:max",
+})
+
+# Events starting on or after today
+catalog(start={"query": DateTime(), "range": "min"})
+
+# Events that started on or before a date
+catalog(start={"query": DateTime("2025-06-01"), "range": "max"})
+```
+
+The rrule_plpgsql functions are installed automatically as part of the catalog schema setup (via `CatalogStateProcessor.get_schema_sql()`).
