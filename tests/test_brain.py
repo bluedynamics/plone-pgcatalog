@@ -8,12 +8,11 @@ from plone.pgcatalog.brain import PGCatalogBrain
 # Sample rows
 # ---------------------------------------------------------------------------
 
-def _make_row(zoid=1, path="/plone/doc", idx=None, state=None):
+def _make_row(zoid=1, path="/plone/doc", idx=None):
     return {
         "zoid": zoid,
         "path": path,
         "idx": idx or {"portal_type": "Document", "Title": "Hello", "is_folderish": False},
-        "state": state or {"title": "Hello", "description": "A doc"},
     }
 
 
@@ -114,25 +113,9 @@ class TestBrainAttributeAccess:
         brain = PGCatalogBrain(_make_row(idx={"expires": None}))
         assert brain.expires is None
 
-    def test_state_fallback(self):
-        """Attributes not in idx fall back to state JSONB."""
-        brain = PGCatalogBrain(_make_row(
-            idx={"portal_type": "Document"},
-            state={"description": "A document"},
-        ))
-        assert brain.description == "A document"
-
-    def test_idx_takes_precedence_over_state(self):
-        """idx values override state values of the same name."""
-        brain = PGCatalogBrain(_make_row(
-            idx={"Title": "Computed Title"},
-            state={"Title": "Raw Title"},
-        ))
-        assert brain.Title == "Computed Title"
-
     def test_attribute_error_for_unknown(self):
         import pytest
-        brain = PGCatalogBrain(_make_row(idx={}, state={}))
+        brain = PGCatalogBrain(_make_row(idx={}))
         with pytest.raises(AttributeError):
             _ = brain.nonexistent_attribute
 
@@ -155,17 +138,13 @@ class TestBrainContains:
         brain = PGCatalogBrain(_make_row(idx={"portal_type": "Document"}))
         assert "portal_type" in brain
 
-    def test_contains_state_key(self):
-        brain = PGCatalogBrain(_make_row(idx={}, state={"description": "hi"}))
-        assert "description" in brain
-
     def test_contains_special_key(self):
         brain = PGCatalogBrain(_make_row())
         assert "path" in brain
         assert "zoid" in brain
 
     def test_not_contains_unknown(self):
-        brain = PGCatalogBrain(_make_row(idx={}, state={}))
+        brain = PGCatalogBrain(_make_row(idx={}))
         assert "nonexistent" not in brain
 
     def test_has_key(self):
@@ -242,3 +221,154 @@ class TestCatalogSearchResults:
         assert len(results) == 0
         assert results.actual_result_count == 0
         assert list(results) == []
+
+
+# ---------------------------------------------------------------------------
+# Lazy idx batch loading
+# ---------------------------------------------------------------------------
+
+
+def _make_lazy_row(zoid=1, path="/plone/doc"):
+    """Row WITHOUT idx — simulates lazy mode SELECT."""
+    return {"zoid": zoid, "path": path}
+
+
+class _MockPool:
+    """Mock pool that records getconn/putconn calls and returns a mock conn."""
+
+    def __init__(self, idx_data):
+        """idx_data: dict mapping zoid → idx dict."""
+        self._idx_data = idx_data
+        self.getconn_count = 0
+        self.putconn_count = 0
+
+    def getconn(self):
+        self.getconn_count += 1
+        return _MockConn(self._idx_data)
+
+    def putconn(self, conn):
+        self.putconn_count += 1
+
+
+class _MockConn:
+    def __init__(self, idx_data):
+        self._idx_data = idx_data
+
+    def cursor(self):
+        return _MockCursor(self._idx_data)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        pass
+
+
+class _MockCursor:
+    def __init__(self, idx_data):
+        self._idx_data = idx_data
+        self._rows = []
+
+    def execute(self, sql, params=None, **kwargs):
+        zoids = params.get("zoids", []) if params else []
+        self._rows = [
+            {"zoid": z, "idx": self._idx_data[z]}
+            for z in zoids
+            if z in self._idx_data
+        ]
+
+    def __iter__(self):
+        return iter(self._rows)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        pass
+
+
+class TestLazyIdxLoading:
+
+    def _make_lazy_results(self, count=3):
+        """Create brains without idx, wired to a mock pool."""
+        idx_data = {
+            i: {"portal_type": "Document", "Title": f"Doc {i}"}
+            for i in range(count)
+        }
+        pool = _MockPool(idx_data)
+        brains = [
+            PGCatalogBrain(_make_lazy_row(zoid=i, path=f"/plone/doc{i}"))
+            for i in range(count)
+        ]
+        results = CatalogSearchResults(brains, pool=pool)
+        for brain in brains:
+            brain._result_set = results
+        return results, pool
+
+    def test_lazy_idx_not_loaded_until_metadata_access(self):
+        results, pool = self._make_lazy_results(3)
+        assert not results._idx_loaded
+        assert pool.getconn_count == 0
+
+    def test_len_does_not_trigger_idx_load(self):
+        results, pool = self._make_lazy_results(3)
+        assert len(results) == 3
+        assert not results._idx_loaded
+        assert pool.getconn_count == 0
+
+    def test_getPath_does_not_trigger_idx_load(self):
+        results, pool = self._make_lazy_results(3)
+        assert results[0].getPath() == "/plone/doc0"
+        assert not results._idx_loaded
+        assert pool.getconn_count == 0
+
+    def test_getRID_does_not_trigger_idx_load(self):
+        results, pool = self._make_lazy_results(3)
+        assert results[0].getRID() == 0
+        assert not results._idx_loaded
+
+    def test_lazy_idx_batch_loads_all_at_once(self):
+        results, pool = self._make_lazy_results(3)
+        # Access metadata on one brain
+        title = results[0].Title
+        assert title == "Doc 0"
+        # Batch loaded all brains
+        assert results._idx_loaded
+        assert pool.getconn_count == 1
+        assert pool.putconn_count == 1
+        # Other brains also have idx now
+        assert results[1].Title == "Doc 1"
+        assert results[2].Title == "Doc 2"
+        # No additional pool calls
+        assert pool.getconn_count == 1
+
+    def test_contains_triggers_idx_load(self):
+        results, pool = self._make_lazy_results(3)
+        assert "portal_type" in results[0]
+        assert results._idx_loaded
+
+    def test_attribute_error_after_lazy_load(self):
+        import pytest
+
+        results, pool = self._make_lazy_results(1)
+        with pytest.raises(AttributeError):
+            _ = results[0].nonexistent
+
+    def test_slice_preserves_lazy_loading(self):
+        results, pool = self._make_lazy_results(5)
+        sliced = results[1:3]
+        assert isinstance(sliced, CatalogSearchResults)
+        assert not sliced._idx_loaded
+        # Access metadata on sliced brain triggers batch load for slice
+        assert sliced[0].Title == "Doc 1"
+        assert sliced._idx_loaded
+        # Original result set NOT loaded (sliced brains rewired)
+        assert not results._idx_loaded
+
+    def test_eager_mode_still_works(self):
+        """No pool → eager mode, idx in row, no lazy loading."""
+        row = _make_row(zoid=1, path="/plone/doc", idx={"Title": "Hello"})
+        brain = PGCatalogBrain(row)
+        results = CatalogSearchResults([brain])
+        assert results._idx_loaded  # True because no pool
+        assert brain.Title == "Hello"

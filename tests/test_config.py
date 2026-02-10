@@ -1,8 +1,10 @@
-"""Tests for plone.pgcatalog.config — pool discovery and DSN fallback."""
+"""Tests for plone.pgcatalog.config — pool discovery, DSN fallback, connection reuse."""
 
 from plone.pgcatalog.config import _pool_from_storage
 from plone.pgcatalog.config import get_dsn
 from plone.pgcatalog.config import get_pool
+from plone.pgcatalog.config import get_request_connection
+from plone.pgcatalog.config import release_request_connection
 from unittest import mock
 
 import os
@@ -88,3 +90,105 @@ class TestGetDsn:
         with mock.patch.dict(os.environ, {}, clear=True):
             os.environ.pop("PGCATALOG_DSN", None)
             assert get_dsn() is None
+
+
+class TestRequestConnection:
+    """Request-scoped connection reuse (Phase 4)."""
+
+    def setup_method(self):
+        """Clean thread-local state before each test."""
+        config_mod._local.pgcat_conn = None
+        config_mod._local.pgcat_pool = None
+
+    def teardown_method(self):
+        """Clean thread-local state after each test."""
+        config_mod._local.pgcat_conn = None
+        config_mod._local.pgcat_pool = None
+
+    def test_creates_conn_on_first_call(self):
+        pool = mock.Mock()
+        conn = mock.Mock()
+        pool.getconn.return_value = conn
+
+        result = get_request_connection(pool)
+        assert result is conn
+        pool.getconn.assert_called_once()
+
+    def test_reuses_conn_on_second_call(self):
+        pool = mock.Mock()
+        conn = mock.Mock()
+        conn.closed = False
+        pool.getconn.return_value = conn
+
+        first = get_request_connection(pool)
+        second = get_request_connection(pool)
+        assert first is second
+        # Only one getconn call
+        pool.getconn.assert_called_once()
+
+    def test_release_returns_conn_to_pool(self):
+        pool = mock.Mock()
+        conn = mock.Mock()
+        conn.closed = False
+        pool.getconn.return_value = conn
+
+        get_request_connection(pool)
+        release_request_connection()
+
+        pool.putconn.assert_called_once_with(conn)
+
+    def test_release_clears_thread_local(self):
+        pool = mock.Mock()
+        conn = mock.Mock()
+        conn.closed = False
+        pool.getconn.return_value = conn
+
+        get_request_connection(pool)
+        release_request_connection()
+
+        assert getattr(config_mod._local, "pgcat_conn", None) is None
+        assert getattr(config_mod._local, "pgcat_pool", None) is None
+
+    def test_release_is_noop_when_no_conn(self):
+        # Should not raise
+        release_request_connection()
+
+    def test_new_conn_after_release(self):
+        pool = mock.Mock()
+        conn1 = mock.Mock()
+        conn1.closed = False
+        conn2 = mock.Mock()
+        conn2.closed = False
+        pool.getconn.side_effect = [conn1, conn2]
+
+        first = get_request_connection(pool)
+        release_request_connection()
+        second = get_request_connection(pool)
+
+        assert first is conn1
+        assert second is conn2
+        assert pool.getconn.call_count == 2
+
+    def test_creates_new_conn_if_closed(self):
+        pool = mock.Mock()
+        conn1 = mock.Mock()
+        conn1.closed = True
+        conn2 = mock.Mock()
+        conn2.closed = False
+        pool.getconn.side_effect = [conn1, conn2]
+
+        get_request_connection(pool)
+        # conn1 is closed, should get new one
+        result = get_request_connection(pool)
+        assert result is conn2
+
+
+class TestOrjsonLoader:
+    """Phase 1: orjson JSONB loader."""
+
+    def test_orjson_is_installed(self):
+        import orjson
+
+        # orjson.loads returns bytes → same Python types as json.loads
+        result = orjson.loads(b'{"key": "value"}')
+        assert result == {"key": "value"}

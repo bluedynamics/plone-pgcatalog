@@ -11,12 +11,103 @@ index data atomically alongside the object state.
 
 import logging
 import os
+import threading
 
 
 log = logging.getLogger(__name__)
 
 
+def _install_orjson_loader():
+    """Register orjson as psycopg's JSONB deserializer if available."""
+    try:
+        import orjson
+        from psycopg.types.json import set_json_loads
+
+        set_json_loads(orjson.loads)
+    except ImportError:
+        pass
+
+
+_install_orjson_loader()
+
+
 _fallback_pool = None
+
+# Thread-local store for pending catalog data.
+# Keyed by zoid (int) → dict (catalog data) or None (uncatalog sentinel).
+# Using thread-local avoids CMFEditions version-copy duplication:
+# the annotation is NOT stored on the object's __dict__ (which gets
+# cloned), but in this thread-local registry that only the original
+# zoid is registered in.
+_local = threading.local()
+
+
+def _get_pending():
+    """Return the thread-local pending catalog data dict."""
+    try:
+        return _local.pending
+    except AttributeError:
+        _local.pending = {}
+        return _local.pending
+
+
+def set_pending(zoid, data):
+    """Register pending catalog data for a zoid.
+
+    Args:
+        zoid: ZODB OID as int
+        data: dict with catalog columns, or None for uncatalog sentinel
+    """
+    _get_pending()[zoid] = data
+
+
+def pop_pending(zoid):
+    """Pop pending catalog data for a zoid, or return sentinel if absent.
+
+    Returns:
+        dict (catalog data), None (uncatalog), or _MISSING (no data).
+    """
+    return _get_pending().pop(zoid, _MISSING)
+
+
+_MISSING = object()  # Sentinel for "no pending data"
+
+
+def get_request_connection(pool):
+    """Get or create a request-scoped connection from the pool.
+
+    Reuses the same connection for the duration of a Zope request,
+    avoiding pool lock overhead for pages with multiple catalog queries.
+    The connection is returned to the pool by ``release_request_connection()``,
+    which is called by the IPubEnd subscriber at request end.
+
+    Falls back to normal pool getconn/putconn when no request-scoped
+    connection is active (e.g. in tests or background tasks).
+    """
+    conn = getattr(_local, "pgcat_conn", None)
+    if conn is not None and not conn.closed:
+        return conn
+    conn = pool.getconn()
+    _local.pgcat_conn = conn
+    _local.pgcat_pool = pool
+    return conn
+
+
+def release_request_connection(event=None):
+    """Return the request-scoped connection to the pool.
+
+    Called by the IPubEnd subscriber at the end of each Zope request.
+    Safe to call when no request-scoped connection is active (no-op).
+    """
+    conn = getattr(_local, "pgcat_conn", None)
+    pool = getattr(_local, "pgcat_pool", None)
+    if conn is not None and pool is not None:
+        try:
+            pool.putconn(conn)
+        except Exception:
+            pass  # pool closed or conn already returned
+    _local.pgcat_conn = None
+    _local.pgcat_pool = None
 
 
 def get_pool(context=None):
@@ -145,11 +236,17 @@ class CatalogStateProcessor:
         return CATALOG_COLUMNS + CATALOG_FUNCTIONS + CATALOG_INDEXES
 
     def process(self, zoid, class_mod, class_name, state):
-        if not isinstance(state, dict) or ANNOTATION_KEY not in state:
-            return None
+        # Look up pending data from the thread-local store (set by
+        # catalog_object / uncatalog_object via set_pending).
+        pending = pop_pending(zoid)
+        if pending is _MISSING:
+            # Also check state dict for backward compat / direct use
+            if isinstance(state, dict) and ANNOTATION_KEY in state:
+                pending = state.pop(ANNOTATION_KEY)
+            else:
+                return None
 
-        log.info("CatalogStateProcessor.process: zoid=%d class=%s.%s — found annotation", zoid, class_mod, class_name)
-        pending = state.pop(ANNOTATION_KEY)
+        log.debug("CatalogStateProcessor.process: zoid=%d class=%s.%s", zoid, class_mod, class_name)
 
         if pending is None:
             # Uncatalog sentinel: NULL all catalog columns

@@ -35,4 +35,10 @@
       handler=".config.register_catalog_processor"
       />
 
+  <!-- Release request-scoped PG connection at end of each request -->
+  <subscriber
+      for="ZPublisher.interfaces.IPubEnd"
+      handler=".config.release_request_connection"
+      />
+
 </configure>

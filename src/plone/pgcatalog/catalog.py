@@ -52,9 +52,13 @@ def _path_value_to_string(value):
         return "/" + "/".join(str(p) for p in value)
     return str(value)
 
-# Fixed set of columns for catalog queries (never user-supplied)
-_SELECT_COLS = "zoid, path, idx, state"
-_SELECT_COLS_COUNTED = "zoid, path, idx, state, COUNT(*) OVER() AS _total_count"
+# Fixed set of columns for catalog queries (never user-supplied).
+# Lazy mode: only zoid + path; idx fetched on demand via batch load.
+# Eager mode: includes idx (backward compat for direct _run_search calls).
+_SELECT_COLS_LAZY = "zoid, path"
+_SELECT_COLS_LAZY_COUNTED = "zoid, path, COUNT(*) OVER() AS _total_count"
+_SELECT_COLS_EAGER = "zoid, path, idx"
+_SELECT_COLS_EAGER_COUNTED = "zoid, path, idx, COUNT(*) OVER() AS _total_count"
 
 
 # ---------------------------------------------------------------------------
@@ -62,16 +66,24 @@ _SELECT_COLS_COUNTED = "zoid, path, idx, state, COUNT(*) OVER() AS _total_count"
 # ---------------------------------------------------------------------------
 
 
-def _run_search(conn, query, catalog=None):
+def _run_search(conn, query, catalog=None, pool=None):
     """Execute a prepared query dict and return CatalogSearchResults.
 
     Builds the SQL once and uses a ``COUNT(*) OVER()`` window function
     when a LIMIT is present so only *one* query is executed.
 
+    When ``pool`` is provided, uses **lazy mode**: only ``zoid`` and ``path``
+    are selected.  The ``idx`` JSONB is fetched on demand when brain metadata
+    is first accessed (via ``CatalogSearchResults._load_idx_batch()``).
+
+    Without ``pool``, uses **eager mode**: ``idx`` is included in the SELECT
+    for backward compatibility with tests and direct callers.
+
     Args:
         conn: psycopg connection (dict_row factory)
         query: ZCatalog-style query dict (security already applied if needed)
         catalog: reference for brain.getObject() traversal (optional)
+        pool: connection pool for lazy idx batch loading (optional)
 
     Returns:
         CatalogSearchResults with PGCatalogBrain instances
@@ -79,7 +91,10 @@ def _run_search(conn, query, catalog=None):
     qr = build_query(query)
 
     has_limit = qr["limit"] is not None
-    cols = _SELECT_COLS_COUNTED if has_limit else _SELECT_COLS
+    if pool is not None:
+        cols = _SELECT_COLS_LAZY_COUNTED if has_limit else _SELECT_COLS_LAZY
+    else:
+        cols = _SELECT_COLS_EAGER_COUNTED if has_limit else _SELECT_COLS_EAGER
 
     sql = f"SELECT {cols} FROM object_state WHERE {qr['where']}"
     if qr["order_by"]:
@@ -90,7 +105,7 @@ def _run_search(conn, query, catalog=None):
         sql += f" OFFSET {qr['offset']}"
 
     with conn.cursor() as cur:
-        cur.execute(sql, qr["params"])
+        cur.execute(sql, qr["params"], prepare=True)
         rows = cur.fetchall()
 
     actual_count = None
@@ -104,7 +119,14 @@ def _run_search(conn, query, catalog=None):
         actual_count = 0
 
     brains = [PGCatalogBrain(row, catalog=catalog) for row in rows]
-    return CatalogSearchResults(brains, actual_result_count=actual_count)
+    results = CatalogSearchResults(brains, actual_result_count=actual_count, pool=pool)
+
+    # Wire brains to result set for lazy loading
+    if pool is not None:
+        for brain in brains:
+            brain._result_set = results
+
+    return results
 
 
 def refresh_catalog(conn):
@@ -201,9 +223,26 @@ class PlonePGCatalogTool(CatalogTool):
 
     @contextmanager
     def _pg_connection(self):
-        """Borrow a connection from the storage's connection pool."""
+        """Get a connection, preferring request-scoped reuse.
+
+        If a request-scoped connection exists (created by a prior call
+        in the same Zope request), reuses it without pool overhead.
+        Otherwise, borrows from the pool and returns it at context exit.
+
+        ``searchResults()`` calls ``get_request_connection()`` to
+        establish the thread-local conn; subsequent ``_pg_connection()``
+        calls within the same request find and reuse it.
+        """
+        from plone.pgcatalog.config import _local
         from plone.pgcatalog.config import get_pool
 
+        # Check for request-scoped connection (set by searchResults)
+        existing = getattr(_local, "pgcat_conn", None)
+        if existing is not None and not existing.closed:
+            yield existing
+            return
+
+        # Fallback: borrow from pool (tests, maintenance, no request)
         pool = get_pool(self)
         conn = pool.getconn()
         try:
@@ -214,14 +253,19 @@ class PlonePGCatalogTool(CatalogTool):
     # -- Write path (PG annotation + parent BTrees) --------------------------
 
     def _set_pg_annotation(self, obj, uid=None):
-        """Set ``_pgcatalog_pending`` annotation on a persistent object.
+        """Register pending catalog data for a persistent object.
+
+        Stores catalog data in a thread-local registry (not on the
+        object itself) to avoid CMFEditions version copies inheriting
+        the annotation.  The CatalogStateProcessor reads from the
+        same registry during tpc_vote.
 
         Must be called DURING the request (before ZODB serializes the
         object), not from the IndexQueue's before_commit hook.
 
-        Returns True if the annotation was set, False otherwise.
+        Returns True if data was registered, False otherwise.
         """
-        from plone.pgcatalog.config import ANNOTATION_KEY
+        from plone.pgcatalog.config import set_pending
 
         if uid is None:
             try:
@@ -245,11 +289,13 @@ class PlonePGCatalogTool(CatalogTool):
         idx["path_parent"] = parent_path
         idx["path_depth"] = path_depth
 
-        setattr(obj, ANNOTATION_KEY, {
+        set_pending(zoid, {
             "path": uid,
             "idx": idx,
             "searchable_text": searchable_text,
         })
+        # Mark the object as dirty so ZODB stores it (triggering the processor)
+        obj._p_changed = True
         log.debug("_set_pg_annotation: SET on %s zoid=%d path=%s", type(obj).__name__, zoid, uid)
         return True
 
@@ -286,10 +332,10 @@ class PlonePGCatalogTool(CatalogTool):
     def uncatalog_object(self, uid):
         """Remove catalog data from both PG and BTrees.
 
-        Sets a ``None`` sentinel annotation so the state processor
-        NULLs all catalog columns during the ZODB commit.
+        Registers a ``None`` sentinel in the pending store so the
+        state processor NULLs all catalog columns during ZODB commit.
         """
-        from plone.pgcatalog.config import ANNOTATION_KEY
+        from plone.pgcatalog.config import set_pending
 
         try:
             obj = self.unrestrictedTraverse(uid, None)
@@ -297,7 +343,10 @@ class PlonePGCatalogTool(CatalogTool):
             obj = None
 
         if obj is not None and getattr(obj, "_p_oid", None) is not None:
-            setattr(obj, ANNOTATION_KEY, None)
+            from ZODB.utils import u64
+
+            set_pending(u64(obj._p_oid), None)
+            obj._p_changed = True
         else:
             try:
                 with self._pg_connection() as conn:
@@ -341,8 +390,13 @@ class PlonePGCatalogTool(CatalogTool):
             query, roles, show_inactive=show_inactive
         )
 
-        with self._pg_connection() as conn:
-            return _run_search(conn, query, catalog=self)
+        from plone.pgcatalog.config import get_pool
+        from plone.pgcatalog.config import get_request_connection
+
+        pool = get_pool(self)
+        # Establish request-scoped connection (reused by subsequent calls)
+        conn = get_request_connection(pool)
+        return _run_search(conn, query, catalog=self, pool=pool)
 
     __call__ = searchResults
 
@@ -352,8 +406,12 @@ class PlonePGCatalogTool(CatalogTool):
             REQUEST = {}
         REQUEST.update(kw)
 
-        with self._pg_connection() as conn:
-            return _run_search(conn, REQUEST, catalog=self)
+        from plone.pgcatalog.config import get_pool
+        from plone.pgcatalog.config import get_request_connection
+
+        pool = get_pool(self)
+        conn = get_request_connection(pool)
+        return _run_search(conn, REQUEST, catalog=self, pool=pool)
 
     # -- Maintenance ---------------------------------------------------------
 

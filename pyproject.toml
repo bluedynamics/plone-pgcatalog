@@ -24,6 +24,7 @@ classifiers = [
 ]
 dependencies = [
     "psycopg[binary,pool]>=3.1",
+    "orjson>=3.9",
     "Products.ZCatalog",
     "Products.CMFPlone",
     "plone.indexer",

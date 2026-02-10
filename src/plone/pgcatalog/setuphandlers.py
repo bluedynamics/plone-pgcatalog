@@ -59,7 +59,12 @@ def _ensure_catalog_indexes(site):
         "profile-plone.app.event:default",
     ]:
         try:
-            setup.runImportStepFromProfile(profile_id, "catalog")
+            # run_dependencies=False: skip componentregistry → toolset
+            # cascade which would replace our PlonePGCatalogTool and
+            # purge IFactory registrations for content types.
+            setup.runImportStepFromProfile(
+                profile_id, "catalog", run_dependencies=False,
+            )
             log.info("Re-applied catalog config from %s", profile_id)
         except Exception:
             log.debug(
