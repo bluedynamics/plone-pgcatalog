@@ -50,8 +50,10 @@ _PLONE_DEFAULT_INDEXES = [
     ("SearchableText", IndexType.TEXT, None),
     ("Title", IndexType.TEXT, "Title"),
     ("Description", IndexType.TEXT, "Description"),
-    # ExtendedPathIndex (idx_key=None)
+    # ExtendedPathIndex (idx_key=None for built-in "path")
     ("path", IndexType.PATH, None),
+    # Additional ExtendedPathIndex (idx_key=name, stored in idx JSONB)
+    ("tgpath", IndexType.PATH, "tgpath"),
     # GopipIndex
     ("getObjPositionInParent", IndexType.GOPIP, "getObjPositionInParent"),
 ]

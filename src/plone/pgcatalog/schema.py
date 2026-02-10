@@ -8,6 +8,8 @@ only extends it.
 
 CATALOG_COLUMNS = """\
 -- Catalog columns on object_state (plone.pgcatalog extension)
+-- path: dedicated column for brain construction (SELECT zoid, path)
+-- parent_path/path_depth: legacy columns, path queries use idx JSONB
 ALTER TABLE object_state ADD COLUMN IF NOT EXISTS path TEXT;
 ALTER TABLE object_state ADD COLUMN IF NOT EXISTS parent_path TEXT;
 ALTER TABLE object_state ADD COLUMN IF NOT EXISTS path_depth INTEGER;
@@ -27,19 +29,23 @@ $$ LANGUAGE sql IMMUTABLE STRICT;
 """
 
 CATALOG_INDEXES = """\
--- Path indexes (B-tree)
+-- Path column index (for brain SELECT; queries use idx JSONB below)
 CREATE INDEX IF NOT EXISTS idx_os_path
     ON object_state (path) WHERE path IS NOT NULL;
-CREATE INDEX IF NOT EXISTS idx_os_path_pattern
-    ON object_state USING btree (path text_pattern_ops) WHERE path IS NOT NULL;
-CREATE INDEX IF NOT EXISTS idx_os_parent_path
-    ON object_state (parent_path) WHERE parent_path IS NOT NULL;
-CREATE INDEX IF NOT EXISTS idx_os_path_depth
-    ON object_state (path_depth) WHERE path_depth IS NOT NULL;
 
 -- GIN index on idx JSONB (default jsonb_ops for ?| support)
 CREATE INDEX IF NOT EXISTS idx_os_catalog
     ON object_state USING gin (idx) WHERE idx IS NOT NULL;
+
+-- Path expression indexes on idx JSONB (unified path query support)
+CREATE INDEX IF NOT EXISTS idx_os_cat_path
+    ON object_state ((idx->>'path')) WHERE idx IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_os_cat_path_pattern
+    ON object_state USING btree ((idx->>'path') text_pattern_ops) WHERE idx IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_os_cat_path_parent
+    ON object_state ((idx->>'path_parent')) WHERE idx IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_os_cat_path_depth
+    ON object_state (((idx->>'path_depth')::integer)) WHERE idx IS NOT NULL;
 
 -- Expression indexes for date range queries (B-tree via immutable wrapper)
 CREATE INDEX IF NOT EXISTS idx_os_cat_modified
@@ -78,10 +84,11 @@ EXPECTED_COLUMNS = {
 # All expected catalog indexes
 EXPECTED_INDEXES = [
     "idx_os_path",
-    "idx_os_path_pattern",
-    "idx_os_parent_path",
-    "idx_os_path_depth",
     "idx_os_catalog",
+    "idx_os_cat_path",
+    "idx_os_cat_path_pattern",
+    "idx_os_cat_path_parent",
+    "idx_os_cat_path_depth",
     "idx_os_cat_modified",
     "idx_os_cat_created",
     "idx_os_cat_effective",

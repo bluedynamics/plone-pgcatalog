@@ -410,24 +410,33 @@ class _QueryBuilder:
         for path in paths:
             _validate_path(path)
 
+        # All path indexes (built-in "path" and additional like "tgpath")
+        # store their data in idx JSONB and query via expression indexes.
+        key = name if idx_key is None else idx_key
+        expr_path = f"idx->>'{key}'"
+        expr_parent = f"idx->>'{key}_parent'"
+        expr_depth = f"(idx->>'{key}_depth')::integer"
+
         if navtree:
-            self._path_navtree(paths[0], depth, navtree_start)
+            self._path_navtree(expr_path, expr_parent, paths[0], depth, navtree_start)
         elif depth == 0:
-            self._path_exact(paths)
+            self._path_exact(expr_path, paths)
         elif depth == 1:
-            self._path_children(paths)
+            self._path_children(expr_parent, paths)
         elif depth > 1:
-            self._path_limited(paths[0], depth)
+            self._path_limited(expr_path, expr_depth, paths[0], depth)
         else:
             # depth=-1: full subtree (self + all descendants)
-            self._path_subtree(paths)
+            self._path_subtree(expr_path, paths)
 
-    def _path_subtree(self, paths):
+    def _path_subtree(self, expr_path, paths):
         """depth=-1: self + all descendants."""
         if len(paths) == 1:
             p = self._pname("path")
             p_like = self._pname("path_like")
-            self.clauses.append(f"(path = %({p})s OR path LIKE %({p_like})s)")
+            self.clauses.append(
+                f"({expr_path} = %({p})s OR {expr_path} LIKE %({p_like})s)"
+            )
             self.params[p] = paths[0]
             self.params[p_like] = paths[0].rstrip("/") + "/%"
         else:
@@ -435,34 +444,36 @@ class _QueryBuilder:
             for i, path in enumerate(paths):
                 p = self._pname(f"path_{i}")
                 p_like = self._pname(f"path_like_{i}")
-                parts.append(f"(path = %({p})s OR path LIKE %({p_like})s)")
+                parts.append(
+                    f"({expr_path} = %({p})s OR {expr_path} LIKE %({p_like})s)"
+                )
                 self.params[p] = path
                 self.params[p_like] = path.rstrip("/") + "/%"
             self.clauses.append(f"({' OR '.join(parts)})")
 
-    def _path_exact(self, paths):
+    def _path_exact(self, expr_path, paths):
         """depth=0: exact object(s)."""
         if len(paths) == 1:
             p = self._pname("path")
-            self.clauses.append(f"path = %({p})s")
+            self.clauses.append(f"{expr_path} = %({p})s")
             self.params[p] = paths[0]
         else:
             p = self._pname("paths")
-            self.clauses.append(f"path = ANY(%({p})s)")
+            self.clauses.append(f"{expr_path} = ANY(%({p})s)")
             self.params[p] = paths
 
-    def _path_children(self, paths):
+    def _path_children(self, expr_parent, paths):
         """depth=1: direct children only (NOT self)."""
         if len(paths) == 1:
             p = self._pname("parent")
-            self.clauses.append(f"parent_path = %({p})s")
+            self.clauses.append(f"{expr_parent} = %({p})s")
             self.params[p] = paths[0]
         else:
             p = self._pname("parents")
-            self.clauses.append(f"parent_path = ANY(%({p})s)")
+            self.clauses.append(f"{expr_parent} = ANY(%({p})s)")
             self.params[p] = paths
 
-    def _path_limited(self, path, depth):
+    def _path_limited(self, expr_path, expr_depth, path, depth):
         """depth=N (N>1): subtree limited to N levels below path."""
         from plone.pgcatalog.columns import compute_path_info
 
@@ -472,12 +483,12 @@ class _QueryBuilder:
         p_like = self._pname("path_like")
         p_depth = self._pname("max_depth")
         self.clauses.append(
-            f"(path LIKE %({p_like})s AND path_depth <= %({p_depth})s)"
+            f"({expr_path} LIKE %({p_like})s AND {expr_depth} <= %({p_depth})s)"
         )
         self.params[p_like] = path.rstrip("/") + "/%"
         self.params[p_depth] = max_depth
 
-    def _path_navtree(self, path, depth, navtree_start):
+    def _path_navtree(self, expr_path, expr_parent, path, depth, navtree_start):
         """navtree=True: navigation tree query."""
         parts = [p for p in path.split("/") if p]
 
@@ -490,7 +501,7 @@ class _QueryBuilder:
                 self.clauses.append("FALSE")
                 return
             p = self._pname("breadcrumbs")
-            self.clauses.append(f"path = ANY(%({p})s)")
+            self.clauses.append(f"{expr_path} = ANY(%({p})s)")
             self.params[p] = prefixes
         else:
             # depth=1 (default navtree): siblings at each level along path
@@ -504,7 +515,7 @@ class _QueryBuilder:
                 self.clauses.append("FALSE")
                 return
             p = self._pname("navtree_parents")
-            self.clauses.append(f"parent_path = ANY(%({p})s)")
+            self.clauses.append(f"{expr_parent} = ANY(%({p})s)")
             self.params[p] = parent_paths
 
     # -- sort ---------------------------------------------------------------
@@ -526,7 +537,11 @@ class _QueryBuilder:
 
         idx_type, idx_key, _source_attrs = entry
         if idx_key is None:
-            return  # Can't sort on composite/special indexes
+            if idx_type == IndexType.PATH:
+                # PATH with idx_key=None → normalize to use idx JSONB
+                idx_key = sort_on
+            else:
+                return  # Can't sort on other composite/special indexes
 
         direction = "DESC" if sort_order in ("descending", "reverse") else "ASC"
 

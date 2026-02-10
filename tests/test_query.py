@@ -233,37 +233,37 @@ class TestPathIndex:
 
     def test_subtree_default(self):
         qr = build_query({"path": "/plone/folder"})
-        assert "path =" in qr["where"]
-        assert "path LIKE" in qr["where"]
+        assert "idx->>'path' =" in qr["where"]
+        assert "idx->>'path' LIKE" in qr["where"]
         # LIKE pattern should end with /%
         like_val = [v for v in qr["params"].values() if isinstance(v, str) and v.endswith("/%")]
         assert like_val
 
     def test_exact_depth_0(self):
         qr = build_query({"path": {"query": "/plone/folder", "depth": 0}})
-        assert "path =" in qr["where"]
+        assert "idx->>'path' =" in qr["where"]
         assert "LIKE" not in qr["where"]
 
     def test_children_depth_1(self):
         qr = build_query({"path": {"query": "/plone/folder", "depth": 1}})
-        assert "parent_path =" in qr["where"]
+        assert "idx->>'path_parent' =" in qr["where"]
 
     def test_limited_depth(self):
         qr = build_query({"path": {"query": "/plone/folder", "depth": 2}})
-        assert "path LIKE" in qr["where"]
-        assert "path_depth <=" in qr["where"]
+        assert "idx->>'path' LIKE" in qr["where"]
+        assert "(idx->>'path_depth')::integer <=" in qr["where"]
 
     def test_navtree_depth_1(self):
         qr = build_query(
             {"path": {"query": "/plone/folder/doc", "navtree": True, "depth": 1}}
         )
-        assert "parent_path = ANY(" in qr["where"]
+        assert "idx->>'path_parent' = ANY(" in qr["where"]
 
     def test_navtree_depth_0_breadcrumbs(self):
         qr = build_query(
             {"path": {"query": "/plone/folder/doc", "navtree": True, "depth": 0}}
         )
-        assert "path = ANY(" in qr["where"]
+        assert "idx->>'path' = ANY(" in qr["where"]
 
     def test_navtree_start(self):
         qr = build_query(
@@ -488,6 +488,85 @@ class TestDateCoercion:
         qr = build_query({"modified": {"query": "2025-06-15", "range": "min"}})
         param_vals = list(qr["params"].values())
         assert "2025-06-15" in str(param_vals)
+
+
+# ---------------------------------------------------------------------------
+# Additional PathIndex (tgpath — idx JSONB)
+# ---------------------------------------------------------------------------
+
+
+class TestAdditionalPathIndex:
+    """PATH-type indexes with idx_key != None query against idx JSONB keys."""
+
+    def test_tgpath_subtree(self):
+        qr = build_query({"tgpath": "/uuid1/uuid2"})
+        assert "idx->>'tgpath' =" in qr["where"]
+        assert "idx->>'tgpath' LIKE" in qr["where"]
+        like_val = [v for v in qr["params"].values() if isinstance(v, str) and v.endswith("/%")]
+        assert like_val
+
+    def test_tgpath_exact(self):
+        qr = build_query({"tgpath": {"query": "/uuid1/uuid2", "depth": 0}})
+        assert "idx->>'tgpath' =" in qr["where"]
+        assert "LIKE" not in qr["where"]
+
+    def test_tgpath_children(self):
+        qr = build_query({"tgpath": {"query": "/uuid1/uuid2", "depth": 1}})
+        assert "idx->>'tgpath_parent' =" in qr["where"]
+
+    def test_tgpath_limited_depth(self):
+        qr = build_query({"tgpath": {"query": "/uuid1/uuid2", "depth": 2}})
+        assert "idx->>'tgpath' LIKE" in qr["where"]
+        assert "(idx->>'tgpath_depth')::integer <=" in qr["where"]
+
+    def test_tgpath_navtree(self):
+        qr = build_query(
+            {"tgpath": {"query": "/uuid1/uuid2/uuid3", "navtree": True, "depth": 1}}
+        )
+        assert "idx->>'tgpath_parent' = ANY(" in qr["where"]
+
+    def test_tgpath_breadcrumbs(self):
+        qr = build_query(
+            {"tgpath": {"query": "/uuid1/uuid2/uuid3", "navtree": True, "depth": 0}}
+        )
+        assert "idx->>'tgpath' = ANY(" in qr["where"]
+
+    def test_tgpath_multiple_paths_subtree(self):
+        qr = build_query({"tgpath": {"query": ["/uuid1/uuid2", "/uuid3/uuid4"]}})
+        assert "OR" in qr["where"]
+        assert "idx->>'tgpath'" in qr["where"]
+
+    def test_tgpath_sort(self):
+        qr = build_query({"tgpath": "/uuid1", "sort_on": "tgpath"})
+        assert qr["order_by"] == "idx->>'tgpath' ASC"
+
+    def test_tgpath_sort_descending(self):
+        qr = build_query(
+            {"tgpath": "/uuid1", "sort_on": "tgpath", "sort_order": "descending"}
+        )
+        assert qr["order_by"] == "idx->>'tgpath' DESC"
+
+    def test_builtin_path_uses_same_pattern(self):
+        """Built-in 'path' index uses same idx JSONB pattern as tgpath."""
+        qr = build_query({"path": "/plone/folder"})
+        assert "idx->>'path' =" in qr["where"]
+        assert "idx->>'path' LIKE" in qr["where"]
+
+    def test_builtin_path_sort(self):
+        """Built-in 'path' sort uses idx JSONB."""
+        qr = build_query({"path": "/plone", "sort_on": "path"})
+        assert qr["order_by"] == "idx->>'path' ASC"
+
+    def test_combined_path_and_tgpath(self):
+        """Both path and tgpath can be queried simultaneously."""
+        qr = build_query({
+            "path": "/plone/folder",
+            "tgpath": {"query": "/uuid1/uuid2", "depth": 1},
+        })
+        where = qr["where"]
+        # Both use idx JSONB with different keys
+        assert "idx->>'path' =" in where or "idx->>'path' LIKE" in where
+        assert "idx->>'tgpath_parent' =" in where
 
 
 class TestPathValidation:

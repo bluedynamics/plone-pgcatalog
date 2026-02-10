@@ -125,8 +125,6 @@ class CatalogStateProcessor:
 
         return [
             ExtraColumn("path", "%(path)s"),
-            ExtraColumn("parent_path", "%(parent_path)s"),
-            ExtraColumn("path_depth", "%(path_depth)s"),
             ExtraColumn("idx", "%(idx)s"),
             ExtraColumn(
                 "searchable_text",
@@ -157,8 +155,6 @@ class CatalogStateProcessor:
             # Uncatalog sentinel: NULL all catalog columns
             return {
                 "path": None,
-                "parent_path": None,
-                "path_depth": None,
                 "idx": None,
                 "searchable_text": None,
             }
@@ -169,8 +165,6 @@ class CatalogStateProcessor:
         idx = pending.get("idx")
         return {
             "path": pending.get("path"),
-            "parent_path": pending.get("parent_path"),
-            "path_depth": pending.get("path_depth"),
             "idx": Json(idx) if idx else None,
             "searchable_text": pending.get("searchable_text"),
         }

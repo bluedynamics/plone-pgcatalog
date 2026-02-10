@@ -27,6 +27,11 @@ def catalog_object(conn, zoid, path, idx, searchable_text=None, language="simple
     """
     parent_path, path_depth = compute_path_info(path)
 
+    # Store path data in idx JSONB for unified path queries
+    idx.setdefault("path", path)
+    idx.setdefault("path_parent", parent_path)
+    idx.setdefault("path_depth", path_depth)
+
     if searchable_text is not None:
         conn.execute(
             """

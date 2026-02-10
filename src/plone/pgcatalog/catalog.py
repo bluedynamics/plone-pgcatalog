@@ -34,6 +34,24 @@ import logging
 
 log = logging.getLogger(__name__)
 
+
+def _path_value_to_string(value):
+    """Convert a path index value to a string path.
+
+    Path indexers may return a tuple/list of path components (e.g. tgpath
+    returns ``('uuid1', 'uuid2', 'uuid3')``), or a string path.
+    Returns ``None`` if the value is empty or not convertible.
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value if value else None
+    if isinstance(value, (list, tuple)):
+        if not value:
+            return None
+        return "/" + "/".join(str(p) for p in value)
+    return str(value)
+
 # Fixed set of columns for catalog queries (never user-supplied)
 _SELECT_COLS = "zoid, path, idx, state"
 _SELECT_COLS_COUNTED = "zoid, path, idx, state, COUNT(*) OVER() AS _total_count"
@@ -222,10 +240,13 @@ class PlonePGCatalogTool(CatalogTool):
         searchable_text = self._extract_searchable_text(wrapper)
         parent_path, path_depth = compute_path_info(uid)
 
+        # Store built-in path data in idx JSONB for unified path queries
+        idx["path"] = uid
+        idx["path_parent"] = parent_path
+        idx["path_depth"] = path_depth
+
         setattr(obj, ANNOTATION_KEY, {
             "path": uid,
-            "parent_path": parent_path,
-            "path_depth": path_depth,
             "idx": idx,
             "searchable_text": searchable_text,
         })
@@ -378,12 +399,18 @@ class PlonePGCatalogTool(CatalogTool):
         ``source_attrs`` for attribute lookup) and metadata columns.
         Indexes with ``idx_key=None`` (special: SearchableText,
         effectiveRange, path) are skipped — they have dedicated columns.
+
+        PATH-type indexes with ``idx_key`` set (additional path indexes
+        like ``tgpath``) store the path value plus derived ``_parent``
+        and ``_depth`` keys in the idx JSONB.
         """
+        from plone.pgcatalog.columns import IndexType
+
         registry = get_registry()
         idx = {}
 
         # Extract index values
-        for name, (_idx_type, idx_key, source_attrs) in registry.items():
+        for name, (idx_type, idx_key, source_attrs) in registry.items():
             if idx_key is None:
                 continue  # composite/special (path, SearchableText, effectiveRange)
             if idxs and name not in idxs:
@@ -396,7 +423,16 @@ class PlonePGCatalogTool(CatalogTool):
                         value = value()
                     if value is not None:
                         break
-                idx[idx_key] = convert_value(value)
+                if idx_type == IndexType.PATH:
+                    # Additional path index — store path + parent + depth
+                    path_str = _path_value_to_string(value)
+                    if path_str:
+                        parent, depth = compute_path_info(path_str)
+                        idx[idx_key] = path_str
+                        idx[f"{idx_key}_parent"] = parent
+                        idx[f"{idx_key}_depth"] = depth
+                else:
+                    idx[idx_key] = convert_value(value)
             except Exception:
                 pass  # indexer raised — skip this field
 

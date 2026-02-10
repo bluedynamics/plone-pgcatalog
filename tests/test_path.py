@@ -320,3 +320,169 @@ class TestPathEdgeCases:
         _setup_tree(conn)
         zoids = _query_zoids(conn, {"path": {"query": "/plone", "depth": 1}})
         assert set(zoids) == {201, 205, 207}
+
+
+# ---------------------------------------------------------------------------
+# Additional PathIndex in idx JSONB (tgpath)
+# ---------------------------------------------------------------------------
+#
+# Translation Group path tree (UUID-based):
+#   /tg-root                        (zoid=300)
+#   /tg-root/tg-folder              (zoid=301)
+#   /tg-root/tg-folder/tg-doc       (zoid=302)
+#   /tg-root/tg-folder/tg-sub       (zoid=303)
+#   /tg-root/tg-folder/tg-sub/tg-deep (zoid=304)
+#   /tg-root/tg-other               (zoid=305)
+#
+
+
+def _setup_tgpath_tree(conn):
+    """Insert objects with both physical path and tgpath in idx JSONB."""
+    from plone.pgcatalog.columns import compute_path_info
+
+    tree = [
+        (300, "/plone",           "/tg-root",                         "Root"),
+        (301, "/plone/en/folder", "/tg-root/tg-folder",               "Folder"),
+        (302, "/plone/en/doc",    "/tg-root/tg-folder/tg-doc",        "Doc"),
+        (303, "/plone/en/sub",    "/tg-root/tg-folder/tg-sub",        "Sub"),
+        (304, "/plone/en/deep",   "/tg-root/tg-folder/tg-sub/tg-deep","Deep"),
+        (305, "/plone/en/other",  "/tg-root/tg-other",                "Other"),
+    ]
+    for zoid, phys_path, tg_path, title in tree:
+        tg_parent, tg_depth = compute_path_info(tg_path)
+        insert_object(conn, zoid=zoid)
+        catalog_object(
+            conn,
+            zoid=zoid,
+            path=phys_path,
+            idx={
+                "Title": title,
+                "tgpath": tg_path,
+                "tgpath_parent": tg_parent,
+                "tgpath_depth": tg_depth,
+            },
+        )
+    conn.commit()
+
+
+class TestTgpathSubtree:
+
+    def test_full_subtree(self, pg_conn_with_catalog):
+        conn = pg_conn_with_catalog
+        _setup_tgpath_tree(conn)
+        zoids = _query_zoids(conn, {"tgpath": "/tg-root/tg-folder"})
+        assert set(zoids) == {301, 302, 303, 304}
+
+    def test_root_subtree(self, pg_conn_with_catalog):
+        conn = pg_conn_with_catalog
+        _setup_tgpath_tree(conn)
+        zoids = _query_zoids(conn, {"tgpath": "/tg-root"})
+        assert set(zoids) == {300, 301, 302, 303, 304, 305}
+
+    def test_leaf_subtree(self, pg_conn_with_catalog):
+        conn = pg_conn_with_catalog
+        _setup_tgpath_tree(conn)
+        zoids = _query_zoids(conn, {"tgpath": "/tg-root/tg-folder/tg-doc"})
+        assert zoids == [302]
+
+
+class TestTgpathExact:
+
+    def test_exact_single(self, pg_conn_with_catalog):
+        conn = pg_conn_with_catalog
+        _setup_tgpath_tree(conn)
+        zoids = _query_zoids(
+            conn, {"tgpath": {"query": "/tg-root/tg-folder", "depth": 0}}
+        )
+        assert zoids == [301]
+
+
+class TestTgpathChildren:
+
+    def test_direct_children(self, pg_conn_with_catalog):
+        conn = pg_conn_with_catalog
+        _setup_tgpath_tree(conn)
+        zoids = _query_zoids(
+            conn, {"tgpath": {"query": "/tg-root/tg-folder", "depth": 1}}
+        )
+        # tg-doc, tg-sub (NOT tg-folder itself, NOT tg-deep)
+        assert set(zoids) == {302, 303}
+
+    def test_children_of_root(self, pg_conn_with_catalog):
+        conn = pg_conn_with_catalog
+        _setup_tgpath_tree(conn)
+        zoids = _query_zoids(
+            conn, {"tgpath": {"query": "/tg-root", "depth": 1}}
+        )
+        # tg-folder, tg-other
+        assert set(zoids) == {301, 305}
+
+
+class TestTgpathLimited:
+
+    def test_limited_depth_2(self, pg_conn_with_catalog):
+        conn = pg_conn_with_catalog
+        _setup_tgpath_tree(conn)
+        # /tg-root depth=1, limit depth=2 → up to depth 3
+        zoids = _query_zoids(
+            conn, {"tgpath": {"query": "/tg-root", "depth": 2}}
+        )
+        # tg-folder(2), tg-other(2), tg-doc(3), tg-sub(3) — NOT tg-deep(4)
+        assert set(zoids) == {301, 302, 303, 305}
+        assert 304 not in zoids
+
+
+class TestTgpathNavtree:
+
+    def test_navtree(self, pg_conn_with_catalog):
+        conn = pg_conn_with_catalog
+        _setup_tgpath_tree(conn)
+        zoids = _query_zoids(
+            conn,
+            {
+                "tgpath": {
+                    "query": "/tg-root/tg-folder/tg-sub/tg-deep",
+                    "navtree": True,
+                    "depth": 1,
+                }
+            },
+        )
+        # / → tg-root(300)
+        # /tg-root → tg-folder(301), tg-other(305)
+        # /tg-root/tg-folder → tg-doc(302), tg-sub(303)
+        # /tg-root/tg-folder/tg-sub → tg-deep(304)
+        assert set(zoids) == {300, 301, 302, 303, 304, 305}
+
+    def test_breadcrumbs(self, pg_conn_with_catalog):
+        conn = pg_conn_with_catalog
+        _setup_tgpath_tree(conn)
+        zoids = _query_zoids(
+            conn,
+            {
+                "tgpath": {
+                    "query": "/tg-root/tg-folder/tg-sub/tg-deep",
+                    "navtree": True,
+                    "depth": 0,
+                }
+            },
+        )
+        # Exact at each prefix: tg-root, tg-folder, tg-sub, tg-deep
+        assert set(zoids) == {300, 301, 303, 304}
+
+
+class TestTgpathCombined:
+
+    def test_path_and_tgpath(self, pg_conn_with_catalog):
+        """Both path and tgpath can filter simultaneously."""
+        conn = pg_conn_with_catalog
+        _setup_tgpath_tree(conn)
+        zoids = _query_zoids(
+            conn,
+            {
+                "path": "/plone/en/folder",
+                "tgpath": {"query": "/tg-root/tg-folder", "depth": 0},
+            },
+        )
+        # path subtree of /plone/en/folder AND tgpath exact /tg-root/tg-folder
+        # Only zoid=301 matches both
+        assert zoids == [301]
