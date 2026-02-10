@@ -154,45 +154,50 @@ class TestCatalogObjectWritePath:
             tool.catalog_object(obj)
             sql_mock.assert_not_called()
 
-    def test_skips_pg_on_exception(self):
+    def test_does_not_call_parent_catalog_object(self):
+        """catalog_object() must NOT delegate to parent (no BTree writes)."""
         tool = PlonePGCatalogTool.__new__(PlonePGCatalogTool)
         obj = mock.Mock()
         obj.getPhysicalPath.return_value = ("", "plone", "doc")
         obj._p_oid = b"\x00\x00\x00\x00\x00\x00\x00\x01"
 
-        mock_conn = mock.Mock()
-
         with mock.patch.object(
-            PlonePGCatalogTool, "_pg_connection", _mock_pg_connection(mock_conn)
-        ), mock.patch.object(
             PlonePGCatalogTool, "_wrap_object", return_value=obj
         ), mock.patch.object(
             PlonePGCatalogTool, "_extract_idx", return_value={}
         ), mock.patch.object(
             PlonePGCatalogTool, "_extract_searchable_text", return_value=None
         ), mock.patch(
-            "plone.pgcatalog.catalog._sql_catalog",
-            side_effect=RuntimeError("PG down"),
-        ), mock.patch.object(
+            "plone.pgcatalog.config.set_pending"
+        ) as pending_mock, mock.patch.object(
             PlonePGCatalogTool.__bases__[0], "catalog_object"
         ) as parent_mock:
             tool.catalog_object(obj)
-            # Parent is still called even if PG fails
-            parent_mock.assert_called_once()
+            # PG annotation was set
+            pending_mock.assert_called_once()
+            # Parent was NOT called (no BTree writes)
+            parent_mock.assert_not_called()
 
-    def test_falls_back_to_parent_without_path(self):
+    def test_noop_without_path(self):
+        """catalog_object() is a no-op when object has no getPhysicalPath."""
         tool = PlonePGCatalogTool.__new__(PlonePGCatalogTool)
         obj = mock.Mock(spec=[])  # no getPhysicalPath
-        with mock.patch.object(
+        with mock.patch(
+            "plone.pgcatalog.config.set_pending"
+        ) as pending_mock, mock.patch.object(
             PlonePGCatalogTool.__bases__[0], "catalog_object"
         ) as parent_mock:
             tool.catalog_object(obj)
-            parent_mock.assert_called_once()
+            # No PG annotation (no physical path)
+            pending_mock.assert_not_called()
+            # No parent call (no BTree writes)
+            parent_mock.assert_not_called()
 
 
 class TestUncatalogObjectWritePath:
 
-    def test_uncatalog_calls_parent(self):
+    def test_uncatalog_does_not_call_parent(self):
+        """uncatalog_object() must NOT delegate to parent (no BTree writes)."""
         tool = PlonePGCatalogTool.__new__(PlonePGCatalogTool)
         mock_conn = mock.Mock()
         mock_cursor = mock.MagicMock()
@@ -209,7 +214,8 @@ class TestUncatalogObjectWritePath:
         ) as parent_mock:
             tool.uncatalog_object("/plone/doc")
             uncatalog_mock.assert_called_once_with(mock_conn, zoid=42)
-            parent_mock.assert_called_once_with("/plone/doc")
+            # Parent was NOT called (no BTree writes)
+            parent_mock.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

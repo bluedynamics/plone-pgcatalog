@@ -250,7 +250,7 @@ class PlonePGCatalogTool(CatalogTool):
         finally:
             pool.putconn(conn)
 
-    # -- Write path (PG annotation + parent BTrees) --------------------------
+    # -- Write path (PG annotation only, no ZCatalog BTrees) -----------------
 
     def _set_pg_annotation(self, obj, uid=None):
         """Register pending catalog data for a persistent object.
@@ -300,40 +300,43 @@ class PlonePGCatalogTool(CatalogTool):
         return True
 
     def indexObject(self, object):  # noqa: A002
-        """Set PG annotation immediately for new objects, then delegate.
+        """Set PG annotation immediately for new objects.
 
         ``CatalogAware.indexObject()`` calls this for newly-added
         content.  We set the annotation NOW because the IndexQueue
         defers the actual ``catalog_object()`` call to ``before_commit``
         which is too late (ZODB has already serialized the object).
+
+        Does NOT delegate to ZCatalog — all catalog data flows to
+        PostgreSQL via CatalogStateProcessor during tpc_vote.
         """
         self._set_pg_annotation(object)
-        super().indexObject(object)
 
     def reindexObject(self, object, idxs=None, update_metadata=1, uid=None):  # noqa: A002
-        """Set PG annotation immediately, then delegate to parent.
+        """Set PG annotation immediately.
 
         Same timing issue as ``indexObject`` — must annotate NOW.
+
+        Does NOT delegate to ZCatalog — BTree writes are skipped.
         """
         self._set_pg_annotation(object, uid)
-        super().reindexObject(
-            object, idxs=idxs or [], update_metadata=update_metadata, uid=uid,
-        )
 
     def catalog_object(self, object, uid=None, idxs=None, update_metadata=1, pghandler=None):  # noqa: A002
-        """Index an object (called from _reindexObject / _indexObject).
+        """Index an object via PG annotation.
 
-        Also sets PG annotation as a safety net — may be called directly
-        without going through indexObject/reindexObject.
+        Called from _reindexObject / _indexObject and directly.
+
+        Does NOT delegate to ZCatalog — BTree writes are skipped.
         """
         self._set_pg_annotation(object, uid)
-        return super().catalog_object(object, uid, idxs, update_metadata, pghandler)
 
     def uncatalog_object(self, uid):
-        """Remove catalog data from both PG and BTrees.
+        """Remove catalog data from PG.
 
         Registers a ``None`` sentinel in the pending store so the
         state processor NULLs all catalog columns during ZODB commit.
+
+        Does NOT delegate to ZCatalog — BTree writes are skipped.
         """
         from plone.pgcatalog.config import set_pending
 
@@ -360,8 +363,6 @@ class PlonePGCatalogTool(CatalogTool):
                         _sql_uncatalog(conn, zoid=row["zoid"])
             except Exception:
                 log.debug("PG uncatalog_object failed for %s", uid, exc_info=True)
-
-        return super().uncatalog_object(uid)
 
     # -- Read path (PG only) ------------------------------------------------
 

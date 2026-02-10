@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Changed
+
+- **ZCatalog BTree write elimination**: Removed `super()` delegation in
+  `indexObject()`, `reindexObject()`, `catalog_object()`, and
+  `uncatalog_object()`.  All catalog data now flows exclusively to
+  PostgreSQL via `CatalogStateProcessor` — no BTree/Bucket objects are
+  written to ZODB.  Content creation dropped from 175 ms/doc to
+  68.5 ms/doc (2.5x faster), making PGCatalog 1.13x faster than
+  RelStorage+ZCatalog for writes.
+
 ### Added
 
 - **Dynamic IndexRegistry**: Replaced static `KNOWN_INDEXES` dict with a
