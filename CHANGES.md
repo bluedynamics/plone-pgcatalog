@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.0.0b2 (unreleased)
+
+### Fixed
+
+- **Savepoint-aware pending store**: The thread-local pending catalog data
+  now participates in ZODB's transaction lifecycle via `ISavepointDataManager`.
+  Fixes two bugs: pending data not reverting on savepoint rollback, and
+  stale pending data leaking across transactions after abort.
+
 ## 1.0.0b1 Initial release (2026-02-10)
 
 ### Changed

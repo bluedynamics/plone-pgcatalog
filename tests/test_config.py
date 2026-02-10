@@ -10,6 +10,7 @@ from unittest import mock
 import os
 import plone.pgcatalog.config as config_mod
 import pytest
+import transaction
 
 
 class TestGetPool:
@@ -203,15 +204,27 @@ class TestRequestConnection:
         assert getattr(config_mod._local, "pgcat_conn", None) is None
 
 
+def _clean_pending():
+    """Clear thread-local pending state and abort current transaction."""
+    try:
+        del config_mod._local.pending
+    except AttributeError:
+        pass
+    try:
+        del config_mod._local._pending_dm
+    except AttributeError:
+        pass
+    transaction.abort()
+
+
 class TestPending:
     """Thread-local pending catalog data store."""
 
     def setup_method(self):
-        # Clear thread-local pending data
-        try:
-            del config_mod._local.pending
-        except AttributeError:
-            pass
+        _clean_pending()
+
+    def teardown_method(self):
+        _clean_pending()
 
     def test_set_and_pop_pending(self):
         from plone.pgcatalog.config import pop_pending
@@ -243,6 +256,144 @@ class TestPending:
         assert isinstance(result, dict)
 
 
+class TestPendingSavepoint:
+    """Savepoint-aware pending catalog data."""
+
+    def setup_method(self):
+        _clean_pending()
+
+    def teardown_method(self):
+        _clean_pending()
+
+    def test_set_pending_joins_transaction(self):
+        from plone.pgcatalog.config import PendingDataManager
+        from plone.pgcatalog.config import set_pending
+
+        txn = transaction.get()
+        set_pending(1, {"path": "/doc1"})
+        assert any(isinstance(r, PendingDataManager) for r in txn._resources)
+
+    def test_set_pending_joins_only_once(self):
+        from plone.pgcatalog.config import PendingDataManager
+        from plone.pgcatalog.config import set_pending
+
+        txn = transaction.get()
+        set_pending(1, {"path": "/doc1"})
+        set_pending(2, {"path": "/doc2"})
+        dm_count = sum(1 for r in txn._resources if isinstance(r, PendingDataManager))
+        assert dm_count == 1
+
+    def test_abort_clears_pending(self):
+        from plone.pgcatalog.config import _get_pending
+        from plone.pgcatalog.config import set_pending
+
+        set_pending(1, {"path": "/doc1"})
+        transaction.abort()
+        assert _get_pending() == {}
+
+    def test_savepoint_rollback_restores_state(self):
+        from plone.pgcatalog.config import _get_pending
+        from plone.pgcatalog.config import set_pending
+
+        set_pending(1, {"path": "/doc1"})
+        sp = transaction.savepoint()
+        set_pending(2, {"path": "/doc2"})
+        set_pending(1, {"path": "/doc1-v2"})
+        assert len(_get_pending()) == 2
+        sp.rollback()
+        pending = _get_pending()
+        assert pending == {1: {"path": "/doc1"}}
+        assert 2 not in pending
+
+    def test_savepoint_rollback_to_empty(self):
+        from plone.pgcatalog.config import _get_pending
+        from plone.pgcatalog.config import set_pending
+
+        sp = transaction.savepoint()
+        set_pending(1, {"path": "/doc1"})
+        # DM joined after savepoint → AbortSavepoint clears all
+        sp.rollback()
+        assert _get_pending() == {}
+
+    def test_multiple_savepoints(self):
+        from plone.pgcatalog.config import _get_pending
+        from plone.pgcatalog.config import set_pending
+
+        set_pending(1, {"path": "/doc1"})
+        sp1 = transaction.savepoint()
+        set_pending(2, {"path": "/doc2"})
+        sp2 = transaction.savepoint()
+        set_pending(3, {"path": "/doc3"})
+        sp2.rollback()
+        assert set(_get_pending().keys()) == {1, 2}
+        sp1.rollback()
+        assert set(_get_pending().keys()) == {1}
+
+    def test_new_transaction_gets_new_dm(self):
+        from plone.pgcatalog.config import set_pending
+
+        set_pending(1, {"path": "/doc1"})
+        dm1 = config_mod._local._pending_dm
+        transaction.abort()
+        set_pending(2, {"path": "/doc2"})
+        dm2 = config_mod._local._pending_dm
+        assert dm1 is not dm2
+
+    def test_uncatalog_sentinel_survives_savepoint(self):
+        from plone.pgcatalog.config import _get_pending
+        from plone.pgcatalog.config import set_pending
+
+        set_pending(1, None)
+        sp = transaction.savepoint()
+        set_pending(1, {"path": "/doc1"})
+        sp.rollback()
+        assert _get_pending() == {1: None}
+
+    def test_rejoin_after_abort_savepoint(self):
+        from plone.pgcatalog.config import _get_pending
+        from plone.pgcatalog.config import PendingDataManager
+        from plone.pgcatalog.config import set_pending
+
+        sp = transaction.savepoint()
+        set_pending(1, {"path": "/doc1"})
+        sp.rollback()
+        assert _get_pending() == {}
+        # After AbortSavepoint unjoin, set_pending must rejoin
+        set_pending(2, {"path": "/doc2"})
+        txn = transaction.get()
+        assert any(isinstance(r, PendingDataManager) for r in txn._resources)
+        assert _get_pending() == {2: {"path": "/doc2"}}
+
+    def test_tpc_finish_clears_pending(self):
+        from plone.pgcatalog.config import _get_pending
+        from plone.pgcatalog.config import set_pending
+
+        set_pending(1, {"path": "/doc1"})
+        dm = config_mod._local._pending_dm
+        dm.tpc_finish(transaction.get())
+        assert _get_pending() == {}
+
+    def test_sort_key(self):
+        from plone.pgcatalog.config import PendingDataManager
+
+        dm = PendingDataManager(transaction.get())
+        key = dm.sortKey()
+        assert key == "~plone.pgcatalog.pending"
+        assert key > "z"  # sorts after all alphanumeric
+
+    def test_interface_compliance(self):
+        from plone.pgcatalog.config import PendingDataManager
+        from plone.pgcatalog.config import PendingSavepoint
+        from transaction.interfaces import IDataManagerSavepoint
+        from transaction.interfaces import ISavepointDataManager
+        from zope.interface.verify import verifyObject
+
+        dm = PendingDataManager(transaction.get())
+        assert verifyObject(ISavepointDataManager, dm)
+        sp = PendingSavepoint({})
+        assert verifyObject(IDataManagerSavepoint, sp)
+
+
 class TestPoolFromEnvCached:
     def test_returns_cached_pool(self):
         mock_pool = mock.Mock()
@@ -258,6 +409,12 @@ class TestPoolFromEnvCached:
 
 class TestCatalogStateProcessor:
     """Tests for CatalogStateProcessor."""
+
+    def setup_method(self):
+        _clean_pending()
+
+    def teardown_method(self):
+        _clean_pending()
 
     def test_get_extra_columns(self):
         from plone.pgcatalog.config import CatalogStateProcessor

@@ -9,9 +9,14 @@ zodb-pgjsonb's state processor infrastructure to write catalog
 index data atomically alongside the object state.
 """
 
+from transaction.interfaces import IDataManagerSavepoint
+from transaction.interfaces import ISavepointDataManager
+from zope.interface import implementer
+
 import logging
 import os
 import threading
+import transaction
 
 
 log = logging.getLogger(__name__)
@@ -60,6 +65,7 @@ def set_pending(zoid, data):
         data: dict with catalog columns, or None for uncatalog sentinel
     """
     _get_pending()[zoid] = data
+    _ensure_joined()
 
 
 def pop_pending(zoid):
@@ -72,6 +78,73 @@ def pop_pending(zoid):
 
 
 _MISSING = object()  # Sentinel for "no pending data"
+
+
+@implementer(IDataManagerSavepoint)
+class PendingSavepoint:
+    """Snapshot of pending catalog data for savepoint rollback."""
+
+    def __init__(self, snapshot):
+        self._snapshot = snapshot
+
+    def rollback(self):
+        pending = _get_pending()
+        pending.clear()
+        pending.update(self._snapshot)
+
+
+@implementer(ISavepointDataManager)
+class PendingDataManager:
+    """Participates in ZODB transaction to make pending data savepoint-aware.
+
+    Joins lazily on first ``set_pending()`` call.  Clears pending on
+    abort / tpc_finish / tpc_abort.
+    """
+
+    transaction_manager = None
+
+    def __init__(self, txn):
+        self._txn = txn
+        self._joined = True
+
+    def savepoint(self):
+        return PendingSavepoint(dict(_get_pending()))
+
+    def abort(self, transaction):
+        _get_pending().clear()
+        self._joined = False  # AbortSavepoint may have unjoined us
+
+    def tpc_begin(self, transaction):
+        pass
+
+    def commit(self, transaction):
+        pass
+
+    def tpc_vote(self, transaction):
+        pass
+
+    def tpc_finish(self, transaction):
+        _get_pending().clear()
+
+    def tpc_abort(self, transaction):
+        _get_pending().clear()
+
+    def sortKey(self):
+        return "~plone.pgcatalog.pending"
+
+
+def _ensure_joined():
+    """Ensure a PendingDataManager is joined to the current transaction."""
+    txn = transaction.get()
+    try:
+        dm = _local._pending_dm
+        if dm._txn is txn and dm._joined:
+            return
+    except AttributeError:
+        pass
+    dm = PendingDataManager(txn)
+    _local._pending_dm = dm
+    txn.join(dm)
 
 
 def get_request_connection(pool):
