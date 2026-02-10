@@ -99,7 +99,9 @@ class IndexRegistry:
 
             idx_type = META_TYPE_MAP.get(meta_type)
             if idx_type is None:
-                log.debug("Unknown index meta_type %r for %r — skipping", meta_type, name)
+                log.debug(
+                    "Unknown index meta_type %r for %r — skipping", meta_type, name
+                )
                 continue
 
             # Read source attributes from index object

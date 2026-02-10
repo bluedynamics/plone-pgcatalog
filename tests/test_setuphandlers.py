@@ -6,7 +6,6 @@ from unittest import mock
 
 
 class TestInstall:
-
     def test_skips_without_sentinel_file(self):
         context = mock.Mock()
         context.readDataFile.return_value = None
@@ -26,14 +25,15 @@ class TestInstall:
 
 
 class TestEnsureCatalogIndexes:
-
     def test_skips_if_catalog_has_indexes(self):
         site = mock.Mock()
         site.portal_catalog.indexes.return_value = ["UID", "Title"]
         _ensure_catalog_indexes(site)
         # Should not try to run import steps
-        assert not hasattr(site, "portal_setup") or \
-            not site.portal_setup.runImportStepFromProfile.called
+        assert (
+            not hasattr(site, "portal_setup")
+            or not site.portal_setup.runImportStepFromProfile.called
+        )
 
     def test_skips_without_catalog(self):
         site = mock.Mock(spec=[])

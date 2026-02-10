@@ -23,14 +23,16 @@ import re
 log = logging.getLogger(__name__)
 
 # Keys in the query dict that are NOT index names
-_QUERY_META_KEYS = frozenset({
-    "sort_on",
-    "sort_order",
-    "sort_limit",
-    "b_start",
-    "b_size",
-    "show_inactive",
-})
+_QUERY_META_KEYS = frozenset(
+    {
+        "sort_on",
+        "sort_order",
+        "sort_limit",
+        "b_start",
+        "b_size",
+        "show_inactive",
+    }
+)
 
 # Path validation pattern
 _PATH_RE = re.compile(r"^/[a-zA-Z0-9._/@+\-]*$")
@@ -95,7 +97,11 @@ def apply_security_filters(query_dict, roles, show_inactive=False):
         }
 
     # Inject effectiveRange (unless show_inactive or already present)
-    if not show_inactive and "effectiveRange" not in result and not result.get("show_inactive"):
+    if (
+        not show_inactive
+        and "effectiveRange" not in result
+        and not result.get("show_inactive")
+    ):
         result["effectiveRange"] = datetime.now(UTC)
 
     # Remove show_inactive from the dict (it's a meta-key, not an index)
@@ -301,9 +307,7 @@ class _QueryBuilder:
         if query_val is None:
             return
 
-        if range_spec in ("min:max", "minmax") and isinstance(
-            query_val, (list, tuple)
-        ):
+        if range_spec in ("min:max", "minmax") and isinstance(query_val, (list, tuple)):
             min_val = _ensure_date_param(query_val[0])
             max_val = _ensure_date_param(query_val[1])
             p_min = self._pname(idx_key + "_min")
@@ -529,7 +533,9 @@ class _QueryBuilder:
             if translator is not None:
                 expr = translator.sort(sort_on)
                 if expr is not None:
-                    direction = "DESC" if sort_order in ("descending", "reverse") else "ASC"
+                    direction = (
+                        "DESC" if sort_order in ("descending", "reverse") else "ASC"
+                    )
                     self.order_by = f"{expr} {direction}"
                 return
             log.warning("Unknown sort index %r — ignoring", sort_on)

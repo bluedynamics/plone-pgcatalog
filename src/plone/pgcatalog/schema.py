@@ -5,7 +5,6 @@ table via ALTER TABLE.  The base table is created by zodb-pgjsonb; this module
 only extends it.
 """
 
-
 CATALOG_COLUMNS = """\
 -- Catalog columns on object_state (plone.pgcatalog extension)
 -- path: dedicated column for brain construction (SELECT zoid, path)

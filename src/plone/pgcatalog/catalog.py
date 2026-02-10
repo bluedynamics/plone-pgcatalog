@@ -52,6 +52,7 @@ def _path_value_to_string(value):
         return "/" + "/".join(str(p) for p in value)
     return str(value)
 
+
 # Fixed set of columns for catalog queries (never user-supplied).
 # Lazy mode: only zoid + path; idx fetched on demand via batch load.
 # Eager mode: includes idx (backward compat for direct _run_search calls).
@@ -271,12 +272,16 @@ class PlonePGCatalogTool(CatalogTool):
             try:
                 uid = "/".join(obj.getPhysicalPath())
             except AttributeError:
-                log.warning("_set_pg_annotation: no getPhysicalPath on %s", type(obj).__name__)
+                log.warning(
+                    "_set_pg_annotation: no getPhysicalPath on %s", type(obj).__name__
+                )
                 return False
 
         zoid = self._obj_to_zoid(obj)
         if zoid is None:
-            log.debug("_set_pg_annotation: no _p_oid on %s at %s", type(obj).__name__, uid)
+            log.debug(
+                "_set_pg_annotation: no _p_oid on %s at %s", type(obj).__name__, uid
+            )
             return False
 
         wrapper = self._wrap_object(obj)
@@ -289,14 +294,22 @@ class PlonePGCatalogTool(CatalogTool):
         idx["path_parent"] = parent_path
         idx["path_depth"] = path_depth
 
-        set_pending(zoid, {
-            "path": uid,
-            "idx": idx,
-            "searchable_text": searchable_text,
-        })
+        set_pending(
+            zoid,
+            {
+                "path": uid,
+                "idx": idx,
+                "searchable_text": searchable_text,
+            },
+        )
         # Mark the object as dirty so ZODB stores it (triggering the processor)
         obj._p_changed = True
-        log.debug("_set_pg_annotation: SET on %s zoid=%d path=%s", type(obj).__name__, zoid, uid)
+        log.debug(
+            "_set_pg_annotation: SET on %s zoid=%d path=%s",
+            type(obj).__name__,
+            zoid,
+            uid,
+        )
         return True
 
     def indexObject(self, object):  # noqa: A002
@@ -321,7 +334,14 @@ class PlonePGCatalogTool(CatalogTool):
         """
         self._set_pg_annotation(object, uid)
 
-    def catalog_object(self, object, uid=None, idxs=None, update_metadata=1, pghandler=None):  # noqa: A002
+    def catalog_object(
+        self,
+        object,  # noqa: A002
+        uid=None,
+        idxs=None,
+        update_metadata=1,
+        pghandler=None,
+    ):
         """Index an object via PG annotation.
 
         Called from _reindexObject / _indexObject and directly.
@@ -387,9 +407,7 @@ class PlonePGCatalogTool(CatalogTool):
             if sm.checkPermission(AccessInactivePortalContent, self):
                 show_inactive = True
 
-        query = apply_security_filters(
-            query, roles, show_inactive=show_inactive
-        )
+        query = apply_security_filters(query, roles, show_inactive=show_inactive)
 
         from plone.pgcatalog.config import get_pool
         from plone.pgcatalog.config import get_request_connection

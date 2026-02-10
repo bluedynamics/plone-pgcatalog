@@ -98,7 +98,9 @@ def uncatalog_object(conn, zoid):
     )
 
 
-def reindex_object(conn, zoid, idx_updates, searchable_text=_SENTINEL, language="simple"):
+def reindex_object(
+    conn, zoid, idx_updates, searchable_text=_SENTINEL, language="simple"
+):
     """Update specific idx keys and/or searchable_text for an object.
 
     Merges idx_updates into the existing idx JSONB (||).  Keys present in

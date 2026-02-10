@@ -18,7 +18,6 @@ from tests.conftest import insert_object
 
 
 class TestApplySecurityFilters:
-
     def test_injects_roles(self):
         query = {"portal_type": "Document"}
         result = apply_security_filters(query, roles=["Anonymous"])
@@ -48,9 +47,7 @@ class TestApplySecurityFilters:
 
     def test_show_inactive_skips_effective_range(self):
         query = {"portal_type": "Document"}
-        result = apply_security_filters(
-            query, roles=["Anonymous"], show_inactive=True
-        )
+        result = apply_security_filters(query, roles=["Anonymous"], show_inactive=True)
         assert "effectiveRange" not in result
 
     def test_show_inactive_in_query_dict(self):
@@ -158,7 +155,6 @@ def _query_zoids(conn, query_dict):
 
 
 class TestSecurityFilterIntegration:
-
     def test_anonymous_sees_public_only(self, pg_conn_with_catalog):
         conn = pg_conn_with_catalog
         _setup_security_data(conn)
@@ -213,7 +209,6 @@ class TestSecurityFilterIntegration:
 
 
 class TestEffectiveRangeIntegration:
-
     def test_effective_range_filters_future(self, pg_conn_with_catalog):
         conn = pg_conn_with_catalog
         _setup_security_data(conn)

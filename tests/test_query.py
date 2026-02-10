@@ -13,7 +13,6 @@ from unittest import mock
 
 
 class TestFieldIndex:
-
     def test_exact_match(self):
         qr = build_query({"portal_type": "Document"})
         assert "idx @>" in qr["where"]
@@ -42,9 +41,7 @@ class TestFieldIndex:
         assert "idx->>'sortable_title' <=" in qr["where"]
 
     def test_range_min_max(self):
-        qr = build_query(
-            {"sortable_title": {"query": ["b", "m"], "range": "min:max"}}
-        )
+        qr = build_query({"sortable_title": {"query": ["b", "m"], "range": "min:max"}})
         assert "idx->>'sortable_title' >=" in qr["where"]
         assert "idx->>'sortable_title' <=" in qr["where"]
 
@@ -57,9 +54,7 @@ class TestFieldIndex:
         assert "NOT (idx->>'portal_type' = ANY(" in qr["where"]
 
     def test_query_and_not(self):
-        qr = build_query(
-            {"portal_type": {"query": "Document", "not": ["News Item"]}}
-        )
+        qr = build_query({"portal_type": {"query": "Document", "not": ["News Item"]}})
         assert "idx @>" in qr["where"]
         assert "NOT (idx->>'portal_type' = ANY(" in qr["where"]
 
@@ -70,24 +65,19 @@ class TestFieldIndex:
 
 
 class TestKeywordIndex:
-
     def test_single_value(self):
         qr = build_query({"Subject": "Python"})
         # Single value gets wrapped in list → overlap
         assert "?|" in qr["where"]
 
     def test_or_operator(self):
-        qr = build_query(
-            {"Subject": {"query": ["Python", "Zope"], "operator": "or"}}
-        )
+        qr = build_query({"Subject": {"query": ["Python", "Zope"], "operator": "or"}})
         assert "?|" in qr["where"]
         vals = _find_list_param(qr["params"])
         assert set(vals) == {"Python", "Zope"}
 
     def test_and_operator(self):
-        qr = build_query(
-            {"Subject": {"query": ["Python", "Zope"], "operator": "and"}}
-        )
+        qr = build_query({"Subject": {"query": ["Python", "Zope"], "operator": "and"}})
         assert "idx @>" in qr["where"]
         param = _find_json_param(qr["params"])
         assert param.obj == {"Subject": ["Python", "Zope"]}
@@ -103,7 +93,6 @@ class TestKeywordIndex:
 
 
 class TestBooleanIndex:
-
     def test_true(self):
         qr = build_query({"is_folderish": True})
         param = _find_json_param(qr["params"])
@@ -126,7 +115,6 @@ class TestBooleanIndex:
 
 
 class TestDateIndex:
-
     def test_exact(self):
         dt = datetime(2025, 1, 15, 10, 30, 0, tzinfo=UTC)
         qr = build_query({"created": dt})
@@ -145,9 +133,7 @@ class TestDateIndex:
     def test_range_min_max(self):
         dt_min = datetime(2025, 1, 1, tzinfo=UTC)
         dt_max = datetime(2025, 12, 31, tzinfo=UTC)
-        qr = build_query(
-            {"modified": {"query": [dt_min, dt_max], "range": "min:max"}}
-        )
+        qr = build_query({"modified": {"query": [dt_min, dt_max], "range": "min:max"}})
         where = qr["where"]
         assert "pgcatalog_to_timestamptz(idx->>'modified') >=" in where
         assert "pgcatalog_to_timestamptz(idx->>'modified') <=" in where
@@ -171,7 +157,6 @@ class TestDateIndex:
 
 
 class TestDateRangeIndex:
-
     def test_effective_range(self):
         now = datetime(2025, 6, 15, tzinfo=UTC)
         qr = build_query({"effectiveRange": now})
@@ -196,7 +181,6 @@ class TestDateRangeIndex:
 
 
 class TestUUIDIndex:
-
     def test_exact_match(self):
         qr = build_query({"UID": "abc123def456"})
         param = _find_json_param(qr["params"])
@@ -209,7 +193,6 @@ class TestUUIDIndex:
 
 
 class TestSearchableText:
-
     def test_full_text_search(self):
         qr = build_query({"SearchableText": "quick fox"})
         assert "searchable_text @@ plainto_tsquery" in qr["where"]
@@ -230,13 +213,14 @@ class TestSearchableText:
 
 
 class TestPathIndex:
-
     def test_subtree_default(self):
         qr = build_query({"path": "/plone/folder"})
         assert "idx->>'path' =" in qr["where"]
         assert "idx->>'path' LIKE" in qr["where"]
         # LIKE pattern should end with /%
-        like_val = [v for v in qr["params"].values() if isinstance(v, str) and v.endswith("/%")]
+        like_val = [
+            v for v in qr["params"].values() if isinstance(v, str) and v.endswith("/%")
+        ]
         assert like_val
 
     def test_exact_depth_0(self):
@@ -281,9 +265,7 @@ class TestPathIndex:
         assert "/" not in parents
 
     def test_multiple_paths_subtree(self):
-        qr = build_query(
-            {"path": {"query": ["/plone/folder1", "/plone/folder2"]}}
-        )
+        qr = build_query({"path": {"query": ["/plone/folder1", "/plone/folder2"]}})
         assert "OR" in qr["where"]
 
     def test_invalid_path_rejected(self):
@@ -305,7 +287,6 @@ class TestPathIndex:
 
 
 class TestSort:
-
     def test_sort_ascending(self):
         qr = build_query({"portal_type": "Document", "sort_on": "sortable_title"})
         assert qr["order_by"] == "idx->>'sortable_title' ASC"
@@ -354,7 +335,6 @@ class TestSort:
 
 
 class TestBatch:
-
     def test_b_start(self):
         qr = build_query({"portal_type": "Document", "b_start": 10})
         assert qr["offset"] == 10
@@ -369,9 +349,7 @@ class TestBatch:
         assert qr["limit"] == 10
 
     def test_sort_limit_overrides_b_size(self):
-        qr = build_query(
-            {"portal_type": "Document", "sort_limit": 50, "b_size": 30}
-        )
+        qr = build_query({"portal_type": "Document", "sort_limit": 50, "b_size": 30})
         assert qr["limit"] == 50
 
 
@@ -381,7 +359,6 @@ class TestBatch:
 
 
 class TestEdgeCases:
-
     def test_empty_query(self):
         qr = build_query({})
         assert "idx IS NOT NULL" in qr["where"]
@@ -425,7 +402,6 @@ class TestEdgeCases:
 
 
 class TestNoneQueryValues:
-
     def test_keyword_none_query(self):
         qr = build_query({"Subject": {"query": None}})
         assert "?|" not in qr["where"]
@@ -452,27 +428,30 @@ class TestNoneQueryValues:
 
 
 class TestSortEdgeCases:
-
     def test_sort_boolean_index(self):
-        qr = build_query({
-            "portal_type": "Document",
-            "sort_on": "is_folderish",
-        })
+        qr = build_query(
+            {
+                "portal_type": "Document",
+                "sort_on": "is_folderish",
+            }
+        )
         assert "::boolean" in qr["order_by"]
 
     def test_sort_composite_index_ignored(self):
         """effectiveRange has idx_key=None — can't sort on it."""
-        qr = build_query({
-            "portal_type": "Document",
-            "sort_on": "effectiveRange",
-        })
+        qr = build_query(
+            {
+                "portal_type": "Document",
+                "sort_on": "effectiveRange",
+            }
+        )
         assert qr["order_by"] is None
 
 
 class TestDateCoercion:
-
     def test_date_object_coerced_to_datetime(self):
         from datetime import date
+
         qr = build_query({"modified": {"query": date(2025, 6, 15), "range": "min"}})
         assert len(qr["params"]) >= 1
 
@@ -480,6 +459,7 @@ class TestDateCoercion:
         class FakeDateTime:
             def ISO8601(self):
                 return "2025-06-15T00:00:00+00:00"
+
         qr = build_query({"modified": {"query": FakeDateTime(), "range": "min"}})
         param_vals = list(qr["params"].values())
         assert "2025-06-15" in str(param_vals)
@@ -502,7 +482,9 @@ class TestAdditionalPathIndex:
         qr = build_query({"tgpath": "/uuid1/uuid2"})
         assert "idx->>'tgpath' =" in qr["where"]
         assert "idx->>'tgpath' LIKE" in qr["where"]
-        like_val = [v for v in qr["params"].values() if isinstance(v, str) and v.endswith("/%")]
+        like_val = [
+            v for v in qr["params"].values() if isinstance(v, str) and v.endswith("/%")
+        ]
         assert like_val
 
     def test_tgpath_exact(self):
@@ -559,10 +541,12 @@ class TestAdditionalPathIndex:
 
     def test_combined_path_and_tgpath(self):
         """Both path and tgpath can be queried simultaneously."""
-        qr = build_query({
-            "path": "/plone/folder",
-            "tgpath": {"query": "/uuid1/uuid2", "depth": 1},
-        })
+        qr = build_query(
+            {
+                "path": "/plone/folder",
+                "tgpath": {"query": "/uuid1/uuid2", "depth": 1},
+            }
+        )
         where = qr["where"]
         # Both use idx JSONB with different keys
         assert "idx->>'path' =" in where or "idx->>'path' LIKE" in where
@@ -570,29 +554,42 @@ class TestAdditionalPathIndex:
 
 
 class TestPathValidation:
-
     def test_invalid_path_type_raises(self):
         from plone.pgcatalog.query import _validate_path
 
         import pytest
+
         with pytest.raises(ValueError, match="must be a string"):
             _validate_path(123)
 
 
 class TestNavtreeEdgeCases:
-
     def test_navtree_breadcrumbs_empty(self):
         """navtree_start beyond path length produces FALSE clause."""
-        qr = build_query({
-            "path": {"query": "/a", "navtree": True, "depth": 0, "navtree_start": 10},
-        })
+        qr = build_query(
+            {
+                "path": {
+                    "query": "/a",
+                    "navtree": True,
+                    "depth": 0,
+                    "navtree_start": 10,
+                },
+            }
+        )
         assert "FALSE" in qr["where"]
 
     def test_navtree_parents_empty(self):
         """navtree_start beyond path length with depth=1 produces FALSE clause."""
-        qr = build_query({
-            "path": {"query": "/a", "navtree": True, "depth": 1, "navtree_start": 10},
-        })
+        qr = build_query(
+            {
+                "path": {
+                    "query": "/a",
+                    "navtree": True,
+                    "depth": 1,
+                    "navtree_start": 10,
+                },
+            }
+        )
         assert "FALSE" in qr["where"]
 
 
@@ -627,7 +624,8 @@ class TestDynamicFieldIndex:
 
     def test_dynamic_field_exact(self, populated_registry):
         """Query a dynamically registered FieldIndex."""
-        from plone.pgcatalog.columns import get_registry, IndexType
+        from plone.pgcatalog.columns import get_registry
+        from plone.pgcatalog.columns import IndexType
 
         get_registry().register("my_addon_field", IndexType.FIELD, "my_addon_field")
 
@@ -637,7 +635,8 @@ class TestDynamicFieldIndex:
         assert param.obj == {"my_addon_field": "some_value"}
 
     def test_dynamic_field_range(self, populated_registry):
-        from plone.pgcatalog.columns import get_registry, IndexType
+        from plone.pgcatalog.columns import get_registry
+        from plone.pgcatalog.columns import IndexType
 
         get_registry().register("my_addon_field", IndexType.FIELD, "my_addon_field")
 
@@ -645,7 +644,8 @@ class TestDynamicFieldIndex:
         assert "idx->>'my_addon_field' >=" in qr["where"]
 
     def test_dynamic_field_multi_value(self, populated_registry):
-        from plone.pgcatalog.columns import get_registry, IndexType
+        from plone.pgcatalog.columns import get_registry
+        from plone.pgcatalog.columns import IndexType
 
         get_registry().register("my_addon_field", IndexType.FIELD, "my_addon_field")
 
@@ -657,7 +657,8 @@ class TestDynamicKeywordIndex:
     """KeywordIndex dynamically registered via registry."""
 
     def test_dynamic_keyword_or(self, populated_registry):
-        from plone.pgcatalog.columns import get_registry, IndexType
+        from plone.pgcatalog.columns import get_registry
+        from plone.pgcatalog.columns import IndexType
 
         get_registry().register("my_tags", IndexType.KEYWORD, "my_tags")
 
@@ -665,7 +666,8 @@ class TestDynamicKeywordIndex:
         assert "?|" in qr["where"]
 
     def test_dynamic_keyword_and(self, populated_registry):
-        from plone.pgcatalog.columns import get_registry, IndexType
+        from plone.pgcatalog.columns import get_registry
+        from plone.pgcatalog.columns import IndexType
 
         get_registry().register("my_tags", IndexType.KEYWORD, "my_tags")
 
@@ -677,7 +679,8 @@ class TestDynamicDateIndex:
     """DateIndex dynamically registered via registry."""
 
     def test_dynamic_date_exact(self, populated_registry):
-        from plone.pgcatalog.columns import get_registry, IndexType
+        from plone.pgcatalog.columns import get_registry
+        from plone.pgcatalog.columns import IndexType
 
         get_registry().register("event_start", IndexType.DATE, "event_start")
 
@@ -690,7 +693,8 @@ class TestDynamicSort:
     """Sort on dynamically registered indexes."""
 
     def test_sort_dynamic_field(self, populated_registry):
-        from plone.pgcatalog.columns import get_registry, IndexType
+        from plone.pgcatalog.columns import get_registry
+        from plone.pgcatalog.columns import IndexType
 
         get_registry().register("my_sort_field", IndexType.FIELD, "my_sort_field")
 
@@ -698,7 +702,8 @@ class TestDynamicSort:
         assert qr["order_by"] == "idx->>'my_sort_field' ASC"
 
     def test_sort_dynamic_date(self, populated_registry):
-        from plone.pgcatalog.columns import get_registry, IndexType
+        from plone.pgcatalog.columns import get_registry
+        from plone.pgcatalog.columns import IndexType
 
         get_registry().register("event_start", IndexType.DATE, "event_start")
 
@@ -712,9 +717,8 @@ class TestIPGIndexTranslatorQuery:
 
     def test_translator_query_called(self, populated_registry):
         """If an index is not in the registry, query looks up IPGIndexTranslator."""
-        from unittest import mock
-
         from plone.pgcatalog.interfaces import IPGIndexTranslator
+        from unittest import mock
         from zope.component import getSiteManager
 
         translator = mock.Mock()
@@ -738,9 +742,8 @@ class TestIPGIndexTranslatorQuery:
 
     def test_translator_sort_called(self, populated_registry):
         """IPGIndexTranslator.sort() is used when index not in registry."""
-        from unittest import mock
-
         from plone.pgcatalog.interfaces import IPGIndexTranslator
+        from unittest import mock
         from zope.component import getSiteManager
 
         translator = mock.Mock()
@@ -763,9 +766,8 @@ class TestIPGIndexTranslatorQuery:
 
     def test_translator_sort_returns_none(self, populated_registry):
         """If translator.sort() returns None, no ORDER BY is added."""
-        from unittest import mock
-
         from plone.pgcatalog.interfaces import IPGIndexTranslator
+        from unittest import mock
         from zope.component import getSiteManager
 
         translator = mock.Mock()

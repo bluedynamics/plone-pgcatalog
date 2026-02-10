@@ -78,7 +78,9 @@ class TestConvertValue:
     def test_bool_not_treated_as_int(self):
         """bool is subclass of int — must return bool, not int."""
         assert convert_value(True) is True
-        assert not isinstance(convert_value(True), int) or isinstance(convert_value(True), bool)
+        assert not isinstance(convert_value(True), int) or isinstance(
+            convert_value(True), bool
+        )
 
 
 class TestComputePathInfo:

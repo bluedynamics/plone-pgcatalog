@@ -63,10 +63,10 @@ def _ensure_catalog_indexes(site):
             # cascade which would replace our PlonePGCatalogTool and
             # purge IFactory registrations for content types.
             setup.runImportStepFromProfile(
-                profile_id, "catalog", run_dependencies=False,
+                profile_id,
+                "catalog",
+                run_dependencies=False,
             )
             log.info("Re-applied catalog config from %s", profile_id)
         except Exception:
-            log.debug(
-                "Could not apply catalog from %s", profile_id, exc_info=True
-            )
+            log.debug("Could not apply catalog from %s", profile_id, exc_info=True)

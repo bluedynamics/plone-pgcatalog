@@ -19,12 +19,13 @@ def _query_zoids(conn, query_dict):
 
 
 class TestBasicSearch:
-
     def test_single_word(self, pg_conn_with_catalog):
         conn = pg_conn_with_catalog
         insert_object(conn, zoid=300)
         catalog_object(
-            conn, zoid=300, path="/plone/doc",
+            conn,
+            zoid=300,
+            path="/plone/doc",
             idx={"portal_type": "Document"},
             searchable_text="The quick brown fox",
         )
@@ -36,7 +37,9 @@ class TestBasicSearch:
         conn = pg_conn_with_catalog
         insert_object(conn, zoid=301)
         catalog_object(
-            conn, zoid=301, path="/plone/doc",
+            conn,
+            zoid=301,
+            path="/plone/doc",
             idx={"portal_type": "Document"},
             searchable_text="PostgreSQL is a powerful database system",
         )
@@ -48,7 +51,9 @@ class TestBasicSearch:
         conn = pg_conn_with_catalog
         insert_object(conn, zoid=302)
         catalog_object(
-            conn, zoid=302, path="/plone/doc",
+            conn,
+            zoid=302,
+            path="/plone/doc",
             idx={"portal_type": "Document"},
             searchable_text="The quick brown fox",
         )
@@ -65,7 +70,9 @@ class TestBasicSearch:
         ]:
             insert_object(conn, zoid=zoid)
             catalog_object(
-                conn, zoid=zoid, path=f"/plone/doc{zoid}",
+                conn,
+                zoid=zoid,
+                path=f"/plone/doc{zoid}",
                 idx={"portal_type": "Document"},
                 searchable_text=text,
             )
@@ -83,7 +90,9 @@ class TestBasicSearch:
         conn = pg_conn_with_catalog
         insert_object(conn, zoid=320)
         catalog_object(
-            conn, zoid=320, path="/plone/doc",
+            conn,
+            zoid=320,
+            path="/plone/doc",
             idx={"portal_type": "Document"},
             searchable_text=None,
         )
@@ -98,12 +107,13 @@ class TestBasicSearch:
 
 
 class TestMultilingualSearch:
-
     def test_german_stemming(self, pg_conn_with_catalog):
         conn = pg_conn_with_catalog
         insert_object(conn, zoid=330)
         catalog_object(
-            conn, zoid=330, path="/plone/doc",
+            conn,
+            zoid=330,
+            path="/plone/doc",
             idx={"portal_type": "Document"},
             searchable_text="Die Katzen spielen im Garten",
             language="german",
@@ -124,7 +134,9 @@ class TestMultilingualSearch:
         conn = pg_conn_with_catalog
         insert_object(conn, zoid=331)
         catalog_object(
-            conn, zoid=331, path="/plone/doc",
+            conn,
+            zoid=331,
+            path="/plone/doc",
             idx={"portal_type": "Document"},
             searchable_text="The children are running quickly",
             language="english",
@@ -145,7 +157,9 @@ class TestMultilingualSearch:
         conn = pg_conn_with_catalog
         insert_object(conn, zoid=332)
         catalog_object(
-            conn, zoid=332, path="/plone/doc",
+            conn,
+            zoid=332,
+            path="/plone/doc",
             idx={"portal_type": "Document"},
             searchable_text="The children are running",
             language="simple",
@@ -175,19 +189,22 @@ class TestMultilingualSearch:
 
 
 class TestRanking:
-
     def test_rank_orders_by_relevance(self, pg_conn_with_catalog):
         conn = pg_conn_with_catalog
         # Doc with many mentions of "Python" should rank higher
         insert_object(conn, zoid=340)
         catalog_object(
-            conn, zoid=340, path="/plone/many",
+            conn,
+            zoid=340,
+            path="/plone/many",
             idx={"portal_type": "Document"},
             searchable_text="Python Python Python Python programming",
         )
         insert_object(conn, zoid=341)
         catalog_object(
-            conn, zoid=341, path="/plone/few",
+            conn,
+            zoid=341,
+            path="/plone/few",
             idx={"portal_type": "Document"},
             searchable_text="Python is nice",
         )
@@ -212,13 +229,14 @@ class TestRanking:
 
 
 class TestFulltextEdgeCases:
-
     def test_special_characters_safe(self, pg_conn_with_catalog):
         """plainto_tsquery handles special chars safely."""
         conn = pg_conn_with_catalog
         insert_object(conn, zoid=350)
         catalog_object(
-            conn, zoid=350, path="/plone/doc",
+            conn,
+            zoid=350,
+            path="/plone/doc",
             idx={"portal_type": "Document"},
             searchable_text="Normal document content",
         )
@@ -233,7 +251,9 @@ class TestFulltextEdgeCases:
         conn = pg_conn_with_catalog
         insert_object(conn, zoid=351)
         catalog_object(
-            conn, zoid=351, path="/plone/doc",
+            conn,
+            zoid=351,
+            path="/plone/doc",
             idx={"portal_type": "Document"},
             searchable_text="Some content",
         )
@@ -255,7 +275,9 @@ class TestFulltextEdgeCases:
         ]:
             insert_object(conn, zoid=zoid)
             catalog_object(
-                conn, zoid=zoid, path=f"/plone/doc{zoid}",
+                conn,
+                zoid=zoid,
+                path=f"/plone/doc{zoid}",
                 idx={"portal_type": pt},
                 searchable_text=text,
             )

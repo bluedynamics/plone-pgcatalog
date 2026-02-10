@@ -20,8 +20,9 @@ log = logging.getLogger(__name__)
 def _install_orjson_loader():
     """Register orjson as psycopg's JSONB deserializer if available."""
     try:
-        import orjson
         from psycopg.types.json import set_json_loads
+
+        import orjson
 
         set_json_loads(orjson.loads)
     except ImportError:
@@ -134,8 +135,7 @@ def get_pool(context=None):
         return pool
 
     raise RuntimeError(
-        "Cannot find PG connection pool. "
-        "Use zodb-pgjsonb storage or set PGCATALOG_DSN."
+        "Cannot find PG connection pool. Use zodb-pgjsonb storage or set PGCATALOG_DSN."
     )
 
 
@@ -246,7 +246,12 @@ class CatalogStateProcessor:
             else:
                 return None
 
-        log.debug("CatalogStateProcessor.process: zoid=%d class=%s.%s", zoid, class_mod, class_name)
+        log.debug(
+            "CatalogStateProcessor.process: zoid=%d class=%s.%s",
+            zoid,
+            class_mod,
+            class_name,
+        )
 
         if pending is None:
             # Uncatalog sentinel: NULL all catalog columns
@@ -333,5 +338,3 @@ def _sync_registry_from_db(db):
         log.debug("Could not sync IndexRegistry from ZODB", exc_info=True)
     finally:
         conn.close()
-
-

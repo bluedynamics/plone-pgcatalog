@@ -29,7 +29,12 @@ class TestCatalogObject:
         conn = pg_conn_with_catalog
         insert_object(conn, zoid=11)
 
-        catalog_object(conn, zoid=11, path="/plone/folder/subfolder/doc", idx={"portal_type": "Document"})
+        catalog_object(
+            conn,
+            zoid=11,
+            path="/plone/folder/subfolder/doc",
+            idx={"portal_type": "Document"},
+        )
         conn.commit()
 
         row = _get_row(conn, 11)
@@ -52,7 +57,9 @@ class TestCatalogObject:
         insert_object(conn, zoid=13)
 
         catalog_object(
-            conn, zoid=13, path="/plone/doc",
+            conn,
+            zoid=13,
+            path="/plone/doc",
             idx={"portal_type": "Document"},
             searchable_text="The quick brown fox",
         )
@@ -74,7 +81,9 @@ class TestCatalogObject:
         conn = pg_conn_with_catalog
         insert_object(conn, zoid=14)
 
-        catalog_object(conn, zoid=14, path="/plone/doc", idx={"portal_type": "Document"})
+        catalog_object(
+            conn, zoid=14, path="/plone/doc", idx={"portal_type": "Document"}
+        )
         conn.commit()
 
         row = _get_row(conn, 14)
@@ -85,11 +94,18 @@ class TestCatalogObject:
         insert_object(conn, zoid=15)
 
         # First catalog
-        catalog_object(conn, zoid=15, path="/plone/old", idx={"portal_type": "Document"})
+        catalog_object(
+            conn, zoid=15, path="/plone/old", idx={"portal_type": "Document"}
+        )
         conn.commit()
 
         # Re-catalog with new data
-        catalog_object(conn, zoid=15, path="/plone/new", idx={"portal_type": "Page", "Title": "New"})
+        catalog_object(
+            conn,
+            zoid=15,
+            path="/plone/new",
+            idx={"portal_type": "Page", "Title": "New"},
+        )
         conn.commit()
 
         row = _get_row(conn, 15)
@@ -124,10 +140,17 @@ class TestCatalogObject:
     def test_base_columns_preserved(self, pg_conn_with_catalog):
         """Cataloging doesn't touch the base object_state columns."""
         conn = pg_conn_with_catalog
-        insert_object(conn, zoid=17, class_mod="plone.app", class_name="Document",
-                       state={"title": "Original"})
+        insert_object(
+            conn,
+            zoid=17,
+            class_mod="plone.app",
+            class_name="Document",
+            state={"title": "Original"},
+        )
 
-        catalog_object(conn, zoid=17, path="/plone/doc", idx={"portal_type": "Document"})
+        catalog_object(
+            conn, zoid=17, path="/plone/doc", idx={"portal_type": "Document"}
+        )
         conn.commit()
 
         with conn.cursor() as cur:
@@ -148,8 +171,13 @@ class TestUncatalogObject:
         insert_object(conn, zoid=20)
 
         # Catalog first
-        catalog_object(conn, zoid=20, path="/plone/doc", idx={"portal_type": "Document"},
-                        searchable_text="hello world")
+        catalog_object(
+            conn,
+            zoid=20,
+            path="/plone/doc",
+            idx={"portal_type": "Document"},
+            searchable_text="hello world",
+        )
         conn.commit()
         row = _get_row(conn, 20)
         assert row["path"] is not None
@@ -171,14 +199,18 @@ class TestUncatalogObject:
         conn = pg_conn_with_catalog
         insert_object(conn, zoid=21, class_mod="myapp", class_name="Doc")
 
-        catalog_object(conn, zoid=21, path="/plone/doc", idx={"portal_type": "Document"})
+        catalog_object(
+            conn, zoid=21, path="/plone/doc", idx={"portal_type": "Document"}
+        )
         conn.commit()
 
         uncatalog_object(conn, zoid=21)
         conn.commit()
 
         with conn.cursor() as cur:
-            cur.execute("SELECT class_mod, class_name FROM object_state WHERE zoid = 21")
+            cur.execute(
+                "SELECT class_mod, class_name FROM object_state WHERE zoid = 21"
+            )
             row = cur.fetchone()
         assert row is not None
         assert row["class_mod"] == "myapp"
@@ -192,8 +224,12 @@ class TestReindexObject:
         insert_object(conn, zoid=30)
 
         # Full catalog first
-        catalog_object(conn, zoid=30, path="/plone/doc",
-                        idx={"portal_type": "Document", "review_state": "private"})
+        catalog_object(
+            conn,
+            zoid=30,
+            path="/plone/doc",
+            idx={"portal_type": "Document", "review_state": "private"},
+        )
         conn.commit()
 
         # Partial reindex: update review_state only
@@ -208,7 +244,9 @@ class TestReindexObject:
         conn = pg_conn_with_catalog
         insert_object(conn, zoid=31)
 
-        catalog_object(conn, zoid=31, path="/plone/doc", idx={"portal_type": "Document"})
+        catalog_object(
+            conn, zoid=31, path="/plone/doc", idx={"portal_type": "Document"}
+        )
         conn.commit()
 
         reindex_object(conn, zoid=31, idx_updates={"Title": "New Title"})
@@ -222,8 +260,13 @@ class TestReindexObject:
         conn = pg_conn_with_catalog
         insert_object(conn, zoid=32)
 
-        catalog_object(conn, zoid=32, path="/plone/doc", idx={"portal_type": "Document"},
-                        searchable_text="original text")
+        catalog_object(
+            conn,
+            zoid=32,
+            path="/plone/doc",
+            idx={"portal_type": "Document"},
+            searchable_text="original text",
+        )
         conn.commit()
 
         # Reindex idx only — searchable_text should be preserved
@@ -243,12 +286,21 @@ class TestReindexObject:
         conn = pg_conn_with_catalog
         insert_object(conn, zoid=33)
 
-        catalog_object(conn, zoid=33, path="/plone/doc", idx={"portal_type": "Document"},
-                        searchable_text="old text")
+        catalog_object(
+            conn,
+            zoid=33,
+            path="/plone/doc",
+            idx={"portal_type": "Document"},
+            searchable_text="old text",
+        )
         conn.commit()
 
-        reindex_object(conn, zoid=33, idx_updates={"Title": "New"},
-                        searchable_text="new searchable content")
+        reindex_object(
+            conn,
+            zoid=33,
+            idx_updates={"Title": "New"},
+            searchable_text="new searchable content",
+        )
         conn.commit()
 
         with conn.cursor() as cur:
@@ -271,8 +323,9 @@ class TestReindexObject:
         conn = pg_conn_with_catalog
         insert_object(conn, zoid=34)
 
-        catalog_object(conn, zoid=34, path="/plone/folder/doc",
-                        idx={"portal_type": "Document"})
+        catalog_object(
+            conn, zoid=34, path="/plone/folder/doc", idx={"portal_type": "Document"}
+        )
         conn.commit()
 
         reindex_object(conn, zoid=34, idx_updates={"review_state": "published"})
@@ -302,10 +355,14 @@ class TestSearchableTextLanguage:
         conn = pg_conn_with_catalog
         insert_object(conn, zoid=40)
 
-        catalog_object(conn, zoid=40, path="/plone/doc",
-                        idx={"portal_type": "Document"},
-                        searchable_text="Die Katzen spielen im Garten",
-                        language="german")
+        catalog_object(
+            conn,
+            zoid=40,
+            path="/plone/doc",
+            idx={"portal_type": "Document"},
+            searchable_text="Die Katzen spielen im Garten",
+            language="german",
+        )
         conn.commit()
 
         # German stemmer should match "Katze" (singular) for "Katzen" (plural)
@@ -322,10 +379,14 @@ class TestSearchableTextLanguage:
         conn = pg_conn_with_catalog
         insert_object(conn, zoid=41)
 
-        catalog_object(conn, zoid=41, path="/plone/doc",
-                        idx={"portal_type": "Document"},
-                        searchable_text="Die Katzen spielen im Garten",
-                        language="simple")
+        catalog_object(
+            conn,
+            zoid=41,
+            path="/plone/doc",
+            idx={"portal_type": "Document"},
+            searchable_text="Die Katzen spielen im Garten",
+            language="simple",
+        )
         conn.commit()
 
         # "simple" config: no stemming, "Katze" won't match "Katzen"

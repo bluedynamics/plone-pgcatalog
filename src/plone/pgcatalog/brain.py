@@ -9,8 +9,8 @@ batched queries where LIMIT < total matching rows.
 """
 
 from Products.ZCatalog.interfaces import ICatalogBrain
-from ZTUtils.Lazy import Lazy
 from zope.interface import implementer
+from ZTUtils.Lazy import Lazy
 
 
 @implementer(ICatalogBrain)
@@ -31,7 +31,7 @@ class PGCatalogBrain:
         catalog: reference to the catalog tool (for getObject traversal)
     """
 
-    __slots__ = ("_catalog", "_row", "_result_set")
+    __slots__ = ("_catalog", "_result_set", "_row")
 
     def __init__(self, row, catalog=None):
         self._row = row
@@ -149,7 +149,9 @@ class CatalogSearchResults(Lazy):
     def __init__(self, brains, actual_result_count=None, pool=None):
         self._brains = list(brains)
         self.actual_result_count = (
-            actual_result_count if actual_result_count is not None else len(self._brains)
+            actual_result_count
+            if actual_result_count is not None
+            else len(self._brains)
         )
         self._pool = pool
         self._idx_loaded = pool is None  # eager if no pool
@@ -173,8 +175,7 @@ class CatalogSearchResults(Lazy):
         try:
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT zoid, idx FROM object_state "
-                    "WHERE zoid = ANY(%(zoids)s)",
+                    "SELECT zoid, idx FROM object_state WHERE zoid = ANY(%(zoids)s)",
                     {"zoids": zoids},
                     prepare=True,
                 )
@@ -195,7 +196,9 @@ class CatalogSearchResults(Lazy):
         result = self._brains[index]
         if isinstance(index, slice):
             sr = CatalogSearchResults(
-                result, self.actual_result_count, pool=self._pool,
+                result,
+                self.actual_result_count,
+                pool=self._pool,
             )
             # Re-wire brains to new result set if idx not yet loaded
             if not self._idx_loaded:

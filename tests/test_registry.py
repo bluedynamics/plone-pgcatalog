@@ -3,8 +3,9 @@
 TDD: these tests are written BEFORE the implementation.
 """
 
-import pytest
 from plone.pgcatalog.columns import IndexType
+
+import pytest
 
 
 # ---------------------------------------------------------------------------
@@ -113,7 +114,9 @@ class TestMetaTypeMap:
 
         covered = set(META_TYPE_MAP.values())
         for idx_type in IndexType:
-            assert idx_type in covered, f"IndexType.{idx_type.name} has no META_TYPE_MAP entry"
+            assert idx_type in covered, (
+                f"IndexType.{idx_type.name} has no META_TYPE_MAP entry"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -472,7 +475,9 @@ class TestIndexRegistryProgrammatic:
 
         registry = IndexRegistry()
         registry.register(
-            "my_index", IndexType.FIELD, "my_index",
+            "my_index",
+            IndexType.FIELD,
+            "my_index",
             source_attrs=["other_attr"],
         )
 
@@ -593,8 +598,8 @@ class TestGetRegistry:
     """get_registry() returns module-level singleton."""
 
     def test_returns_registry(self):
-        from plone.pgcatalog.columns import IndexRegistry
         from plone.pgcatalog.columns import get_registry
+        from plone.pgcatalog.columns import IndexRegistry
 
         registry = get_registry()
         assert isinstance(registry, IndexRegistry)

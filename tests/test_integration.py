@@ -92,7 +92,6 @@ def _setup_objects(conn):
 
 
 class TestCatalogObject:
-
     def test_catalog_and_search(self, pg_conn_with_catalog):
         conn = pg_conn_with_catalog
         _setup_objects(conn)
@@ -113,10 +112,13 @@ class TestCatalogObject:
         conn = pg_conn_with_catalog
         _setup_objects(conn)
 
-        results = _run_search(conn, {
-            "portal_type": "Document",
-            "sort_on": "sortable_title",
-        })
+        results = _run_search(
+            conn,
+            {
+                "portal_type": "Document",
+                "sort_on": "sortable_title",
+            },
+        )
         brain = results[0]
         assert brain.getPath() == "/plone/doc1"
         assert brain.getRID() == 500
@@ -125,7 +127,6 @@ class TestCatalogObject:
 
 
 class TestUncatalogObject:
-
     def test_uncatalog_removes_from_search(self, pg_conn_with_catalog):
         conn = pg_conn_with_catalog
         _setup_objects(conn)
@@ -142,7 +143,6 @@ class TestUncatalogObject:
 
 
 class TestReindexObject:
-
     def test_reindex_updates_field(self, pg_conn_with_catalog):
         conn = pg_conn_with_catalog
         _setup_objects(conn)
@@ -152,16 +152,24 @@ class TestReindexObject:
         conn.commit()
 
         # Old query returns nothing
-        results = _run_search(conn, {
-            "portal_type": "Document", "review_state": "published",
-        })
+        results = _run_search(
+            conn,
+            {
+                "portal_type": "Document",
+                "review_state": "published",
+            },
+        )
         zoids = {b.getRID() for b in results}
         assert 500 not in zoids
 
         # New query finds it
-        results = _run_search(conn, {
-            "portal_type": "Document", "review_state": "private",
-        })
+        results = _run_search(
+            conn,
+            {
+                "portal_type": "Document",
+                "review_state": "private",
+            },
+        )
         zoids = {b.getRID() for b in results}
         assert 500 in zoids
 
@@ -182,7 +190,8 @@ class TestReindexObject:
         _setup_objects(conn)
 
         _sql_reindex(
-            conn, zoid=500,
+            conn,
+            zoid=500,
             idx_updates={"Title": "Updated Title"},
             searchable_text="updated full text content",
         )
@@ -193,7 +202,9 @@ class TestReindexObject:
         assert len(results) == 1
         assert results[0].getRID() == 500
 
-    def test_reindex_without_searchable_text_preserves_tsvector(self, pg_conn_with_catalog):
+    def test_reindex_without_searchable_text_preserves_tsvector(
+        self, pg_conn_with_catalog
+    ):
         """Reindex without searchable_text leaves existing tsvector unchanged."""
         conn = pg_conn_with_catalog
         _setup_objects(conn)
@@ -228,7 +239,6 @@ class TestReindexObject:
 
 
 class TestSecuredSearch:
-
     def test_secured_anonymous(self, pg_conn_with_catalog):
         conn = pg_conn_with_catalog
         _setup_objects(conn)
@@ -257,7 +267,6 @@ class TestSecuredSearch:
 
 
 class TestResultCount:
-
     def test_actual_result_count_without_limit(self, pg_conn_with_catalog):
         conn = pg_conn_with_catalog
         _setup_objects(conn)
@@ -269,9 +278,13 @@ class TestResultCount:
         conn = pg_conn_with_catalog
         _setup_objects(conn)
 
-        results = _run_search(conn, {
-            "sort_on": "sortable_title", "sort_limit": 2,
-        })
+        results = _run_search(
+            conn,
+            {
+                "sort_on": "sortable_title",
+                "sort_limit": 2,
+            },
+        )
         assert len(results) == 2
         assert results.actual_result_count == 3
 
@@ -282,7 +295,6 @@ class TestResultCount:
 
 
 class TestRefreshCatalog:
-
     def test_refresh_returns_count(self, pg_conn_with_catalog):
         conn = pg_conn_with_catalog
         _setup_objects(conn)
@@ -292,7 +304,6 @@ class TestRefreshCatalog:
 
 
 class TestReindexIndex:
-
     def test_reindex_specific_key(self, pg_conn_with_catalog):
         conn = pg_conn_with_catalog
         _setup_objects(conn)
@@ -309,7 +320,6 @@ class TestReindexIndex:
 
 
 class TestClearCatalogData:
-
     def test_clears_all_catalog_data(self, pg_conn_with_catalog):
         conn = pg_conn_with_catalog
         _setup_objects(conn)
@@ -333,7 +343,9 @@ class TestClearCatalogData:
 
         # Base object_state rows still exist (just idx/path cleared)
         with conn.cursor() as cur:
-            cur.execute("SELECT COUNT(*) AS cnt FROM object_state WHERE zoid IN (500, 501, 502)")
+            cur.execute(
+                "SELECT COUNT(*) AS cnt FROM object_state WHERE zoid IN (500, 501, 502)"
+            )
             assert cur.fetchone()["cnt"] == 3
 
     def test_returns_zero_when_nothing_cataloged(self, pg_conn_with_catalog):
@@ -342,7 +354,6 @@ class TestClearCatalogData:
 
 
 class TestWindowFunctionResultCount:
-
     def test_limit_returns_actual_count(self, pg_conn_with_catalog):
         conn = pg_conn_with_catalog
         _setup_objects(conn)
@@ -355,9 +366,14 @@ class TestWindowFunctionResultCount:
         conn = pg_conn_with_catalog
         _setup_objects(conn)
 
-        results = _run_search(conn, {
-            "sort_on": "sortable_title", "sort_limit": 1, "b_start": 1,
-        })
+        results = _run_search(
+            conn,
+            {
+                "sort_on": "sortable_title",
+                "sort_limit": 1,
+                "b_start": 1,
+            },
+        )
         assert len(results) == 1
         assert results.actual_result_count == 3
 
@@ -373,9 +389,13 @@ class TestWindowFunctionResultCount:
         conn = pg_conn_with_catalog
         _setup_objects(conn)
 
-        results = _run_search(conn, {
-            "portal_type": "NonExistent", "sort_limit": 10,
-        })
+        results = _run_search(
+            conn,
+            {
+                "portal_type": "NonExistent",
+                "sort_limit": 10,
+            },
+        )
         assert len(results) == 0
         assert results.actual_result_count == 0
 
@@ -386,7 +406,6 @@ class TestWindowFunctionResultCount:
 
 
 class TestNonCatalogedObjects:
-
     def test_non_cataloged_excluded(self, pg_conn_with_catalog):
         conn = pg_conn_with_catalog
         _setup_objects(conn)
@@ -405,7 +424,6 @@ class TestNonCatalogedObjects:
 
 
 class TestCatalogFullText:
-
     def test_search_text(self, pg_conn_with_catalog):
         conn = pg_conn_with_catalog
         _setup_objects(conn)
@@ -418,7 +436,11 @@ class TestCatalogFullText:
         conn = pg_conn_with_catalog
         _setup_objects(conn)
 
-        results = _run_search(conn, {
-            "SearchableText": "document", "portal_type": "Document",
-        })
+        results = _run_search(
+            conn,
+            {
+                "SearchableText": "document",
+                "portal_type": "Document",
+            },
+        )
         assert len(results) == 2

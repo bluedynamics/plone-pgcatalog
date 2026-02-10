@@ -13,7 +13,6 @@ import pytest
 
 
 class TestGetPool:
-
     def test_returns_pool_from_storage(self):
         mock_pool = mock.Mock()
         site = mock.Mock()
@@ -22,8 +21,10 @@ class TestGetPool:
 
     def test_falls_back_to_env_pool(self):
         mock_pool = mock.Mock()
-        with mock.patch.dict(os.environ, {"PGCATALOG_DSN": "host=test dbname=test"}), \
-             mock.patch("psycopg_pool.ConnectionPool", return_value=mock_pool):
+        with (
+            mock.patch.dict(os.environ, {"PGCATALOG_DSN": "host=test dbname=test"}),
+            mock.patch("psycopg_pool.ConnectionPool", return_value=mock_pool),
+        ):
             config_mod._fallback_pool = None
             try:
                 pool = get_pool()
@@ -55,7 +56,6 @@ class TestGetPool:
 
 
 class TestPoolFromStorage:
-
     def test_extracts_pool(self):
         mock_pool = mock.Mock()
         site = mock.Mock()

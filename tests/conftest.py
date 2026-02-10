@@ -1,7 +1,7 @@
 """Shared test configuration for plone.pgcatalog tests."""
 
-from plone.pgcatalog.columns import IndexType
 from plone.pgcatalog.columns import get_registry
+from plone.pgcatalog.columns import IndexType
 from plone.pgcatalog.schema import install_catalog_schema
 from psycopg.rows import dict_row
 from psycopg.types.json import Json
@@ -59,9 +59,17 @@ _PLONE_DEFAULT_INDEXES = [
 ]
 
 _PLONE_DEFAULT_METADATA = [
-    "CreationDate", "EffectiveDate", "ExpirationDate", "ModificationDate",
-    "getIcon", "getObjSize", "getRemoteUrl", "image_scales",
-    "listCreators", "location", "mime_type",
+    "CreationDate",
+    "EffectiveDate",
+    "ExpirationDate",
+    "ModificationDate",
+    "getIcon",
+    "getObjSize",
+    "getRemoteUrl",
+    "image_scales",
+    "listCreators",
+    "location",
+    "mime_type",
 ]
 
 

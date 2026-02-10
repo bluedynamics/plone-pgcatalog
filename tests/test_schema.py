@@ -73,9 +73,7 @@ class TestSchemaInstallation:
         """Rows without catalog data have NULL in catalog columns."""
         with pg_conn_with_catalog.cursor() as cur:
             # Insert a base transaction + object (simulating zodb-pgjsonb)
-            cur.execute(
-                "INSERT INTO transaction_log (tid) VALUES (1)"
-            )
+            cur.execute("INSERT INTO transaction_log (tid) VALUES (1)")
             cur.execute(
                 """
                 INSERT INTO object_state
@@ -113,7 +111,15 @@ class TestSchemaInstallation:
 
         col_names = [row["column_name"] for row in rows]
         # Base columns from zodb-pgjsonb
-        for base_col in ["zoid", "tid", "class_mod", "class_name", "state", "state_size", "refs"]:
+        for base_col in [
+            "zoid",
+            "tid",
+            "class_mod",
+            "class_name",
+            "state",
+            "state_size",
+            "refs",
+        ]:
             assert base_col in col_names, f"Base column {base_col} missing"
 
     def test_catalog_columns_nullable(self, pg_conn_with_catalog):

@@ -2,22 +2,18 @@
 
 from contextlib import contextmanager
 from plone.pgcatalog.catalog import PlonePGCatalogTool
-from plone.pgcatalog.columns import IndexType
 from plone.pgcatalog.columns import get_registry
+from plone.pgcatalog.columns import IndexType
 from plone.pgcatalog.interfaces import IPGCatalogTool
 from unittest import mock
 
-import pytest
-
 
 class TestImplementsInterface:
-
     def test_implements_ipgcatalogtool(self):
         assert IPGCatalogTool.implementedBy(PlonePGCatalogTool)
 
 
 class TestObjToZoid:
-
     def test_with_p_oid(self):
         obj = mock.Mock()
         obj._p_oid = b"\x00\x00\x00\x00\x00\x00\x01\x00"
@@ -34,7 +30,6 @@ class TestObjToZoid:
 
 
 class TestExtractSearchableText:
-
     def test_extracts_string(self):
         wrapper = mock.Mock()
         wrapper.SearchableText = "hello world"
@@ -61,7 +56,6 @@ class TestExtractSearchableText:
 
 
 class TestExtractIdx:
-
     def _make_tool(self):
         # PlonePGCatalogTool.__init__ chains to CatalogTool which does a lot;
         # bypass by calling _extract_idx as unbound method via the class.
@@ -103,7 +97,6 @@ class TestExtractIdx:
 
 
 class TestWrapObject:
-
     def test_wraps_with_adapter(self):
         tool = PlonePGCatalogTool.__new__(PlonePGCatalogTool)
         obj = mock.Mock()
@@ -137,20 +130,19 @@ def _mock_pg_connection(mock_conn):
 
 
 class TestCatalogObjectWritePath:
-
     def test_skips_pg_without_p_oid(self):
         tool = PlonePGCatalogTool.__new__(PlonePGCatalogTool)
         obj = mock.Mock(spec=["getPhysicalPath"])
         obj.getPhysicalPath.return_value = ("", "plone", "doc")
         # No _p_oid → skip PG write
         mock_conn = mock.Mock()
-        with mock.patch.object(
-            PlonePGCatalogTool, "_pg_connection", _mock_pg_connection(mock_conn)
-        ), mock.patch.object(
-            PlonePGCatalogTool.__bases__[0], "catalog_object"
-        ), mock.patch(
-            "plone.pgcatalog.catalog._sql_catalog"
-        ) as sql_mock:
+        with (
+            mock.patch.object(
+                PlonePGCatalogTool, "_pg_connection", _mock_pg_connection(mock_conn)
+            ),
+            mock.patch.object(PlonePGCatalogTool.__bases__[0], "catalog_object"),
+            mock.patch("plone.pgcatalog.catalog._sql_catalog") as sql_mock,
+        ):
             tool.catalog_object(obj)
             sql_mock.assert_not_called()
 
@@ -161,17 +153,17 @@ class TestCatalogObjectWritePath:
         obj.getPhysicalPath.return_value = ("", "plone", "doc")
         obj._p_oid = b"\x00\x00\x00\x00\x00\x00\x00\x01"
 
-        with mock.patch.object(
-            PlonePGCatalogTool, "_wrap_object", return_value=obj
-        ), mock.patch.object(
-            PlonePGCatalogTool, "_extract_idx", return_value={}
-        ), mock.patch.object(
-            PlonePGCatalogTool, "_extract_searchable_text", return_value=None
-        ), mock.patch(
-            "plone.pgcatalog.config.set_pending"
-        ) as pending_mock, mock.patch.object(
-            PlonePGCatalogTool.__bases__[0], "catalog_object"
-        ) as parent_mock:
+        with (
+            mock.patch.object(PlonePGCatalogTool, "_wrap_object", return_value=obj),
+            mock.patch.object(PlonePGCatalogTool, "_extract_idx", return_value={}),
+            mock.patch.object(
+                PlonePGCatalogTool, "_extract_searchable_text", return_value=None
+            ),
+            mock.patch("plone.pgcatalog.config.set_pending") as pending_mock,
+            mock.patch.object(
+                PlonePGCatalogTool.__bases__[0], "catalog_object"
+            ) as parent_mock,
+        ):
             tool.catalog_object(obj)
             # PG annotation was set
             pending_mock.assert_called_once()
@@ -182,11 +174,12 @@ class TestCatalogObjectWritePath:
         """catalog_object() is a no-op when object has no getPhysicalPath."""
         tool = PlonePGCatalogTool.__new__(PlonePGCatalogTool)
         obj = mock.Mock(spec=[])  # no getPhysicalPath
-        with mock.patch(
-            "plone.pgcatalog.config.set_pending"
-        ) as pending_mock, mock.patch.object(
-            PlonePGCatalogTool.__bases__[0], "catalog_object"
-        ) as parent_mock:
+        with (
+            mock.patch("plone.pgcatalog.config.set_pending") as pending_mock,
+            mock.patch.object(
+                PlonePGCatalogTool.__bases__[0], "catalog_object"
+            ) as parent_mock,
+        ):
             tool.catalog_object(obj)
             # No PG annotation (no physical path)
             pending_mock.assert_not_called()
@@ -195,7 +188,6 @@ class TestCatalogObjectWritePath:
 
 
 class TestUncatalogObjectWritePath:
-
     def test_uncatalog_does_not_call_parent(self):
         """uncatalog_object() must NOT delegate to parent (no BTree writes)."""
         tool = PlonePGCatalogTool.__new__(PlonePGCatalogTool)
@@ -205,13 +197,15 @@ class TestUncatalogObjectWritePath:
         mock_conn.cursor.return_value.__exit__ = mock.Mock(return_value=False)
         mock_cursor.fetchone.return_value = {"zoid": 42}
 
-        with mock.patch.object(
-            PlonePGCatalogTool, "_pg_connection", _mock_pg_connection(mock_conn)
-        ), mock.patch(
-            "plone.pgcatalog.catalog._sql_uncatalog"
-        ) as uncatalog_mock, mock.patch.object(
-            PlonePGCatalogTool.__bases__[0], "uncatalog_object"
-        ) as parent_mock:
+        with (
+            mock.patch.object(
+                PlonePGCatalogTool, "_pg_connection", _mock_pg_connection(mock_conn)
+            ),
+            mock.patch("plone.pgcatalog.catalog._sql_uncatalog") as uncatalog_mock,
+            mock.patch.object(
+                PlonePGCatalogTool.__bases__[0], "uncatalog_object"
+            ) as parent_mock,
+        ):
             tool.uncatalog_object("/plone/doc")
             uncatalog_mock.assert_called_once_with(mock_conn, zoid=42)
             # Parent was NOT called (no BTree writes)
@@ -267,7 +261,9 @@ class TestExtractIdxDynamic:
         """With multiple source_attrs, use first non-None value."""
         registry = get_registry()
         registry.register(
-            "multiAttr", IndexType.FIELD, "multiAttr",
+            "multiAttr",
+            IndexType.FIELD,
+            "multiAttr",
             source_attrs=["attr_a", "attr_b"],
         )
         try:

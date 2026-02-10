@@ -15,6 +15,7 @@ from tests.conftest import insert_object
 # Fixtures: insert test data
 # ---------------------------------------------------------------------------
 
+
 def _setup_test_data(conn):
     """Insert a set of test objects for query testing.
 
@@ -143,7 +144,6 @@ def _query_zoids(conn, query_dict):
 
 
 class TestFieldIndexIntegration:
-
     def test_exact_match(self, pg_conn_with_catalog):
         conn = pg_conn_with_catalog
         _setup_test_data(conn)
@@ -177,7 +177,6 @@ class TestFieldIndexIntegration:
 
 
 class TestKeywordIndexIntegration:
-
     def test_or_overlap(self, pg_conn_with_catalog):
         conn = pg_conn_with_catalog
         _setup_test_data(conn)
@@ -209,7 +208,6 @@ class TestKeywordIndexIntegration:
 
 
 class TestBooleanIndexIntegration:
-
     def test_true(self, pg_conn_with_catalog):
         conn = pg_conn_with_catalog
         _setup_test_data(conn)
@@ -229,7 +227,6 @@ class TestBooleanIndexIntegration:
 
 
 class TestDateIndexIntegration:
-
     def test_range_min(self, pg_conn_with_catalog):
         conn = pg_conn_with_catalog
         _setup_test_data(conn)
@@ -263,7 +260,6 @@ class TestDateIndexIntegration:
 
 
 class TestDateRangeIndexIntegration:
-
     def test_effective_range_current(self, pg_conn_with_catalog):
         conn = pg_conn_with_catalog
         _setup_test_data(conn)
@@ -295,7 +291,6 @@ class TestDateRangeIndexIntegration:
 
 
 class TestUUIDIndexIntegration:
-
     def test_exact_match(self, pg_conn_with_catalog):
         conn = pg_conn_with_catalog
         _setup_test_data(conn)
@@ -309,7 +304,6 @@ class TestUUIDIndexIntegration:
 
 
 class TestSearchableTextIntegration:
-
     def test_find_by_text(self, pg_conn_with_catalog):
         conn = pg_conn_with_catalog
         _setup_test_data(conn)
@@ -329,7 +323,6 @@ class TestSearchableTextIntegration:
 
 
 class TestPathIntegration:
-
     def test_subtree(self, pg_conn_with_catalog):
         conn = pg_conn_with_catalog
         _setup_test_data(conn)
@@ -356,7 +349,6 @@ class TestPathIntegration:
 
 
 class TestCombinedQueries:
-
     def test_type_and_state(self, pg_conn_with_catalog):
         conn = pg_conn_with_catalog
         _setup_test_data(conn)
@@ -385,7 +377,6 @@ class TestCombinedQueries:
 
 
 class TestSortAndPagination:
-
     def test_sort_by_title(self, pg_conn_with_catalog):
         conn = pg_conn_with_catalog
         _setup_test_data(conn)

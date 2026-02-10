@@ -8,11 +8,13 @@ from plone.pgcatalog.brain import PGCatalogBrain
 # Sample rows
 # ---------------------------------------------------------------------------
 
+
 def _make_row(zoid=1, path="/plone/doc", idx=None):
     return {
         "zoid": zoid,
         "path": path,
-        "idx": idx or {"portal_type": "Document", "Title": "Hello", "is_folderish": False},
+        "idx": idx
+        or {"portal_type": "Document", "Title": "Hello", "is_folderish": False},
     }
 
 
@@ -22,7 +24,6 @@ def _make_row(zoid=1, path="/plone/doc", idx=None):
 
 
 class TestBrainBasics:
-
     def test_get_path(self):
         brain = PGCatalogBrain(_make_row(path="/plone/folder/doc"))
         assert brain.getPath() == "/plone/folder/doc"
@@ -33,6 +34,7 @@ class TestBrainBasics:
 
     def test_get_url_with_request(self):
         from unittest import mock
+
         catalog = mock.Mock()
         catalog.REQUEST.physicalPathToURL.return_value = "http://example.com/plone/doc"
         brain = PGCatalogBrain(_make_row(path="/plone/doc"), catalog=catalog)
@@ -40,6 +42,7 @@ class TestBrainBasics:
 
     def test_get_url_catalog_without_request(self):
         from unittest import mock
+
         catalog = mock.Mock(spec=[])
         brain = PGCatalogBrain(_make_row(path="/plone/doc"), catalog=catalog)
         assert brain.getURL() == "/plone/doc"
@@ -58,6 +61,7 @@ class TestBrainBasics:
 
     def test_get_object_with_catalog(self):
         from unittest import mock
+
         obj = mock.Mock()
         catalog = mock.Mock()
         catalog.restrictedTraverse.return_value = obj
@@ -66,6 +70,7 @@ class TestBrainBasics:
 
     def test_get_object_traversal_error(self):
         from unittest import mock
+
         catalog = mock.Mock()
         catalog.restrictedTraverse.side_effect = KeyError("not found")
         brain = PGCatalogBrain(_make_row(path="/plone/doc"), catalog=catalog)
@@ -77,6 +82,7 @@ class TestBrainBasics:
 
     def test_unrestricted_get_object_with_catalog(self):
         from unittest import mock
+
         obj = mock.Mock()
         catalog = mock.Mock()
         catalog.unrestrictedTraverse.return_value = obj
@@ -85,6 +91,7 @@ class TestBrainBasics:
 
     def test_unrestricted_get_object_traversal_error(self):
         from unittest import mock
+
         catalog = mock.Mock()
         catalog.unrestrictedTraverse.side_effect = AttributeError("nope")
         brain = PGCatalogBrain(_make_row(path="/plone/doc"), catalog=catalog)
@@ -92,7 +99,6 @@ class TestBrainBasics:
 
 
 class TestBrainAttributeAccess:
-
     def test_idx_attribute(self):
         brain = PGCatalogBrain(_make_row(idx={"portal_type": "Document"}))
         assert brain.portal_type == "Document"
@@ -115,12 +121,14 @@ class TestBrainAttributeAccess:
 
     def test_attribute_error_for_unknown(self):
         import pytest
+
         brain = PGCatalogBrain(_make_row(idx={}))
         with pytest.raises(AttributeError):
             _ = brain.nonexistent_attribute
 
     def test_private_attrs_raise_attribute_error(self):
         import pytest
+
         brain = PGCatalogBrain(_make_row())
         with pytest.raises(AttributeError):
             _ = brain._private
@@ -133,7 +141,6 @@ class TestBrainAttributeAccess:
 
 
 class TestBrainContains:
-
     def test_contains_idx_key(self):
         brain = PGCatalogBrain(_make_row(idx={"portal_type": "Document"}))
         assert "portal_type" in brain
@@ -159,7 +166,6 @@ class TestBrainContains:
 
 
 class TestCatalogSearchResults:
-
     def _make_results(self, count=5, actual=None):
         brains = [
             PGCatalogBrain(_make_row(zoid=i, path=f"/plone/doc{i}"))
@@ -272,9 +278,7 @@ class _MockCursor:
     def execute(self, sql, params=None, **kwargs):
         zoids = params.get("zoids", []) if params else []
         self._rows = [
-            {"zoid": z, "idx": self._idx_data[z]}
-            for z in zoids
-            if z in self._idx_data
+            {"zoid": z, "idx": self._idx_data[z]} for z in zoids if z in self._idx_data
         ]
 
     def __iter__(self):
@@ -288,12 +292,10 @@ class _MockCursor:
 
 
 class TestLazyIdxLoading:
-
     def _make_lazy_results(self, count=3):
         """Create brains without idx, wired to a mock pool."""
         idx_data = {
-            i: {"portal_type": "Document", "Title": f"Doc {i}"}
-            for i in range(count)
+            i: {"portal_type": "Document", "Title": f"Doc {i}"} for i in range(count)
         }
         pool = _MockPool(idx_data)
         brains = [
