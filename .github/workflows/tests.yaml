@@ -1,0 +1,101 @@
+---
+name: Tests
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13", "3.14"]
+
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: zodb
+          POSTGRES_PASSWORD: zodb
+          POSTGRES_DB: zodb_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U zodb"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 5
+
+    env:
+      ZODB_TEST_DSN: "dbname=zodb_test user=zodb password=zodb host=localhost port=5432"
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: "pyproject.toml"
+
+      - name: Set up Python ${{ matrix.python-version }}
+        run: uv python install ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: uv venv && uv pip install -e ".[test]"
+
+      - name: Run tests with coverage
+        run: uv run pytest --cov --cov-report=
+
+      - name: Rename coverage data
+        run: mv .coverage .coverage.${{ matrix.python-version }}
+
+      - name: Upload coverage data
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-data-${{ matrix.python-version }}
+          path: .coverage.${{ matrix.python-version }}
+          include-hidden-files: true
+          if-no-files-found: ignore
+
+  coverage:
+    name: Combine & check coverage
+    if: always()
+    needs: test
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: "pyproject.toml"
+
+      - name: Install dependencies
+        run: uv venv && uv pip install -e ".[test]"
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: coverage-data-*
+          merge-multiple: true
+
+      - name: Combine coverage & check threshold
+        run: |
+          uv run coverage combine
+          uv run coverage html --skip-covered --skip-empty
+          uv run coverage report --format=markdown >> $GITHUB_STEP_SUMMARY
+          uv run coverage report
+
+      - name: Upload HTML report if check failed
+        uses: actions/upload-artifact@v4
+        with:
+          name: html-report
+          path: htmlcov
+        if: ${{ failure() }}
