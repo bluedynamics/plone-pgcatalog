@@ -1,6 +1,7 @@
 """Tests for PlonePGCatalogTool — helper methods and write path."""
 
 from contextlib import contextmanager
+from plone.pgcatalog.catalog import _path_value_to_string
 from plone.pgcatalog.catalog import PlonePGCatalogTool
 from plone.pgcatalog.columns import get_registry
 from plone.pgcatalog.columns import IndexType
@@ -401,3 +402,353 @@ class TestIPGIndexTranslatorExtract:
             assert idx["portal_type"] == "Document"
         finally:
             sm.unregisterUtility(provided=IPGIndexTranslator, name="broken_range")
+
+
+# ---------------------------------------------------------------------------
+# _path_value_to_string tests
+# ---------------------------------------------------------------------------
+
+
+class TestPathValueToString:
+    def test_none_returns_none(self):
+        assert _path_value_to_string(None) is None
+
+    def test_non_empty_string(self):
+        assert _path_value_to_string("/plone/doc") == "/plone/doc"
+
+    def test_empty_string_returns_none(self):
+        assert _path_value_to_string("") is None
+
+    def test_list_of_components(self):
+        assert (
+            _path_value_to_string(["uuid1", "uuid2", "uuid3"]) == "/uuid1/uuid2/uuid3"
+        )
+
+    def test_tuple_of_components(self):
+        assert _path_value_to_string(("a", "b")) == "/a/b"
+
+    def test_empty_list_returns_none(self):
+        assert _path_value_to_string([]) is None
+
+    def test_empty_tuple_returns_none(self):
+        assert _path_value_to_string(()) is None
+
+    def test_other_type_returns_str(self):
+        assert _path_value_to_string(42) == "42"
+
+
+# ---------------------------------------------------------------------------
+# _pg_connection context manager tests
+# ---------------------------------------------------------------------------
+
+
+class TestPgConnection:
+    def test_reuses_request_scoped_connection(self):
+        """_pg_connection reuses an existing request-scoped connection."""
+        import plone.pgcatalog.config as config_mod
+
+        tool = PlonePGCatalogTool.__new__(PlonePGCatalogTool)
+        mock_conn = mock.Mock()
+        mock_conn.closed = False
+
+        config_mod._local.pgcat_conn = mock_conn
+        try:
+            with tool._pg_connection() as conn:
+                assert conn is mock_conn
+        finally:
+            config_mod._local.pgcat_conn = None
+            config_mod._local.pgcat_pool = None
+
+    def test_borrows_from_pool_when_no_request_conn(self):
+        """_pg_connection borrows from pool when no request-scoped conn."""
+        import plone.pgcatalog.config as config_mod
+
+        tool = PlonePGCatalogTool.__new__(PlonePGCatalogTool)
+        mock_pool = mock.Mock()
+        mock_conn = mock.Mock()
+        mock_pool.getconn.return_value = mock_conn
+
+        config_mod._local.pgcat_conn = None
+        try:
+            with (
+                mock.patch("plone.pgcatalog.config.get_pool", return_value=mock_pool),
+            ):
+                with tool._pg_connection() as conn:
+                    assert conn is mock_conn
+                mock_pool.putconn.assert_called_once_with(mock_conn)
+        finally:
+            config_mod._local.pgcat_conn = None
+            config_mod._local.pgcat_pool = None
+
+
+# ---------------------------------------------------------------------------
+# indexObject / reindexObject tests
+# ---------------------------------------------------------------------------
+
+
+class TestIndexObjectReindexObject:
+    def test_indexObject_calls_set_pg_annotation(self):
+        tool = PlonePGCatalogTool.__new__(PlonePGCatalogTool)
+        obj = mock.Mock()
+        with mock.patch.object(tool, "_set_pg_annotation") as ann_mock:
+            tool.indexObject(obj)
+            ann_mock.assert_called_once_with(obj)
+
+    def test_reindexObject_calls_set_pg_annotation(self):
+        tool = PlonePGCatalogTool.__new__(PlonePGCatalogTool)
+        obj = mock.Mock()
+        with mock.patch.object(tool, "_set_pg_annotation") as ann_mock:
+            tool.reindexObject(obj, uid="/plone/doc")
+            ann_mock.assert_called_once_with(obj, "/plone/doc")
+
+
+# ---------------------------------------------------------------------------
+# uncatalog_object — persistent object branch
+# ---------------------------------------------------------------------------
+
+
+class TestUncatalogObjectPersistent:
+    def test_uncatalog_with_persistent_obj(self):
+        """uncatalog_object sets None pending when object has _p_oid."""
+        tool = PlonePGCatalogTool.__new__(PlonePGCatalogTool)
+        obj = mock.Mock()
+        obj._p_oid = b"\x00\x00\x00\x00\x00\x00\x00\x05"
+
+        with (
+            mock.patch.object(
+                PlonePGCatalogTool, "unrestrictedTraverse", return_value=obj
+            ),
+            mock.patch("plone.pgcatalog.config.set_pending") as pending_mock,
+        ):
+            tool.uncatalog_object("/plone/doc")
+            pending_mock.assert_called_once_with(5, None)
+            assert obj._p_changed is True
+
+    def test_uncatalog_traverse_exception(self):
+        """uncatalog_object handles unrestrictedTraverse raising."""
+        tool = PlonePGCatalogTool.__new__(PlonePGCatalogTool)
+
+        with (
+            mock.patch.object(
+                PlonePGCatalogTool,
+                "unrestrictedTraverse",
+                side_effect=RuntimeError("traverse failed"),
+            ),
+            mock.patch.object(
+                PlonePGCatalogTool, "_pg_connection", _mock_pg_connection(mock.Mock())
+            ),
+        ):
+            # Should not raise
+            tool.uncatalog_object("/plone/missing")
+
+
+# ---------------------------------------------------------------------------
+# searchResults / unrestrictedSearchResults
+# ---------------------------------------------------------------------------
+
+
+class TestSearchResults:
+    def test_searchResults_calls_run_search(self):
+        """searchResults wires security, pool, and delegates to _run_search."""
+        tool = PlonePGCatalogTool.__new__(PlonePGCatalogTool)
+        mock_pool = mock.Mock()
+        mock_conn = mock.Mock()
+        mock_results = mock.Mock()
+
+        with (
+            mock.patch("AccessControl.getSecurityManager") as sm_mock,
+            mock.patch.object(
+                tool, "_listAllowedRolesAndUsers", return_value=["Anonymous"]
+            ),
+            mock.patch("plone.pgcatalog.config.get_pool", return_value=mock_pool),
+            mock.patch(
+                "plone.pgcatalog.config.get_request_connection", return_value=mock_conn
+            ),
+            mock.patch(
+                "plone.pgcatalog.catalog._run_search", return_value=mock_results
+            ) as run_mock,
+            mock.patch(
+                "plone.pgcatalog.catalog.apply_security_filters",
+                side_effect=lambda q, r, **kw: q,
+            ),
+        ):
+            sm_mock.return_value.checkPermission.return_value = False
+            result = tool.searchResults({"portal_type": "Document"})
+            assert result is mock_results
+            run_mock.assert_called_once()
+
+    def test_unrestrictedSearchResults_calls_run_search(self):
+        """unrestrictedSearchResults delegates directly to _run_search."""
+        tool = PlonePGCatalogTool.__new__(PlonePGCatalogTool)
+        mock_pool = mock.Mock()
+        mock_conn = mock.Mock()
+        mock_results = mock.Mock()
+
+        with (
+            mock.patch("plone.pgcatalog.config.get_pool", return_value=mock_pool),
+            mock.patch(
+                "plone.pgcatalog.config.get_request_connection", return_value=mock_conn
+            ),
+            mock.patch(
+                "plone.pgcatalog.catalog._run_search", return_value=mock_results
+            ) as run_mock,
+        ):
+            result = tool.unrestrictedSearchResults(portal_type="Document")
+            assert result is mock_results
+            run_mock.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Maintenance methods
+# ---------------------------------------------------------------------------
+
+
+class TestMaintenanceMethods:
+    def test_refreshCatalog(self):
+        tool = PlonePGCatalogTool.__new__(PlonePGCatalogTool)
+        mock_conn = mock.Mock()
+        with (
+            mock.patch.object(
+                PlonePGCatalogTool, "_pg_connection", _mock_pg_connection(mock_conn)
+            ),
+            mock.patch(
+                "plone.pgcatalog.catalog.refresh_catalog", return_value=5
+            ) as refresh_mock,
+        ):
+            result = tool.refreshCatalog()
+            assert result == 5
+            refresh_mock.assert_called_once_with(mock_conn)
+
+    def test_refreshCatalog_with_clear(self):
+        tool = PlonePGCatalogTool.__new__(PlonePGCatalogTool)
+        mock_conn = mock.Mock()
+        with (
+            mock.patch.object(
+                PlonePGCatalogTool, "_pg_connection", _mock_pg_connection(mock_conn)
+            ),
+            mock.patch("plone.pgcatalog.catalog.clear_catalog_data") as clear_mock,
+            mock.patch("plone.pgcatalog.catalog.refresh_catalog", return_value=0),
+        ):
+            tool.refreshCatalog(clear=1)
+            clear_mock.assert_called_once_with(mock_conn)
+
+    def test_reindexIndex(self):
+        tool = PlonePGCatalogTool.__new__(PlonePGCatalogTool)
+        mock_conn = mock.Mock()
+        with (
+            mock.patch.object(
+                PlonePGCatalogTool, "_pg_connection", _mock_pg_connection(mock_conn)
+            ),
+            mock.patch(
+                "plone.pgcatalog.catalog.reindex_index", return_value=3
+            ) as reindex_mock,
+        ):
+            result = tool.reindexIndex("portal_type")
+            assert result == 3
+            reindex_mock.assert_called_once_with(mock_conn, "portal_type")
+
+    def test_clearFindAndRebuild(self):
+        tool = PlonePGCatalogTool.__new__(PlonePGCatalogTool)
+        mock_conn = mock.Mock()
+        with (
+            mock.patch.object(
+                PlonePGCatalogTool, "_pg_connection", _mock_pg_connection(mock_conn)
+            ),
+            mock.patch(
+                "plone.pgcatalog.catalog.clear_catalog_data", return_value=10
+            ) as clear_mock,
+        ):
+            result = tool.clearFindAndRebuild()
+            assert result == 10
+            clear_mock.assert_called_once_with(mock_conn)
+
+
+# ---------------------------------------------------------------------------
+# _run_search lazy mode tests
+# ---------------------------------------------------------------------------
+
+
+class TestRunSearchLazyMode:
+    def test_lazy_mode_wires_result_set(self):
+        """_run_search with pool wires brain._result_set for lazy loading."""
+        from plone.pgcatalog.catalog import _run_search
+
+        mock_conn = mock.MagicMock()
+        mock_cursor = mock.MagicMock()
+        mock_conn.cursor.return_value.__enter__ = mock.Mock(return_value=mock_cursor)
+        mock_conn.cursor.return_value.__exit__ = mock.Mock(return_value=False)
+        mock_cursor.fetchall.return_value = [
+            {"zoid": 1, "path": "/plone/a"},
+            {"zoid": 2, "path": "/plone/b"},
+        ]
+        mock_pool = mock.Mock()
+
+        with mock.patch("plone.pgcatalog.catalog.build_query") as bq:
+            bq.return_value = {
+                "where": "TRUE",
+                "params": {},
+                "order_by": None,
+                "limit": None,
+                "offset": None,
+            }
+            results = _run_search(mock_conn, {}, pool=mock_pool)
+
+        assert len(results) == 2
+        # Brains should have _result_set wired
+        for brain in results:
+            assert brain._result_set is results
+
+
+# ---------------------------------------------------------------------------
+# _extract_idx — metadata callable extraction
+# ---------------------------------------------------------------------------
+
+
+class TestExtractIdxMetadataCallable:
+    def test_metadata_callable_is_called(self, populated_registry):
+        """Metadata columns with callable values should be called."""
+        registry = get_registry()
+        registry.add_metadata("dynamic_meta")
+        try:
+            tool = PlonePGCatalogTool.__new__(PlonePGCatalogTool)
+            wrapper = mock.Mock()
+            wrapper.dynamic_meta.return_value = "called_meta_value"
+
+            idx = tool._extract_idx(wrapper)
+            assert idx["dynamic_meta"] == "called_meta_value"
+        finally:
+            registry._metadata.discard("dynamic_meta")
+
+    def test_metadata_exception_skipped(self, populated_registry):
+        """If a metadata accessor raises, it's skipped."""
+        registry = get_registry()
+        registry.add_metadata("broken_meta")
+        try:
+            tool = PlonePGCatalogTool.__new__(PlonePGCatalogTool)
+            wrapper = mock.Mock()
+            wrapper.broken_meta.side_effect = RuntimeError("broken")
+            wrapper.portal_type = "Document"
+
+            idx = tool._extract_idx(wrapper)
+            assert "broken_meta" not in idx
+            assert idx["portal_type"] == "Document"
+        finally:
+            registry._metadata.discard("broken_meta")
+
+
+# ---------------------------------------------------------------------------
+# PATH-type index extraction tests
+# ---------------------------------------------------------------------------
+
+
+class TestExtractIdxPathType:
+    def test_path_index_extracts_parent_and_depth(self, populated_registry):
+        """PATH-type indexes store path + _parent + _depth in idx JSONB."""
+        tool = PlonePGCatalogTool.__new__(PlonePGCatalogTool)
+        wrapper = mock.Mock()
+        wrapper.tgpath = "/plone/folder/doc"
+
+        idx = tool._extract_idx(wrapper)
+        assert idx["tgpath"] == "/plone/folder/doc"
+        assert idx["tgpath_parent"] == "/plone/folder"
+        assert idx["tgpath_depth"] == 3

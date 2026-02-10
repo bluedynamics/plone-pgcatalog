@@ -91,6 +91,12 @@ class TestGetDsn:
             os.environ.pop("PGCATALOG_DSN", None)
             assert get_dsn() is None
 
+    def test_returns_none_on_storage_error(self):
+        site = mock.Mock(spec=[])  # no _p_jar
+        with mock.patch.dict(os.environ, {}, clear=True):
+            os.environ.pop("PGCATALOG_DSN", None)
+            assert get_dsn(site) is None
+
 
 class TestRequestConnection:
     """Request-scoped connection reuse (Phase 4)."""
@@ -181,6 +187,274 @@ class TestRequestConnection:
         # conn1 is closed, should get new one
         result = get_request_connection(pool)
         assert result is conn2
+
+    def test_release_swallows_putconn_exception(self):
+        """release_request_connection swallows exceptions from pool.putconn."""
+        pool = mock.Mock()
+        conn = mock.Mock()
+        conn.closed = False
+        pool.getconn.return_value = conn
+        pool.putconn.side_effect = RuntimeError("pool closed")
+
+        get_request_connection(pool)
+        # Should not raise
+        release_request_connection()
+        # Thread-local still cleaned
+        assert getattr(config_mod._local, "pgcat_conn", None) is None
+
+
+class TestPending:
+    """Thread-local pending catalog data store."""
+
+    def setup_method(self):
+        # Clear thread-local pending data
+        try:
+            del config_mod._local.pending
+        except AttributeError:
+            pass
+
+    def test_set_and_pop_pending(self):
+        from plone.pgcatalog.config import pop_pending
+        from plone.pgcatalog.config import set_pending
+
+        set_pending(42, {"path": "/plone/doc"})
+        result = pop_pending(42)
+        assert result == {"path": "/plone/doc"}
+
+    def test_pop_missing_returns_sentinel(self):
+        from plone.pgcatalog.config import _MISSING
+        from plone.pgcatalog.config import pop_pending
+
+        result = pop_pending(999)
+        assert result is _MISSING
+
+    def test_set_pending_uncatalog_sentinel(self):
+        from plone.pgcatalog.config import pop_pending
+        from plone.pgcatalog.config import set_pending
+
+        set_pending(42, None)
+        result = pop_pending(42)
+        assert result is None
+
+    def test_get_pending_creates_dict_on_fresh_thread_local(self):
+        from plone.pgcatalog.config import _get_pending
+
+        result = _get_pending()
+        assert isinstance(result, dict)
+
+
+class TestPoolFromEnvCached:
+    def test_returns_cached_pool(self):
+        mock_pool = mock.Mock()
+        config_mod._fallback_pool = mock_pool
+        try:
+            from plone.pgcatalog.config import _pool_from_env
+
+            result = _pool_from_env()
+            assert result is mock_pool
+        finally:
+            config_mod._fallback_pool = None
+
+
+class TestCatalogStateProcessor:
+    """Tests for CatalogStateProcessor."""
+
+    def test_get_extra_columns(self):
+        from plone.pgcatalog.config import CatalogStateProcessor
+
+        processor = CatalogStateProcessor()
+        columns = processor.get_extra_columns()
+        assert len(columns) == 3
+        names = [c.name for c in columns]
+        assert "path" in names
+        assert "idx" in names
+        assert "searchable_text" in names
+
+    def test_get_schema_sql(self):
+        from plone.pgcatalog.config import CatalogStateProcessor
+
+        processor = CatalogStateProcessor()
+        sql = processor.get_schema_sql()
+        assert isinstance(sql, str)
+        assert len(sql) > 0
+
+    def test_process_returns_none_when_no_pending(self):
+        from plone.pgcatalog.config import CatalogStateProcessor
+
+        processor = CatalogStateProcessor()
+        result = processor.process(999, "some.module", "SomeClass", {"key": "value"})
+        assert result is None
+
+    def test_process_with_pending_from_thread_local(self):
+        from plone.pgcatalog.config import CatalogStateProcessor
+        from plone.pgcatalog.config import set_pending
+
+        set_pending(
+            42,
+            {
+                "path": "/plone/doc",
+                "idx": {"portal_type": "Document"},
+                "searchable_text": "hello",
+            },
+        )
+        processor = CatalogStateProcessor()
+        result = processor.process(42, "some.module", "SomeClass", {})
+        assert result["path"] == "/plone/doc"
+        assert result["searchable_text"] == "hello"
+        assert result["idx"] is not None
+
+    def test_process_uncatalog_sentinel(self):
+        from plone.pgcatalog.config import CatalogStateProcessor
+        from plone.pgcatalog.config import set_pending
+
+        set_pending(42, None)
+        processor = CatalogStateProcessor()
+        result = processor.process(42, "some.module", "SomeClass", {})
+        assert result == {"path": None, "idx": None, "searchable_text": None}
+
+    def test_process_from_state_dict_fallback(self):
+        from plone.pgcatalog.config import ANNOTATION_KEY
+        from plone.pgcatalog.config import CatalogStateProcessor
+
+        state = {
+            ANNOTATION_KEY: {
+                "path": "/plone/doc2",
+                "idx": {"portal_type": "File"},
+                "searchable_text": "world",
+            },
+            "other_key": "other_value",
+        }
+        processor = CatalogStateProcessor()
+        result = processor.process(888, "some.module", "SomeClass", state)
+        assert result["path"] == "/plone/doc2"
+        # annotation key should be popped from state
+        assert ANNOTATION_KEY not in state
+        assert state["other_key"] == "other_value"
+
+    def test_process_with_empty_idx(self):
+        from plone.pgcatalog.config import CatalogStateProcessor
+        from plone.pgcatalog.config import set_pending
+
+        set_pending(42, {"path": "/plone/doc", "idx": {}, "searchable_text": None})
+        processor = CatalogStateProcessor()
+        result = processor.process(42, "mod", "Cls", {})
+        assert result["path"] == "/plone/doc"
+        assert result["idx"] is None  # empty dict → None
+        assert result["searchable_text"] is None
+
+
+class TestGetMainStorage:
+    def test_returns_storage_directly(self):
+        from plone.pgcatalog.config import _get_main_storage
+
+        db = mock.Mock()
+        storage = mock.Mock(spec=[])  # no _main attr
+        db.storage = storage
+        result = _get_main_storage(db)
+        assert result is storage
+
+    def test_unwraps_main_storage(self):
+        from plone.pgcatalog.config import _get_main_storage
+
+        db = mock.Mock()
+        main_storage = mock.Mock()
+        db.storage._main = main_storage
+        result = _get_main_storage(db)
+        assert result is main_storage
+
+
+class TestRegisterCatalogProcessor:
+    def test_registers_on_pgjsonb_storage(self):
+        from plone.pgcatalog.config import register_catalog_processor
+
+        event = mock.Mock()
+        storage = mock.Mock()
+        storage.register_state_processor = mock.Mock()
+        event.database.storage = storage
+        del storage._main  # no wrapper
+
+        with mock.patch("plone.pgcatalog.config._sync_registry_from_db"):
+            register_catalog_processor(event)
+
+        storage.register_state_processor.assert_called_once()
+
+    def test_skips_non_pgjsonb_storage(self):
+        from plone.pgcatalog.config import register_catalog_processor
+
+        event = mock.Mock()
+        storage = mock.Mock(spec=[])  # no register_state_processor
+        event.database.storage = storage
+
+        # Should not raise
+        register_catalog_processor(event)
+
+
+class TestSyncRegistryFromDb:
+    def test_syncs_from_plone_site(self):
+        from plone.pgcatalog.config import _sync_registry_from_db
+
+        db = mock.Mock()
+        conn = mock.Mock()
+        db.open.return_value = conn
+
+        site = mock.Mock()
+        site.getId.return_value = "Plone"
+        catalog = mock.Mock()
+        catalog._catalog = mock.Mock()
+        site.portal_catalog = catalog
+
+        root = mock.Mock()
+        root.get.return_value = root
+        root.values.return_value = [site]
+        conn.root.return_value = root
+
+        with mock.patch("plone.pgcatalog.columns.get_registry") as get_reg:
+            registry = mock.Mock()
+            get_reg.return_value = registry
+            _sync_registry_from_db(db)
+
+        registry.sync_from_catalog.assert_called_once_with(catalog)
+        conn.close.assert_called_once()
+
+    def test_handles_sync_exception(self):
+        from plone.pgcatalog.config import _sync_registry_from_db
+
+        db = mock.Mock()
+        conn = mock.Mock()
+        db.open.return_value = conn
+
+        site = mock.Mock()
+        catalog = mock.Mock()
+        catalog._catalog = mock.Mock()
+        site.portal_catalog = catalog
+
+        root = mock.Mock()
+        root.get.return_value = root
+        root.values.return_value = [site]
+        conn.root.return_value = root
+
+        with mock.patch("plone.pgcatalog.columns.get_registry") as get_reg:
+            registry = mock.Mock()
+            registry.sync_from_catalog.side_effect = RuntimeError("sync failed")
+            get_reg.return_value = registry
+            # Should not raise
+            _sync_registry_from_db(db)
+
+        conn.close.assert_called_once()
+
+    def test_handles_root_traversal_exception(self):
+        from plone.pgcatalog.config import _sync_registry_from_db
+
+        db = mock.Mock()
+        conn = mock.Mock()
+        db.open.return_value = conn
+        conn.root.side_effect = RuntimeError("db error")
+
+        with mock.patch("plone.pgcatalog.columns.get_registry"):
+            # Should not raise
+            _sync_registry_from_db(db)
+
+        conn.close.assert_called_once()
 
 
 class TestOrjsonLoader:

@@ -48,3 +48,29 @@ class TestEnsureCatalogIndexes:
         assert len(calls) >= 1
         profile_ids = [c[0][0] for c in calls]
         assert "profile-Products.CMFPlone:plone" in profile_ids
+
+    def test_handles_indexes_exception(self):
+        """If catalog.indexes() raises, fall through to re-apply."""
+        site = mock.Mock()
+        site.portal_catalog.indexes.side_effect = RuntimeError("broken")
+        _ensure_catalog_indexes(site)
+        # Should still try to run import steps
+        calls = site.portal_setup.runImportStepFromProfile.call_args_list
+        assert len(calls) >= 1
+
+    def test_skips_without_portal_setup(self):
+        """If site has no portal_setup, logs warning and returns."""
+        site = mock.Mock(spec=["portal_catalog"])
+        site.portal_catalog.indexes.return_value = []
+        # Should not raise
+        _ensure_catalog_indexes(site)
+
+    def test_handles_profile_import_exception(self):
+        """If runImportStepFromProfile raises, it's caught and logged."""
+        site = mock.Mock()
+        site.portal_catalog.indexes.return_value = []
+        site.portal_setup.runImportStepFromProfile.side_effect = RuntimeError(
+            "import failed"
+        )
+        # Should not raise — all exceptions are caught
+        _ensure_catalog_indexes(site)
