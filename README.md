@@ -2,92 +2,70 @@
 
 PostgreSQL-backed catalog for Plone, replacing ZCatalog BTrees indexes with SQL queries on JSONB.
 
-Extends the `object_state` table from [zodb-pgjsonb](https://github.com/bluedynamics/zodb-pgjsonb) with catalog columns (`idx` JSONB, `path`, `searchable_text` TSVECTOR).
+Requires [zodb-pgjsonb](https://github.com/bluedynamics/zodb-pgjsonb) as the ZODB storage backend.
 
-## Dynamic Index Registration
+## Features
 
-Indexes are discovered dynamically from ZCatalog's registered index objects at startup. When GenericSetup imports `catalog.xml`, it calls `ZCatalog.addIndex()` which stores index objects in the catalog's internal registry. At Zope startup, `plone.pgcatalog` syncs its `IndexRegistry` from these objects via `sync_from_catalog()`.
+- **All standard index types** supported: FieldIndex, KeywordIndex, DateIndex, BooleanIndex, DateRangeIndex, UUIDIndex, ZCTextIndex, ExtendedPathIndex, GopipIndex
+- **DateRecurringIndex** for recurring events (Plone's `start`/`end` indexes) -- recurrence expansion at query time via [rrule_plpgsql](https://github.com/sirrodgepodge/rrule_plpgsql), no C extensions needed
+- **Extensible** via `IPGIndexTranslator` named utilities for custom index types
+- **Dynamic index discovery** from ZCatalog at startup -- addons adding indexes via `catalog.xml` just work
+- **Transactional writes** -- catalog data written atomically alongside object state during ZODB commit
+- **Full-text search** via PostgreSQL `tsvector`/`tsquery`
+- **Zero ZODB cache pressure** -- no BTree/Bucket objects stored in ZODB
+- **Container-friendly** -- works on standard `postgres:17` Docker images, no extensions required
 
-This means addons that add indexes via `catalog.xml` profiles are automatically supported — no code changes needed in plone.pgcatalog.
+## Requirements
 
-### Supported index meta_types
+- Python 3.12+
+- PostgreSQL 14+ (tested with 17)
+- [zodb-pgjsonb](https://github.com/bluedynamics/zodb-pgjsonb)
+- Plone 6
 
-| ZCatalog meta_type | IndexType | Notes |
-|---|---|---|
-| FieldIndex | FIELD | Exact match, range, NOT |
-| KeywordIndex | KEYWORD | Contains any/all (OR/AND) |
-| DateIndex | DATE | Timestamp comparison |
-| BooleanIndex | BOOLEAN | True/false |
-| DateRangeIndex | DATE_RANGE | Composite (effective + expires) |
-| UUIDIndex | UUID | Exact match |
-| ZCTextIndex | TEXT | Full-text via tsvector |
-| ExtendedPathIndex / PathIndex | PATH | Path containment |
-| GopipIndex | GOPIP | Integer position |
+## Installation
 
-### Custom index types (IPGIndexTranslator)
-
-For index types not in the table above, addons can register an `IPGIndexTranslator` named utility:
-
-```python
-from plone.pgcatalog.interfaces import IPGIndexTranslator
-from zope.interface import implementer
-
-@implementer(IPGIndexTranslator)
-class MyCustomTranslator:
-    def extract(self, obj, index_name):
-        """Return dict to merge into idx JSONB."""
-        return {"my_key": getattr(obj, "my_attr", None)}
-
-    def query(self, index_name, query_value, query_options):
-        """Return (sql_fragment, params_dict)."""
-        return ("idx->>'my_key' = %(my_val)s", {"my_val": query_value})
-
-    def sort(self, index_name):
-        """Return SQL expression for ORDER BY, or None."""
-        return "idx->>'my_key'"
+```bash
+pip install plone-pgcatalog
 ```
 
-Register via ZCML:
+Add to your Zope configuration:
+
 ```xml
-<utility
-    factory=".translators.MyCustomTranslator"
-    provides="plone.pgcatalog.interfaces.IPGIndexTranslator"
-    name="MyCustomIndex" />
+<!-- zope.conf -->
+%import zodb_pgjsonb
+<zodb_main>
+  <pgjsonb>
+    dsn dbname=mydb user=zodb password=zodb host=localhost port=5432
+  </pgjsonb>
+</zodb_main>
 ```
 
-### DateRecurringIndex (recurring events)
+Install the `plone.pgcatalog:default` GenericSetup profile through Plone's Add-on installer or your policy package.
 
-`Products.DateRecurringIndex` is supported out of the box. Plone uses it for the `start` and `end` indexes on event content types (configured with `recurdef="recurrence"`).
+## Usage
 
-At startup, plone.pgcatalog discovers `DateRecurringIndex` instances from the ZCatalog and registers `DateRecurringIndexTranslator` utilities automatically. No manual configuration needed.
-
-**How it works:**
-
-- **Storage**: the base date and RFC 5545 RRULE string are stored in the `idx` JSONB column:
-  ```json
-  {
-    "start": "2025-01-06T10:00:00+00:00",
-    "start_recurrence": "FREQ=WEEKLY;BYDAY=MO;COUNT=52"
-  }
-  ```
-- **Queries**: recurrence expansion happens at query time using [rrule_plpgsql](https://github.com/sirrodgepodge/rrule_plpgsql), a pure PL/pgSQL implementation of RFC 5545 RRULE. No C extensions required -- works on any PostgreSQL 12+ (including standard `postgres:17` Docker images).
-- **Non-recurring events**: fall back to simple `timestamptz` comparison (same as `DateIndex`).
-- **Sorting**: by base date (`sort_on="start"` sorts by the first occurrence).
-
-**Query examples** (same syntax as ZCatalog):
+Once installed, `portal_catalog` is replaced with `PlonePGCatalogTool`. All catalog queries use the same ZCatalog API:
 
 ```python
-# Events happening in March 2025
-catalog(start={
+# Standard catalog queries -- same syntax as ZCatalog
+results = catalog(portal_type="Document", review_state="published")
+results = catalog(Subject={"query": ["Python", "Plone"], "operator": "or"})
+results = catalog(SearchableText="my search term")
+results = catalog(path={"query": "/plone/folder", "depth": 1})
+
+# Recurring events (DateRecurringIndex)
+results = catalog(start={
     "query": [DateTime("2025-03-01"), DateTime("2025-03-31")],
     "range": "min:max",
 })
-
-# Events starting on or after today
-catalog(start={"query": DateTime(), "range": "min"})
-
-# Events that started on or before a date
-catalog(start={"query": DateTime("2025-06-01"), "range": "max"})
 ```
 
-The rrule_plpgsql functions are installed automatically as part of the catalog schema setup (via `CatalogStateProcessor.get_schema_sql()`).
+## Documentation
+
+- [ARCHITECTURE.md](ARCHITECTURE.md) -- internal design, index registry, query translation, custom index types
+- [BENCHMARKS.md](BENCHMARKS.md) -- performance comparison vs RelStorage+ZCatalog
+- [CHANGES.md](CHANGES.md) -- changelog
+
+## License
+
+GPL-2.0
