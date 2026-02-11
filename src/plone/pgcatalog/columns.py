@@ -15,9 +15,26 @@ from datetime import datetime
 from enum import Enum
 
 import logging
+import re
 
 
 log = logging.getLogger(__name__)
+
+# Safe SQL identifier pattern: letters, digits, underscores only.
+# Prevents SQL injection when idx_key values are interpolated into queries.
+_SAFE_IDENTIFIER_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+
+
+def validate_identifier(name):
+    """Validate that a name is safe for use as a SQL identifier.
+
+    Raises ValueError if the name contains characters that could
+    enable SQL injection when interpolated into query strings.
+    """
+    if not _SAFE_IDENTIFIER_RE.match(name):
+        raise ValueError(
+            f"Invalid identifier {name!r}: must match [a-zA-Z_][a-zA-Z0-9_]*"
+        )
 
 
 class IndexType(Enum):
@@ -104,6 +121,16 @@ class IndexRegistry:
                 )
                 continue
 
+            # Validate index name as safe SQL identifier
+            if name not in SPECIAL_INDEXES:
+                try:
+                    validate_identifier(name)
+                except ValueError:
+                    log.warning(
+                        "Skipping index %r: name is not a safe SQL identifier", name
+                    )
+                    continue
+
             # Read source attributes from index object
             source_attrs = None
             if hasattr(index_obj, "getIndexSourceNames"):
@@ -136,7 +163,12 @@ class IndexRegistry:
             idx_key: JSONB key (usually same as name)
             source_attrs: list of attribute names for extraction
                           (defaults to [idx_key])
+
+        Raises:
+            ValueError: if idx_key is not a safe SQL identifier
         """
+        if idx_key is not None:
+            validate_identifier(idx_key)
         if source_attrs is None:
             source_attrs = [idx_key] if idx_key is not None else [name]
         self._indexes[name] = (idx_type, idx_key, source_attrs)

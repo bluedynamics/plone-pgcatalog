@@ -7,8 +7,8 @@ secured queries against real PG (integration).
 from datetime import datetime
 from datetime import UTC
 from plone.pgcatalog.indexing import catalog_object
+from plone.pgcatalog.query import _execute_query
 from plone.pgcatalog.query import apply_security_filters
-from plone.pgcatalog.query import execute_query
 from tests.conftest import insert_object
 
 
@@ -150,7 +150,7 @@ def _setup_security_data(conn):
 
 
 def _query_zoids(conn, query_dict):
-    rows = execute_query(conn, query_dict, columns="zoid")
+    rows = _execute_query(conn, query_dict, columns="zoid")
     return sorted(row["zoid"] for row in rows)
 
 

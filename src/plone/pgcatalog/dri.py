@@ -67,6 +67,9 @@ class DateRecurringIndexTranslator:
     """
 
     def __init__(self, date_attr, recurdef_attr, until_attr=""):
+        from plone.pgcatalog.columns import validate_identifier
+
+        validate_identifier(date_attr)
         self.date_attr = date_attr
         self.recurdef_attr = recurdef_attr
         self.until_attr = until_attr
