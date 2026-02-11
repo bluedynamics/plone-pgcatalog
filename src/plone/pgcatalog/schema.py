@@ -21,6 +21,12 @@ CATALOG_FUNCTIONS = """\
 -- The built-in ::timestamptz cast is STABLE (depends on session timezone),
 -- but our ISO 8601 dates always include timezone info, making the result
 -- deterministic.  This wrapper lets PG accept it in index expressions.
+--
+-- SECURITY NOTE: declared IMMUTABLE despite wrapping a STABLE cast.
+-- Safe because all stored dates include explicit timezone info (ISO 8601).
+-- If a value without timezone were stored, the result would depend on the
+-- session timezone setting and PG could cache incorrect index entries.
+-- Ensure all date values written to idx JSONB include timezone offsets.
 CREATE OR REPLACE FUNCTION pgcatalog_to_timestamptz(text)
 RETURNS timestamptz AS $$
     SELECT $1::timestamptz;

@@ -222,6 +222,11 @@ class PlonePGCatalogTool(CatalogTool):
     meta_type = "PG Catalog Tool"
     security = ClassSecurityInfo()
 
+    security.declarePrivate("unrestrictedSearchResults")
+    security.declareProtected("Manage ZCatalog Entries", "refreshCatalog")
+    security.declareProtected("Manage ZCatalog Entries", "reindexIndex")
+    security.declareProtected("Manage ZCatalog Entries", "clearFindAndRebuild")
+
     @contextmanager
     def _pg_connection(self):
         """Get a connection, preferring request-scoped reuse.

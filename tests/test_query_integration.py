@@ -7,7 +7,7 @@ return correct results.
 from datetime import datetime
 from datetime import UTC
 from plone.pgcatalog.indexing import catalog_object
-from plone.pgcatalog.query import execute_query
+from plone.pgcatalog.query import _execute_query as execute_query
 from tests.conftest import insert_object
 
 

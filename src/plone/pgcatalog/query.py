@@ -37,6 +37,9 @@ _QUERY_META_KEYS = frozenset(
 # Path validation pattern
 _PATH_RE = re.compile(r"^/[a-zA-Z0-9._/@+\-]*$")
 
+# Maximum number of paths in a single path query (DoS prevention)
+_MAX_PATHS = 100
+
 
 def _lookup_translator(name):
     """Look up an IPGIndexTranslator utility for a given index name.
@@ -110,15 +113,16 @@ def apply_security_filters(query_dict, roles, show_inactive=False):
     return result
 
 
-def execute_query(conn, query_dict, columns="zoid, path, idx, state"):
+def _execute_query(conn, query_dict, columns="zoid, path, idx, state"):
     """Execute a catalog query and return result rows.
 
-    Convenience function that builds SQL from a query dict and executes it.
+    Internal convenience function for testing.  The ``columns`` parameter
+    is interpolated into SQL, so callers must only pass trusted constants.
 
     Args:
         conn: psycopg connection (with dict_row factory)
         query_dict: ZCatalog-style query dict
-        columns: SQL column list to SELECT
+        columns: SQL column list to SELECT (must be a trusted constant)
 
     Returns:
         list of row dicts
@@ -410,6 +414,11 @@ class _QueryBuilder:
         navtree_start = spec.get("navtree_start", 0)
 
         paths = [query_val] if isinstance(query_val, str) else list(query_val)
+
+        if len(paths) > _MAX_PATHS:
+            raise ValueError(
+                f"Too many paths in query ({len(paths)}), maximum is {_MAX_PATHS}"
+            )
 
         for path in paths:
             _validate_path(path)

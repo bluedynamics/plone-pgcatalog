@@ -179,7 +179,7 @@ def release_request_connection(event=None):
         try:
             pool.putconn(conn)
         except Exception:
-            pass  # pool closed or conn already returned
+            log.warning("Failed to return connection to pool", exc_info=True)
     _local.pgcat_conn = None
     _local.pgcat_pool = None
 
