@@ -562,6 +562,23 @@ class TestPathValidation:
         with pytest.raises(ValueError, match="must be a string"):
             _validate_path(123)
 
+    def test_too_many_paths_raises(self):
+        """Path queries with more than _MAX_PATHS paths are rejected."""
+        from plone.pgcatalog.query import _MAX_PATHS
+
+        import pytest
+
+        paths = [f"/plone/folder{i}" for i in range(_MAX_PATHS + 1)]
+        with pytest.raises(ValueError, match="Too many paths"):
+            build_query({"path": {"query": paths}})
+
+    def test_exactly_max_paths_accepted(self):
+        from plone.pgcatalog.query import _MAX_PATHS
+
+        paths = [f"/plone/folder{i}" for i in range(_MAX_PATHS)]
+        qr = build_query({"path": {"query": paths}})
+        assert "idx" in qr["where"]
+
 
 class TestNavtreeEdgeCases:
     def test_navtree_breadcrumbs_empty(self):
