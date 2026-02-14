@@ -1,6 +1,20 @@
 # Changelog
 
-## 1.0.0b2 (unreleased)
+## 1.0.0b2
+
+### Security
+
+- **SQL identifier validation**: Added `validate_identifier()` in `columns.py`
+  to reject unsafe SQL identifiers. All `idx_key` values in `IndexRegistry`
+  and `date_attr` in `DateRecurringIndexTranslator` are now validated.
+
+- **Access control declarations**: Added `declareProtected` for management
+  methods (`refreshCatalog`, `reindexIndex`, `clearFindAndRebuild`) and
+  `declarePrivate` for `unrestrictedSearchResults` on `PlonePGCatalogTool`.
+
+- **API safety**: Renamed `execute_query()` to `_execute_query()` to mark as
+  internal API. Capped path query list size to 100 (DoS prevention).
+  Documented security contract for `IPGIndexTranslator` implementations.
 
 ### Fixed
 
