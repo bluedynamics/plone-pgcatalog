@@ -370,6 +370,92 @@ def run_query_scenarios(site, iterations, warmup):
 
 
 # ---------------------------------------------------------------------------
+# Write-then-query benchmark (same transaction)
+# ---------------------------------------------------------------------------
+
+
+def bench_write_then_query(site, iterations, warmup):
+    """Benchmark: create/modify content and query within the same transaction.
+
+    Simulates the common Plone pattern where content is created or modified
+    in a request handler, and the catalog is queried as part of building
+    the response — all within the same transaction (no intermediate commit).
+
+    PGCatalog uses the auto-flush mechanism (SAVEPOINT + write pending data)
+    to make catalog entries visible.  ZCatalog updates BTree indexes in
+    memory during catalog_object(), so queries work naturally.
+    """
+    import transaction
+
+    catalog = site.portal_catalog
+    total_iters = warmup + iterations
+
+    # --- Create + Query (find by path) ---
+    create_samples = []
+    create_found = 0
+
+    for i in range(total_iters):
+        doc_id = f"wq-{i}"
+        doc_path = f"/{site.getId()}/{doc_id}"
+
+        t0 = time.perf_counter()
+        site.invokeFactory(
+            "Document", doc_id,
+            title=f"WriteQuery Doc {i}",
+            description=f"Write-then-query benchmark document {i}",
+        )
+        # Query within the same transaction — no commit yet
+        results = catalog.searchResults(
+            path={"query": doc_path, "depth": 0},
+        )
+        found = len(results) > 0
+        t1 = time.perf_counter()
+
+        if i >= warmup:
+            create_samples.append((t1 - t0) * 1000.0)
+            if found:
+                create_found += 1
+
+        transaction.commit()
+
+    # --- Modify + Query (find by unique Subject tag) ---
+    modify_samples = []
+    modify_found = 0
+
+    for i in range(total_iters):
+        doc = site[f"wq-{i}"]
+        unique_tag = f"wqmod{i}"
+
+        t0 = time.perf_counter()
+        doc.subject = (unique_tag,)
+        doc.reindexObject()
+        # Query within the same transaction — no commit yet
+        results = catalog.searchResults(Subject=unique_tag)
+        found = len(results) > 0
+        t1 = time.perf_counter()
+
+        if i >= warmup:
+            modify_samples.append((t1 - t0) * 1000.0)
+            if found:
+                modify_found += 1
+
+        transaction.commit()
+
+    return {
+        "create_then_query": {
+            "description": "Create doc + find by path (same txn)",
+            "stats": _stats_dict(create_samples),
+            "found_rate": round(create_found / iterations, 3) if iterations else 0,
+        },
+        "modify_then_query": {
+            "description": "Modify doc + find by Subject (same txn)",
+            "stats": _stats_dict(modify_samples),
+            "found_rate": round(modify_found / iterations, 3) if iterations else 0,
+        },
+    }
+
+
+# ---------------------------------------------------------------------------
 # Rebuild benchmark
 # ---------------------------------------------------------------------------
 
@@ -454,6 +540,22 @@ def main():
                                     "GROUP BY idx->>'portal_type' ORDER BY cnt DESC LIMIT 5")
                         types = ", ".join(f"{r[0]}={r[1]}" for r in cur.fetchall())
                         print(f"PG diag: {n} rows with path, types: {types}", file=sys.stderr)
+                        # SearchableText diagnostic
+                        cur.execute(
+                            "SELECT COUNT(*) FROM object_state "
+                            "WHERE path LIKE %s AND searchable_text IS NOT NULL",
+                            (f"/{site.getId()}/doc-%",)
+                        )
+                        st_ok = cur.fetchone()[0]
+                        cur.execute(
+                            "SELECT COUNT(*) FROM object_state "
+                            "WHERE path LIKE %s AND searchable_text IS NULL",
+                            (f"/{site.getId()}/doc-%",)
+                        )
+                        st_null = cur.fetchone()[0]
+                        print(f"PG diag: doc-* searchable_text: "
+                              f"{st_ok} OK, {st_null} NULL "
+                              f"(total {st_ok + st_null})", file=sys.stderr)
         except Exception as e:
             print(f"PG diag failed: {e}", file=sys.stderr)
 
@@ -483,6 +585,10 @@ def main():
     else:
         query_results = run_query_scenarios(site, args.iterations, args.warmup)
     results["queries"] = query_results
+
+    # P10-P11: Write-then-query (same transaction)
+    wq_results = bench_write_then_query(site, args.iterations, args.warmup)
+    results["write_then_query"] = wq_results
 
     # P7: clearFindAndRebuild (expensive — only if requested)
     if args.rebuild_iterations > 0:

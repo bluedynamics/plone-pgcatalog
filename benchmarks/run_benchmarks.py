@@ -484,6 +484,29 @@ def print_level2_results(results):
             )
             print(f"  {desc:<40} {cols}  {ratios}{count_note}")
 
+    # -- Write-then-query ---------------------------------------------------
+
+    # Check if any backend has write_then_query data
+    has_wq = any(data.get("write_then_query") for _, data, _ in backends)
+    if has_wq:
+        print(f"\n  {HEADER}Write-then-Query (same transaction){RESET}")
+        for scenario_key, scenario_label in [
+            ("create_then_query", "Create + query"),
+            ("modify_then_query", "Modify + query"),
+        ]:
+            parts = []
+            for _, data, label in backends:
+                wq = data.get("write_then_query", {}).get(scenario_key, {})
+                stats = wq.get("stats", {})
+                found_rate = wq.get("found_rate", 0)
+                median = stats.get("median_ms")
+                if median is not None:
+                    found_pct = f"{found_rate * 100:.0f}%"
+                    parts.append(f"{label} {_fmt_ms(median)} "
+                                 f"(found: {found_pct})")
+            if parts:
+                print(f"  {scenario_label:20s} {' | '.join(parts)}")
+
     # -- Rebuild -------------------------------------------------------------
 
     rebuild_parts = []

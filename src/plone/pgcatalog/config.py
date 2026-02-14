@@ -66,6 +66,11 @@ def set_pending(zoid, data):
     """
     _get_pending()[zoid] = data
     _ensure_joined()
+    # Bump generation so _auto_flush knows data changed since last flush
+    try:
+        _local._pending_gen += 1
+    except AttributeError:
+        _local._pending_gen = 1
 
 
 def pop_pending(zoid):
@@ -88,6 +93,7 @@ class PendingSavepoint:
         self._snapshot = snapshot
 
     def rollback(self):
+        _rollback_flush_if_active()
         pending = _get_pending()
         pending.clear()
         pending.update(self._snapshot)
@@ -111,6 +117,7 @@ class PendingDataManager:
         return PendingSavepoint(dict(_get_pending()))
 
     def abort(self, transaction):
+        _rollback_flush_if_active()
         _get_pending().clear()
         self._joined = False  # AbortSavepoint may have unjoined us
 
@@ -125,9 +132,12 @@ class PendingDataManager:
 
     def tpc_finish(self, transaction):
         _get_pending().clear()
+        _clear_flush_state()
 
     def tpc_abort(self, transaction):
+        _rollback_flush_if_active()
         _get_pending().clear()
+        _clear_flush_state()
 
     def sortKey(self):
         return "~plone.pgcatalog.pending"
@@ -142,6 +152,8 @@ def _ensure_joined():
             return
     except AttributeError:
         pass
+    # New transaction — reset flush hook registration
+    _local._flush_hook_registered = False
     dm = PendingDataManager(txn)
     _local._pending_dm = dm
     txn.join(dm)
@@ -190,6 +202,10 @@ def get_storage_connection(context):
     Returns the same connection used for ZODB object loads, so catalog
     queries see the same REPEATABLE READ snapshot.
 
+    Uses ``_normal_storage`` to bypass ZODB's ``TmpStore`` wrapper that
+    is installed when ``transaction.savepoint()`` has been called (which
+    happens during Plone's content creation events).
+
     Args:
         context: persistent object with _p_jar (e.g. the catalog tool)
 
@@ -197,9 +213,212 @@ def get_storage_connection(context):
         psycopg connection or None if not available
     """
     try:
-        return context._p_jar._storage.pg_connection
+        jar = context._p_jar
+        # _normal_storage is the unwrapped storage, always available even
+        # when _storage has been replaced by TmpStore after a savepoint.
+        storage = getattr(jar, "_normal_storage", None) or jar._storage
+        return storage.pg_connection
     except (AttributeError, TypeError):
         return None
+
+
+# ── Flush: write pending catalog data within the read transaction ──
+
+
+def flush_catalog(context):
+    """Make pending catalog data visible to subsequent queries.
+
+    For **modified** objects (row exists in ``object_state``), uses a
+    PG ``SAVEPOINT`` + UPDATE — fast, rolled back before ``tpc_vote()``.
+
+    For **new** objects (no row yet), falls back to
+    ``transaction.commit()`` so ``tpc_vote()`` writes the definitive
+    data and the object becomes visible.
+
+    Args:
+        context: persistent object with ``_p_jar`` (e.g. catalog tool)
+    """
+    pending = _get_pending()
+    if not pending:
+        return
+    conn = get_storage_connection(context)
+    if conn is None:
+        return
+    if _has_new_objects(conn, pending):
+        transaction.commit()
+        return
+    _do_flush(conn, pending)
+
+
+def _auto_flush(context):
+    """Auto-flush if pending data exists and hasn't been flushed yet.
+
+    Called from ``searchResults()`` / ``unrestrictedSearchResults()``
+    to make pending catalog writes visible to the query.  Skips if
+    no new ``set_pending()`` calls since the last flush (generation
+    counter).
+
+    Uses SAVEPOINT + UPDATE only — safe for incidental
+    ``searchResults()`` calls during content creation events.
+    New objects (no row in ``object_state``) are not visible until
+    the natural ``transaction.commit()``.  Use ``flush_catalog()``
+    for explicit full-visibility flush.
+    """
+    pending = _get_pending()
+    if not pending:
+        return
+    gen = getattr(_local, "_pending_gen", 0)
+    flushed = getattr(_local, "_flushed_gen", -1)
+    if gen == flushed:
+        return  # already flushed, no new data
+    conn = get_storage_connection(context)
+    if conn is None:
+        return
+    _do_flush(conn, pending)
+
+
+def _has_new_objects(conn, pending):
+    """Check whether any pending catalog entries are for new objects.
+
+    Returns True if any pending zoid (with non-None data) has no
+    row in ``object_state``.
+    """
+    zoids = [z for z, data in pending.items() if data is not None]
+    if not zoids:
+        return False
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT zoid FROM object_state WHERE zoid = ANY(%(zoids)s)",
+            {"zoids": zoids},
+        )
+        existing = {row["zoid"] for row in cur.fetchall()}
+    return len(existing) < len(zoids)
+
+
+def _do_flush(conn, pending):
+    """Write pending catalog data to PG within a SAVEPOINT."""
+    if not pending:
+        return
+    # Clean up previous flush savepoint if still active
+    _rollback_flush_if_active()
+
+    conn.execute("SAVEPOINT pgcatalog_flush")
+    _local._flush_active = True
+    _local._flush_conn = conn
+
+    try:
+        _write_pending_to_pg(conn, pending)
+    except Exception:
+        _rollback_flush_savepoint()
+        raise
+
+    _local._flushed_gen = getattr(_local, "_pending_gen", 0)
+    _register_before_commit_hook()
+
+
+def _write_pending_to_pg(conn, pending):
+    """Write pending catalog data to PG using UPDATE for existing objects.
+
+    Only updates catalog columns (path, idx, searchable_text) on objects
+    that already have a row in ``object_state``.  Does NOT insert dummy
+    rows for new objects — those become visible after ``tpc_vote()``
+    writes the definitive data.  This avoids corrupting the ZODB state
+    column with empty data.
+    """
+    from plone.pgcatalog.columns import compute_path_info
+    from psycopg.types.json import Json
+
+    for zoid, data in pending.items():
+        if data is None:
+            # Uncatalog sentinel: NULL all catalog columns
+            conn.execute(
+                "UPDATE object_state SET "
+                "path = NULL, parent_path = NULL, path_depth = NULL, "
+                "idx = NULL, searchable_text = NULL "
+                "WHERE zoid = %(zoid)s",
+                {"zoid": zoid},
+            )
+        else:
+            path = data.get("path")
+            parent_path, path_depth = compute_path_info(path) if path else (None, None)
+            idx = data.get("idx")
+            searchable_text = data.get("searchable_text")
+
+            params = {
+                "zoid": zoid,
+                "path": path,
+                "parent_path": parent_path,
+                "path_depth": path_depth,
+                "idx": Json(idx) if idx else None,
+                "text": searchable_text or "",
+            }
+
+            if searchable_text:
+                conn.execute(
+                    """
+                    UPDATE object_state SET
+                        path = %(path)s,
+                        parent_path = %(parent_path)s,
+                        path_depth = %(path_depth)s,
+                        idx = %(idx)s,
+                        searchable_text = to_tsvector('simple'::regconfig, %(text)s)
+                    WHERE zoid = %(zoid)s
+                    """,
+                    params,
+                )
+            else:
+                conn.execute(
+                    """
+                    UPDATE object_state SET
+                        path = %(path)s,
+                        parent_path = %(parent_path)s,
+                        path_depth = %(path_depth)s,
+                        idx = %(idx)s,
+                        searchable_text = NULL
+                    WHERE zoid = %(zoid)s
+                    """,
+                    params,
+                )
+
+
+def _rollback_flush_if_active():
+    """Roll back the PG flush savepoint if one is active."""
+    if getattr(_local, "_flush_active", False):
+        _rollback_flush_savepoint()
+
+
+def _rollback_flush_savepoint():
+    """Roll back and release the PG flush savepoint, then clear state."""
+    conn = getattr(_local, "_flush_conn", None)
+    if conn is not None and not conn.closed:
+        try:
+            conn.execute("ROLLBACK TO SAVEPOINT pgcatalog_flush")
+            conn.execute("RELEASE SAVEPOINT pgcatalog_flush")
+        except Exception:
+            pass
+    _clear_flush_state()
+
+
+def _clear_flush_state():
+    """Reset all flush-related thread-local state."""
+    _local._flush_active = False
+    _local._flush_conn = None
+    _local._flushed_gen = -1
+    _local._flush_hook_registered = False
+
+
+def _register_before_commit_hook():
+    """Register a before-commit hook to roll back the flush savepoint.
+
+    The hook fires before any data manager's ``tpc_begin()``, which is
+    where the storage calls ``_end_read_txn()`` → ``COMMIT``.  Rolling
+    back the savepoint before that ``COMMIT`` ensures the temporary
+    flush data is not persisted.
+    """
+    if getattr(_local, "_flush_hook_registered", False):
+        return
+    transaction.get().addBeforeCommitHook(_rollback_flush_savepoint)
+    _local._flush_hook_registered = True
 
 
 def get_pool(context=None):

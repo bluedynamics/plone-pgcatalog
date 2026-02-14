@@ -13,6 +13,7 @@ Requires [zodb-pgjsonb](https://github.com/bluedynamics/zodb-pgjsonb) as the ZOD
 - **Transactional writes** -- catalog data written atomically alongside object state during ZODB commit
 - **Full-text search** via PostgreSQL `tsvector`/`tsquery`
 - **Zero ZODB cache pressure** -- no BTree/Bucket objects stored in ZODB
+- **In-transaction catalog visibility** -- pending catalog data is automatically flushed to PG before queries, no `transaction.commit()` needed between writes and reads
 - **Container-friendly** -- works on standard `postgres:17` Docker images, no extensions required
 
 ## Requirements

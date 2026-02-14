@@ -251,3 +251,44 @@ Includes:
 2. **Lazy idx loading**: `_run_search` selects only `zoid, path`; idx fetched on demand via `_load_idx_batch()` when brain metadata is accessed
 3. **Prepared statements**: `prepare=True` on execute for repeated query patterns
 4. **Request-scoped connections**: Thread-local connection reuse via `get_request_connection()`, released by IPubEnd subscriber
+5. **Snapshot consistency**: Catalog queries route through the ZODB storage instance's PG connection, sharing the same REPEATABLE READ snapshot as `load()` calls
+
+## Flush Catalog (In-Transaction Visibility)
+
+When application code modifies objects and queries the catalog within the
+same transaction, pending catalog data would normally be invisible (it
+hasn't reached PostgreSQL yet -- the `CatalogStateProcessor` writes during
+`tpc_vote()`).
+
+### Automatic Flush
+
+`searchResults()` automatically flushes pending catalog data to PG before
+executing the query.  This uses a PostgreSQL `SAVEPOINT` within the
+REPEATABLE READ read transaction:
+
+1. `SAVEPOINT pgcatalog_flush` -- creates a rollback point
+2. `INSERT ... ON CONFLICT DO UPDATE` -- writes pending catalog columns
+3. Query executes -- sees flushed data (REPEATABLE READ shows own writes)
+4. Before commit: `ROLLBACK TO SAVEPOINT` -- restores clean state
+5. `tpc_vote()` writes definitively via `CatalogStateProcessor`
+
+### Explicit Flush
+
+For code that needs to flush outside `searchResults()`:
+
+```python
+from plone.pgcatalog import flush_catalog
+flush_catalog(context)  # context is any persistent object
+```
+
+### ZODB Savepoint Compatibility
+
+`transaction.savepoint()` (used by plone.exportimport and others) works
+correctly: rolling back a ZODB savepoint also rolls back the PG flush
+savepoint, keeping PG state consistent with the restored pending data.
+
+### Generation Counter
+
+A generation counter (`_pending_gen` / `_flushed_gen`) avoids redundant
+flushes when `searchResults()` is called multiple times without new
+`set_pending()` calls in between.

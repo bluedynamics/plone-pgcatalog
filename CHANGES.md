@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.0.0b4
+
+### Added
+
+- **In-transaction catalog flush**: `searchResults()` automatically flushes
+  pending catalog data to PostgreSQL using a SAVEPOINT before executing
+  queries. Pending writes are visible within the same transaction without
+  requiring `transaction.commit()`. The savepoint is rolled back before
+  the ZODB commit cycle so `tpc_vote()` writes definitively.
+
+  New public API:
+  - `flush_catalog(context)` -- explicit flush for code outside catalog queries.
+
+  Compatible with `transaction.savepoint()` (used by plone.exportimport
+  and other packages): rolling back a ZODB savepoint also rolls back the
+  PG flush savepoint.
+
 ## 1.0.0b3
 
 ### Fixed

@@ -438,6 +438,10 @@ class PlonePGCatalogTool(CatalogTool):
 
         query = apply_security_filters(query, roles, show_inactive=show_inactive)
 
+        from plone.pgcatalog.config import _auto_flush
+
+        _auto_flush(self)
+
         conn = self._get_pg_read_connection()
         return _run_search(conn, query, catalog=self, lazy_conn=conn)
 
@@ -448,6 +452,10 @@ class PlonePGCatalogTool(CatalogTool):
         if REQUEST is None:
             REQUEST = {}
         REQUEST.update(kw)
+
+        from plone.pgcatalog.config import _auto_flush
+
+        _auto_flush(self)
 
         conn = self._get_pg_read_connection()
         return _run_search(conn, REQUEST, catalog=self, lazy_conn=conn)

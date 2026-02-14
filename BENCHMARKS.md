@@ -59,9 +59,9 @@ because it stores no BTree objects in ZODB.
 
 | Operation | PGCat | RS+ZCat | Ratio |
 |---|---|---|---|
-| Site creation | 1,706 ms | 1,281 ms | 1.3x slower |
-| Content creation | 68.5 ms/doc | 77.3 ms/doc | **1.13x faster** |
-| Content modification | 14.0 ms/doc | 19.4 ms/doc | **1.39x faster** |
+| Site creation | 1,815 ms | 1,260 ms | 1.4x slower |
+| Content creation | 65.1 ms/doc | 78.2 ms/doc | **1.20x faster** |
+| Content modification | 13.5 ms/doc | 20.2 ms/doc | **1.50x faster** |
 
 PGCatalog writes are now **faster** than RelStorage+ZCatalog at this
 scale.  This was achieved through two rounds of optimization:
@@ -81,22 +81,22 @@ scale.  This was achieved through two rounds of optimization:
 
 | Query Scenario | PGCat | RS+ZCat | Ratio |
 |---|---|---|---|
-| Simple field match (`portal_type=Document`) | 5.9 ms | 0.21 ms | 27.5x |
-| Complex multi-index (type+state+subject+sort+limit) | 4.1 ms | 0.32 ms | 13.0x |
-| Full-text search (`SearchableText`) | 3.7 ms | 0.54 ms | 6.9x |
-| Navigation (path depth=1 + sort) | 5.3 ms | 0.68 ms | 7.7x |
-| Security filtered (published + anonymous) | 6.6 ms | 0.21 ms | 30.8x |
-| Date-sorted with pagination | 5.6 ms | 0.29 ms | 19.7x |
+| Simple field match (`portal_type=Document`) | 6.6 ms | 0.20 ms | 33.1x |
+| Complex multi-index (type+state+subject+sort+limit) | 6.3 ms | 0.31 ms | 20.7x |
+| Full-text search (`SearchableText`) | 4.0 ms | 0.55 ms | 7.4x |
+| Navigation (path depth=1 + sort) | 6.0 ms | 0.65 ms | 9.3x |
+| Security filtered (published + anonymous) | 6.1 ms | 0.23 ms | 26.5x |
+| Date-sorted with pagination | 8.5 ms | 0.28 ms | 30.9x |
 
-### Where the Time Goes (cProfile, after optimization)
+### Where the Time Goes (cProfile)
 
 Profiling PGCatalog's 330 query executions (6 scenarios x 55 iterations):
 
 | Component | Time | Share | What |
 |---|---|---|---|
-| PG network wait | 1.61s | 81% | SQL execution + round-trip to Docker PG |
-| Row construction | 0.16s | 8% | psycopg dict_row for 106k rows |
-| Other | 0.21s | 11% | Query building, brain construction, pool ops |
+| PG network wait | ~1.6s | ~80% | SQL execution + round-trip to Docker PG |
+| Row construction | ~0.2s | ~8% | psycopg dict_row for 106k rows |
+| Other | ~0.2s | ~12% | Query building, brain construction, auto-flush check |
 
 In contrast, ZCatalog runs entirely in-process with BTree nodes cached in
 ZODB's object cache.  At 500 documents, the entire BTree index fits in
@@ -221,6 +221,38 @@ with Unix domain sockets or a colocated PG instance.
 | Content modification | — | 50.1 ms/doc | **14.0 ms/doc (-72%)** |
 | ZODB store() per doc | ~193 | ~193 | **40 (-79%)** |
 | vs RelStorage+ZCatalog | **3.4x slower** | **2.2x slower** | **1.13x faster** |
+
+### Write-then-Query (same transaction)
+
+Measures the common pattern where content is created or modified and then
+queried within the **same ZODB transaction** — no intermediate commit.
+
+| Scenario | PGCat | RS+ZCat | PGCat found | RS+ZCat found |
+|---|---|---|---|---|
+| Create doc + query by path | 50.8 ms | 61.6 ms | 0% | 100% |
+| Modify doc + query by Subject | 14.8 ms | 8.3 ms | 100% | 100% |
+
+**How it works:**
+
+- **PGCatalog** uses an auto-flush mechanism: `searchResults()` writes
+  pending catalog data to PostgreSQL within a `SAVEPOINT` before executing
+  the query.  The savepoint is rolled back before `tpc_vote()`, which
+  writes the definitive data.
+
+- **Modify-then-query** (found: 100%): For existing objects the UPDATE-only
+  flush updates catalog columns on the existing `object_state` row,
+  making modified data immediately visible.
+
+- **Create-then-query** (found: 0%): New objects have no row in
+  `object_state` yet, so the UPDATE matches nothing.  The new object
+  becomes visible only after `tpc_vote()`.  This is acceptable because
+  Plone's content creation flow commits between the form submission and
+  the response page rendering.  For code that needs immediate visibility
+  of new objects, ``flush_catalog(context)`` can be called explicitly —
+  it detects new objects and falls back to ``transaction.commit()``.
+
+- **ZCatalog** updates BTree indexes in memory during `catalog_object()`,
+  so both creates and modifies are immediately visible to queries.
 
 ## Architectural Advantages at Scale
 
