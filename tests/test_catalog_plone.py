@@ -585,8 +585,39 @@ class TestUncatalogObjectPersistent:
 
 
 class TestSearchResults:
-    def test_searchResults_calls_run_search(self):
-        """searchResults wires security, pool, and delegates to _run_search."""
+    def test_searchResults_uses_storage_connection(self):
+        """searchResults uses the ZODB storage instance connection."""
+        tool = PlonePGCatalogTool.__new__(PlonePGCatalogTool)
+        mock_conn = mock.Mock()
+        mock_results = mock.Mock()
+
+        with (
+            mock.patch("AccessControl.getSecurityManager") as sm_mock,
+            mock.patch.object(
+                tool, "_listAllowedRolesAndUsers", return_value=["Anonymous"]
+            ),
+            mock.patch(
+                "plone.pgcatalog.config.get_storage_connection",
+                return_value=mock_conn,
+            ),
+            mock.patch(
+                "plone.pgcatalog.catalog._run_search", return_value=mock_results
+            ) as run_mock,
+            mock.patch(
+                "plone.pgcatalog.catalog.apply_security_filters",
+                side_effect=lambda q, r, **kw: q,
+            ),
+        ):
+            sm_mock.return_value.checkPermission.return_value = False
+            result = tool.searchResults({"portal_type": "Document"})
+            assert result is mock_results
+            run_mock.assert_called_once()
+            # Verify lazy_conn is the storage connection
+            call_kwargs = run_mock.call_args
+            assert call_kwargs.kwargs.get("lazy_conn") is mock_conn
+
+    def test_searchResults_falls_back_to_pool(self):
+        """searchResults falls back to pool when no storage connection."""
         tool = PlonePGCatalogTool.__new__(PlonePGCatalogTool)
         mock_pool = mock.Mock()
         mock_conn = mock.Mock()
@@ -596,6 +627,9 @@ class TestSearchResults:
             mock.patch("AccessControl.getSecurityManager") as sm_mock,
             mock.patch.object(
                 tool, "_listAllowedRolesAndUsers", return_value=["Anonymous"]
+            ),
+            mock.patch(
+                "plone.pgcatalog.config.get_storage_connection", return_value=None
             ),
             mock.patch("plone.pgcatalog.config.get_pool", return_value=mock_pool),
             mock.patch(
@@ -614,17 +648,16 @@ class TestSearchResults:
             assert result is mock_results
             run_mock.assert_called_once()
 
-    def test_unrestrictedSearchResults_calls_run_search(self):
-        """unrestrictedSearchResults delegates directly to _run_search."""
+    def test_unrestrictedSearchResults_uses_storage_connection(self):
+        """unrestrictedSearchResults uses the ZODB storage instance connection."""
         tool = PlonePGCatalogTool.__new__(PlonePGCatalogTool)
-        mock_pool = mock.Mock()
         mock_conn = mock.Mock()
         mock_results = mock.Mock()
 
         with (
-            mock.patch("plone.pgcatalog.config.get_pool", return_value=mock_pool),
             mock.patch(
-                "plone.pgcatalog.config.get_request_connection", return_value=mock_conn
+                "plone.pgcatalog.config.get_storage_connection",
+                return_value=mock_conn,
             ),
             mock.patch(
                 "plone.pgcatalog.catalog._run_search", return_value=mock_results
@@ -633,6 +666,7 @@ class TestSearchResults:
             result = tool.unrestrictedSearchResults(portal_type="Document")
             assert result is mock_results
             run_mock.assert_called_once()
+            assert run_mock.call_args.kwargs.get("lazy_conn") is mock_conn
 
 
 # ---------------------------------------------------------------------------
@@ -707,7 +741,7 @@ class TestMaintenanceMethods:
 
 class TestRunSearchLazyMode:
     def test_lazy_mode_wires_result_set(self):
-        """_run_search with pool wires brain._result_set for lazy loading."""
+        """_run_search with lazy_conn wires brain._result_set for lazy loading."""
         from plone.pgcatalog.catalog import _run_search
 
         mock_conn = mock.MagicMock()
@@ -718,7 +752,6 @@ class TestRunSearchLazyMode:
             {"zoid": 1, "path": "/plone/a"},
             {"zoid": 2, "path": "/plone/b"},
         ]
-        mock_pool = mock.Mock()
 
         with mock.patch("plone.pgcatalog.catalog.build_query") as bq:
             bq.return_value = {
@@ -728,7 +761,7 @@ class TestRunSearchLazyMode:
                 "limit": None,
                 "offset": None,
             }
-            results = _run_search(mock_conn, {}, pool=mock_pool)
+            results = _run_search(mock_conn, {}, lazy_conn=mock_conn)
 
         assert len(results) == 2
         # Brains should have _result_set wired

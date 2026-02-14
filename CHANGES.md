@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.0.0b3
+
+### Fixed
+
+- **Snapshot consistency**: Catalog read queries now route through the ZODB
+  storage instance's PG connection, sharing the same REPEATABLE READ snapshot
+  as `load()` calls. Previously, catalog queries used a separate autocommit
+  connection that could see a different database state than ZODB object loads
+  within the same request.
+
+  New internal API:
+  - `config.get_storage_connection(context)` — retrieves the PG connection
+    from `context._p_jar._storage.pg_connection`.
+  - `PlonePGCatalogTool._get_pg_read_connection()` — prefers storage
+    connection, falls back to pool for non-ZODB contexts (tests, scripts).
+
+  `CatalogSearchResults` now accepts a `conn` parameter (was `pool`) for
+  lazy idx batch loading, using the same connection directly.
+
 ## 1.0.0b2
 
 ### Security

@@ -67,24 +67,26 @@ _SELECT_COLS_EAGER_COUNTED = "zoid, path, idx, COUNT(*) OVER() AS _total_count"
 # ---------------------------------------------------------------------------
 
 
-def _run_search(conn, query, catalog=None, pool=None):
+def _run_search(conn, query, catalog=None, lazy_conn=None):
     """Execute a prepared query dict and return CatalogSearchResults.
 
     Builds the SQL once and uses a ``COUNT(*) OVER()`` window function
     when a LIMIT is present so only *one* query is executed.
 
-    When ``pool`` is provided, uses **lazy mode**: only ``zoid`` and ``path``
-    are selected.  The ``idx`` JSONB is fetched on demand when brain metadata
-    is first accessed (via ``CatalogSearchResults._load_idx_batch()``).
+    When ``lazy_conn`` is provided, uses **lazy mode**: only ``zoid`` and
+    ``path`` are selected.  The ``idx`` JSONB is fetched on demand when
+    brain metadata is first accessed (via
+    ``CatalogSearchResults._load_idx_batch()``), using the same connection
+    (and thus the same REPEATABLE READ snapshot).
 
-    Without ``pool``, uses **eager mode**: ``idx`` is included in the SELECT
-    for backward compatibility with tests and direct callers.
+    Without ``lazy_conn``, uses **eager mode**: ``idx`` is included in the
+    SELECT for backward compatibility with tests and direct callers.
 
     Args:
         conn: psycopg connection (dict_row factory)
         query: ZCatalog-style query dict (security already applied if needed)
         catalog: reference for brain.getObject() traversal (optional)
-        pool: connection pool for lazy idx batch loading (optional)
+        lazy_conn: connection for deferred idx batch loading (optional)
 
     Returns:
         CatalogSearchResults with PGCatalogBrain instances
@@ -92,7 +94,7 @@ def _run_search(conn, query, catalog=None, pool=None):
     qr = build_query(query)
 
     has_limit = qr["limit"] is not None
-    if pool is not None:
+    if lazy_conn is not None:
         cols = _SELECT_COLS_LAZY_COUNTED if has_limit else _SELECT_COLS_LAZY
     else:
         cols = _SELECT_COLS_EAGER_COUNTED if has_limit else _SELECT_COLS_EAGER
@@ -120,10 +122,12 @@ def _run_search(conn, query, catalog=None, pool=None):
         actual_count = 0
 
     brains = [PGCatalogBrain(row, catalog=catalog) for row in rows]
-    results = CatalogSearchResults(brains, actual_result_count=actual_count, pool=pool)
+    results = CatalogSearchResults(
+        brains, actual_result_count=actual_count, conn=lazy_conn
+    )
 
     # Wire brains to result set for lazy loading
-    if pool is not None:
+    if lazy_conn is not None:
         for brain in brains:
             brain._result_set = results
 
@@ -255,6 +259,26 @@ class PlonePGCatalogTool(CatalogTool):
             yield conn
         finally:
             pool.putconn(conn)
+
+    def _get_pg_read_connection(self):
+        """Get PG connection for catalog read queries.
+
+        Prefers the ZODB storage instance's connection so catalog queries
+        share the same REPEATABLE READ snapshot as object loads.
+        Falls back to a pool connection for tests/scripts without ZODB.
+        """
+        from plone.pgcatalog.config import get_storage_connection
+
+        conn = get_storage_connection(self)
+        if conn is not None:
+            return conn
+
+        # Fallback: pool connection (tests, scripts, non-ZODB contexts)
+        from plone.pgcatalog.config import get_pool
+        from plone.pgcatalog.config import get_request_connection
+
+        pool = get_pool(self)
+        return get_request_connection(pool)
 
     # -- Write path (PG annotation only, no ZCatalog BTrees) -----------------
 
@@ -414,13 +438,8 @@ class PlonePGCatalogTool(CatalogTool):
 
         query = apply_security_filters(query, roles, show_inactive=show_inactive)
 
-        from plone.pgcatalog.config import get_pool
-        from plone.pgcatalog.config import get_request_connection
-
-        pool = get_pool(self)
-        # Establish request-scoped connection (reused by subsequent calls)
-        conn = get_request_connection(pool)
-        return _run_search(conn, query, catalog=self, pool=pool)
+        conn = self._get_pg_read_connection()
+        return _run_search(conn, query, catalog=self, lazy_conn=conn)
 
     __call__ = searchResults
 
@@ -430,12 +449,8 @@ class PlonePGCatalogTool(CatalogTool):
             REQUEST = {}
         REQUEST.update(kw)
 
-        from plone.pgcatalog.config import get_pool
-        from plone.pgcatalog.config import get_request_connection
-
-        pool = get_pool(self)
-        conn = get_request_connection(pool)
-        return _run_search(conn, REQUEST, catalog=self, pool=pool)
+        conn = self._get_pg_read_connection()
+        return _run_search(conn, REQUEST, catalog=self, lazy_conn=conn)
 
     # -- Maintenance ---------------------------------------------------------
 

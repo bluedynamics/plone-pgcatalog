@@ -184,6 +184,24 @@ def release_request_connection(event=None):
     _local.pgcat_pool = None
 
 
+def get_storage_connection(context):
+    """Get PG connection from the ZODB storage instance.
+
+    Returns the same connection used for ZODB object loads, so catalog
+    queries see the same REPEATABLE READ snapshot.
+
+    Args:
+        context: persistent object with _p_jar (e.g. the catalog tool)
+
+    Returns:
+        psycopg connection or None if not available
+    """
+    try:
+        return context._p_jar._storage.pg_connection
+    except (AttributeError, TypeError):
+        return None
+
+
 def get_pool(context=None):
     """Discover the PostgreSQL connection pool.
 

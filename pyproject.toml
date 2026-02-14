@@ -25,12 +25,8 @@ classifiers = [
 dependencies = [
     "psycopg[binary,pool]>=3.1",
     "orjson>=3.9",
-    "Products.ZCatalog",
     "Products.CMFPlone",
-    "plone.indexer",
-    "zope.interface",
-    "zope.component",
-    "transaction",
+    "zodb-pgjsonb>=1.1",
 ]
 
 [project.entry-points."z3c.autoinclude.plugin"]
@@ -46,7 +42,6 @@ test = [
     "pytest",
     "pytest-cov",
     "coverage[toml]>=7.0",
-    "zodb-pgjsonb",
 ]
 
 [tool.hatch.build.targets.sdist]

@@ -141,50 +141,49 @@ class CatalogSearchResults(Lazy):
     Inherits from ZTUtils.Lazy so plone.restapi's LazyCatalogResultSerializer
     can serialize it via the existing ISerializeToJson adapter.
 
-    Supports lazy idx loading: when ``pool`` is provided, the main query
+    Supports lazy idx loading: when ``conn`` is provided, the main query
     skips the ``idx`` column.  On first metadata access on any brain,
-    ``_load_idx_batch()`` fetches idx for ALL brains in a single query.
+    ``_load_idx_batch()`` fetches idx for ALL brains in a single query
+    using the same connection (and thus the same REPEATABLE READ snapshot).
     """
 
-    def __init__(self, brains, actual_result_count=None, pool=None):
+    def __init__(self, brains, actual_result_count=None, conn=None):
         self._brains = list(brains)
         self.actual_result_count = (
             actual_result_count
             if actual_result_count is not None
             else len(self._brains)
         )
-        self._pool = pool
-        self._idx_loaded = pool is None  # eager if no pool
+        self._conn = conn
+        self._idx_loaded = conn is None  # eager if no conn
 
     def _load_idx_batch(self):
         """Batch-load idx for all brains in this result set.
 
         Called on first metadata access on any brain.  Issues a single
         SELECT for all zoids, populates each brain's ``_row["idx"]``.
+        Uses the same connection as the original search query, so idx
+        data is consistent with the REPEATABLE READ snapshot.
         """
         if self._idx_loaded:
             return
         self._idx_loaded = True
-        if not self._brains or self._pool is None:
+        if not self._brains or self._conn is None:
             return
 
         brain_map = {b.getRID(): b for b in self._brains}
         zoids = list(brain_map.keys())
 
-        conn = self._pool.getconn()
-        try:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT zoid, idx FROM object_state WHERE zoid = ANY(%(zoids)s)",
-                    {"zoids": zoids},
-                    prepare=True,
-                )
-                for row in cur:
-                    brain = brain_map.get(row["zoid"])
-                    if brain is not None:
-                        brain._row["idx"] = row["idx"]
-        finally:
-            self._pool.putconn(conn)
+        with self._conn.cursor() as cur:
+            cur.execute(
+                "SELECT zoid, idx FROM object_state WHERE zoid = ANY(%(zoids)s)",
+                {"zoids": zoids},
+                prepare=True,
+            )
+            for row in cur:
+                brain = brain_map.get(row["zoid"])
+                if brain is not None:
+                    brain._row["idx"] = row["idx"]
 
     def __len__(self):
         return len(self._brains)
@@ -198,7 +197,7 @@ class CatalogSearchResults(Lazy):
             sr = CatalogSearchResults(
                 result,
                 self.actual_result_count,
-                pool=self._pool,
+                conn=self._conn,
             )
             # Re-wire brains to new result set if idx not yet loaded
             if not self._idx_loaded:

@@ -4,6 +4,7 @@ from plone.pgcatalog.config import _pool_from_storage
 from plone.pgcatalog.config import get_dsn
 from plone.pgcatalog.config import get_pool
 from plone.pgcatalog.config import get_request_connection
+from plone.pgcatalog.config import get_storage_connection
 from plone.pgcatalog.config import release_request_connection
 from unittest import mock
 
@@ -11,6 +12,27 @@ import os
 import plone.pgcatalog.config as config_mod
 import pytest
 import transaction
+
+
+class TestGetStorageConnection:
+    def test_returns_pg_connection_from_storage(self):
+        mock_conn = mock.Mock()
+        context = mock.Mock()
+        context._p_jar._storage.pg_connection = mock_conn
+        assert get_storage_connection(context) is mock_conn
+
+    def test_returns_none_without_p_jar(self):
+        context = mock.Mock(spec=[])  # no _p_jar
+        assert get_storage_connection(context) is None
+
+    def test_returns_none_without_pg_connection_attr(self):
+        context = mock.Mock()
+        del context._p_jar._storage.pg_connection
+        assert get_storage_connection(context) is None
+
+    def test_returns_none_on_attribute_error(self):
+        context = mock.Mock(spec=[])  # no attributes at all
+        assert get_storage_connection(context) is None
 
 
 class TestGetPool:
