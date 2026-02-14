@@ -38,6 +38,31 @@ class _FakeEvent:
 
 
 # ---------------------------------------------------------------------------
+# Unit tests: constructor validation
+# ---------------------------------------------------------------------------
+
+
+class TestConstructorValidation:
+    """DateRecurringIndexTranslator rejects unsafe date_attr values."""
+
+    def test_accepts_valid_date_attr(self):
+        t = DateRecurringIndexTranslator("start", "recurrence")
+        assert t.date_attr == "start"
+
+    def test_rejects_single_quote_in_date_attr(self):
+        with pytest.raises(ValueError, match="Invalid identifier"):
+            DateRecurringIndexTranslator("start'", "recurrence")
+
+    def test_rejects_sql_injection_in_date_attr(self):
+        with pytest.raises(ValueError, match="Invalid identifier"):
+            DateRecurringIndexTranslator("'; DROP TABLE x; --", "recurrence")
+
+    def test_rejects_dash_in_date_attr(self):
+        with pytest.raises(ValueError, match="Invalid identifier"):
+            DateRecurringIndexTranslator("my-start", "recurrence")
+
+
+# ---------------------------------------------------------------------------
 # Unit tests: extract()
 # ---------------------------------------------------------------------------
 

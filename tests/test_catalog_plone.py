@@ -14,6 +14,43 @@ class TestImplementsInterface:
         assert IPGCatalogTool.implementedBy(PlonePGCatalogTool)
 
 
+class TestSecurityDeclarations:
+    """Verify Zope security declarations on PlonePGCatalogTool."""
+
+    def test_unrestricted_search_is_private(self):
+        # declarePrivate sets MethodName__roles__ = () (empty tuple = private)
+        roles = getattr(PlonePGCatalogTool, "unrestrictedSearchResults__roles__", None)
+        assert roles == (), f"Expected () for private, got {roles!r}"
+
+    def test_refresh_catalog_is_protected(self):
+        # declareProtected sets MethodName__roles__ = PermissionRole(...)
+        roles = getattr(PlonePGCatalogTool, "refreshCatalog__roles__", None)
+        assert roles is not None and roles != ()
+
+    def test_reindex_index_is_protected(self):
+        roles = getattr(PlonePGCatalogTool, "reindexIndex__roles__", None)
+        assert roles is not None and roles != ()
+
+    def test_clear_find_and_rebuild_is_protected(self):
+        roles = getattr(PlonePGCatalogTool, "clearFindAndRebuild__roles__", None)
+        assert roles is not None and roles != ()
+
+    def test_ac_permissions_includes_manage_entries(self):
+        # __ac_permissions__ maps permission → method names
+        perms = PlonePGCatalogTool.__ac_permissions__
+        manage_entries = None
+        for perm_name, methods in perms:
+            if perm_name == "Manage ZCatalog Entries":
+                manage_entries = methods
+                break
+        assert manage_entries is not None, (
+            "Manage ZCatalog Entries not in __ac_permissions__"
+        )
+        assert "refreshCatalog" in manage_entries
+        assert "reindexIndex" in manage_entries
+        assert "clearFindAndRebuild" in manage_entries
+
+
 class TestObjToZoid:
     def test_with_p_oid(self):
         obj = mock.Mock()

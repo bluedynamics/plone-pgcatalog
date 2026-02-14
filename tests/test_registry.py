@@ -594,6 +594,135 @@ class TestIndexRegistryResync:
         assert "getObjSize" in registry.metadata
 
 
+class TestValidateIdentifier:
+    """validate_identifier() rejects unsafe SQL identifiers."""
+
+    def test_accepts_simple_name(self):
+        from plone.pgcatalog.columns import validate_identifier
+
+        validate_identifier("portal_type")  # no exception
+
+    def test_accepts_underscore_prefix(self):
+        from plone.pgcatalog.columns import validate_identifier
+
+        validate_identifier("_private")
+
+    def test_accepts_uppercase(self):
+        from plone.pgcatalog.columns import validate_identifier
+
+        validate_identifier("Subject")
+
+    def test_accepts_alphanumeric(self):
+        from plone.pgcatalog.columns import validate_identifier
+
+        validate_identifier("field_2")
+
+    def test_rejects_single_quote(self):
+        from plone.pgcatalog.columns import validate_identifier
+
+        with pytest.raises(ValueError, match="Invalid identifier"):
+            validate_identifier("foo'bar")
+
+    def test_rejects_semicolon(self):
+        from plone.pgcatalog.columns import validate_identifier
+
+        with pytest.raises(ValueError, match="Invalid identifier"):
+            validate_identifier("foo;DROP TABLE")
+
+    def test_rejects_dash(self):
+        from plone.pgcatalog.columns import validate_identifier
+
+        with pytest.raises(ValueError, match="Invalid identifier"):
+            validate_identifier("my-index")
+
+    def test_rejects_space(self):
+        from plone.pgcatalog.columns import validate_identifier
+
+        with pytest.raises(ValueError, match="Invalid identifier"):
+            validate_identifier("my index")
+
+    def test_rejects_dot(self):
+        from plone.pgcatalog.columns import validate_identifier
+
+        with pytest.raises(ValueError, match="Invalid identifier"):
+            validate_identifier("schema.table")
+
+    def test_rejects_leading_digit(self):
+        from plone.pgcatalog.columns import validate_identifier
+
+        with pytest.raises(ValueError, match="Invalid identifier"):
+            validate_identifier("1field")
+
+    def test_rejects_sql_injection_payload(self):
+        from plone.pgcatalog.columns import validate_identifier
+
+        with pytest.raises(ValueError, match="Invalid identifier"):
+            validate_identifier("'; DROP TABLE object_state; --")
+
+    def test_rejects_empty_string(self):
+        from plone.pgcatalog.columns import validate_identifier
+
+        with pytest.raises(ValueError, match="Invalid identifier"):
+            validate_identifier("")
+
+
+class TestIndexRegistryRejectsUnsafeNames:
+    """register() and sync_from_catalog() reject unsafe SQL identifiers."""
+
+    def test_register_rejects_unsafe_idx_key(self):
+        from plone.pgcatalog.columns import IndexRegistry
+
+        registry = IndexRegistry()
+        with pytest.raises(ValueError, match="Invalid identifier"):
+            registry.register("my_index", IndexType.FIELD, "foo'bar")
+
+    def test_register_allows_none_idx_key(self):
+        from plone.pgcatalog.columns import IndexRegistry
+
+        registry = IndexRegistry()
+        registry.register("SearchableText", IndexType.TEXT, None)
+        assert "SearchableText" in registry
+
+    def test_sync_skips_unsafe_index_name(self):
+        from plone.pgcatalog.columns import IndexRegistry
+
+        idx = MockIndex("FieldIndex")
+        idx.id = "bad-name"
+        catalog = MockCatalog(indexes={"bad-name": idx})
+
+        registry = IndexRegistry()
+        registry.sync_from_catalog(catalog)
+
+        assert "bad-name" not in registry
+
+    def test_sync_skips_sql_injection_name(self):
+        from plone.pgcatalog.columns import IndexRegistry
+
+        idx = MockIndex("FieldIndex")
+        idx.id = "'; DROP TABLE x; --"
+        catalog = MockCatalog(indexes={"'; DROP TABLE x; --": idx})
+
+        registry = IndexRegistry()
+        registry.sync_from_catalog(catalog)
+
+        assert "'; DROP TABLE x; --" not in registry
+
+    def test_sync_accepts_safe_alongside_unsafe(self):
+        from plone.pgcatalog.columns import IndexRegistry
+
+        safe = MockIndex("FieldIndex")
+        safe.id = "portal_type"
+        unsafe = MockIndex("FieldIndex")
+        unsafe.id = "bad-name"
+        catalog = MockCatalog(indexes={"portal_type": safe, "bad-name": unsafe})
+
+        registry = IndexRegistry()
+        registry.sync_from_catalog(catalog)
+
+        assert "portal_type" in registry
+        assert "bad-name" not in registry
+
+
 class TestGetRegistry:
     """get_registry() returns module-level singleton."""
 
