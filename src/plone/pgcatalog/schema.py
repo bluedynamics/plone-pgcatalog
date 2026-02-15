@@ -33,6 +33,55 @@ RETURNS timestamptz AS $$
 $$ LANGUAGE sql IMMUTABLE STRICT;
 """
 
+CATALOG_LANG_FUNCTION = """\
+-- Map Plone language codes (ISO 639-1) to PostgreSQL text search configurations.
+-- Used at both index time (to_tsvector) and query time (plainto_tsquery).
+-- Returns 'simple' for NULL, empty, or unmapped languages.
+CREATE OR REPLACE FUNCTION pgcatalog_lang_to_regconfig(lang text)
+RETURNS text AS $$
+BEGIN
+    IF lang IS NULL OR lang = '' THEN
+        RETURN 'simple';
+    END IF;
+    lang := lower(split_part(lang, '-', 1));
+    lang := lower(split_part(lang, '_', 1));
+    RETURN CASE lang
+        WHEN 'ar' THEN 'arabic'
+        WHEN 'hy' THEN 'armenian'
+        WHEN 'eu' THEN 'basque'
+        WHEN 'ca' THEN 'catalan'
+        WHEN 'da' THEN 'danish'
+        WHEN 'nl' THEN 'dutch'
+        WHEN 'en' THEN 'english'
+        WHEN 'fi' THEN 'finnish'
+        WHEN 'fr' THEN 'french'
+        WHEN 'de' THEN 'german'
+        WHEN 'el' THEN 'greek'
+        WHEN 'hi' THEN 'hindi'
+        WHEN 'hu' THEN 'hungarian'
+        WHEN 'id' THEN 'indonesian'
+        WHEN 'ga' THEN 'irish'
+        WHEN 'it' THEN 'italian'
+        WHEN 'lt' THEN 'lithuanian'
+        WHEN 'ne' THEN 'nepali'
+        WHEN 'nb' THEN 'norwegian'
+        WHEN 'nn' THEN 'norwegian'
+        WHEN 'no' THEN 'norwegian'
+        WHEN 'pt' THEN 'portuguese'
+        WHEN 'ro' THEN 'romanian'
+        WHEN 'ru' THEN 'russian'
+        WHEN 'sr' THEN 'serbian'
+        WHEN 'es' THEN 'spanish'
+        WHEN 'sv' THEN 'swedish'
+        WHEN 'ta' THEN 'tamil'
+        WHEN 'tr' THEN 'turkish'
+        WHEN 'yi' THEN 'yiddish'
+        ELSE 'simple'
+    END;
+END;
+$$ LANGUAGE plpgsql IMMUTABLE;
+"""
+
 CATALOG_INDEXES = """\
 -- Path column index (for brain SELECT; queries use idx JSONB below)
 CREATE INDEX IF NOT EXISTS idx_os_path
@@ -75,6 +124,17 @@ CREATE INDEX IF NOT EXISTS idx_os_cat_uid
 -- Full-text search (GIN on tsvector)
 CREATE INDEX IF NOT EXISTS idx_os_searchable_text
     ON object_state USING gin (searchable_text) WHERE searchable_text IS NOT NULL;
+
+-- GIN expression indexes for ZCTextIndex fields stored in idx JSONB
+-- (Title/Description: word-level matching via tsvector, 'simple' config)
+CREATE INDEX IF NOT EXISTS idx_os_cat_title_tsv
+    ON object_state USING gin (
+        to_tsvector('simple'::regconfig, COALESCE(idx->>'Title', ''))
+    ) WHERE idx IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_os_cat_description_tsv
+    ON object_state USING gin (
+        to_tsvector('simple'::regconfig, COALESCE(idx->>'Description', ''))
+    ) WHERE idx IS NOT NULL;
 """
 
 # All expected catalog columns with their PG types (for verification)
@@ -103,6 +163,8 @@ EXPECTED_INDEXES = [
     "idx_os_cat_review_state",
     "idx_os_cat_uid",
     "idx_os_searchable_text",
+    "idx_os_cat_title_tsv",
+    "idx_os_cat_description_tsv",
 ]
 
 
@@ -128,5 +190,6 @@ def install_catalog_schema(conn):
     """
     conn.execute(CATALOG_COLUMNS)
     conn.execute(CATALOG_FUNCTIONS)
+    conn.execute(CATALOG_LANG_FUNCTION)
     conn.execute(CATALOG_INDEXES)
     conn.execute(RRULE_FUNCTIONS)

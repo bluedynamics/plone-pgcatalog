@@ -1,10 +1,11 @@
-"""Tests for plone.pgcatalog.columns — value conversion + path utilities."""
+"""Tests for plone.pgcatalog.columns — value conversion + path utilities + lang mapping."""
 
 from datetime import date
 from datetime import datetime
 from datetime import UTC
 from plone.pgcatalog.columns import compute_path_info
 from plone.pgcatalog.columns import convert_value
+from plone.pgcatalog.columns import language_to_regconfig
 
 
 class TestConvertValue:
@@ -116,3 +117,46 @@ class TestComputePathInfo:
         parent, depth = compute_path_info("/plone/folder/")
         assert parent == "/plone"
         assert depth == 2
+
+
+class TestLanguageToRegconfig:
+    """Verify Plone language code → PG regconfig mapping."""
+
+    def test_german(self):
+        assert language_to_regconfig("de") == "german"
+
+    def test_english(self):
+        assert language_to_regconfig("en") == "english"
+
+    def test_french(self):
+        assert language_to_regconfig("fr") == "french"
+
+    def test_spanish(self):
+        assert language_to_regconfig("es") == "spanish"
+
+    def test_portuguese(self):
+        assert language_to_regconfig("pt") == "portuguese"
+
+    def test_locale_variant_hyphen(self):
+        assert language_to_regconfig("en-us") == "english"
+
+    def test_locale_variant_underscore(self):
+        assert language_to_regconfig("pt_BR") == "portuguese"
+
+    def test_norwegian_variants(self):
+        assert language_to_regconfig("no") == "norwegian"
+        assert language_to_regconfig("nb") == "norwegian"
+        assert language_to_regconfig("nn") == "norwegian"
+
+    def test_none_returns_simple(self):
+        assert language_to_regconfig(None) == "simple"
+
+    def test_empty_returns_simple(self):
+        assert language_to_regconfig("") == "simple"
+
+    def test_unknown_returns_simple(self):
+        assert language_to_regconfig("xx") == "simple"
+
+    def test_case_insensitive(self):
+        assert language_to_regconfig("DE") == "german"
+        assert language_to_regconfig("En-US") == "english"
