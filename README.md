@@ -11,7 +11,7 @@ Requires [zodb-pgjsonb](https://github.com/bluedynamics/zodb-pgjsonb) as the ZOD
 - **Extensible** via `IPGIndexTranslator` named utilities for custom index types
 - **Dynamic index discovery** from ZCatalog at startup -- addons adding indexes via `catalog.xml` just work
 - **Transactional writes** -- catalog data written atomically alongside object state during ZODB commit
-- **Full-text search** via PostgreSQL `tsvector`/`tsquery`
+- **Full-text search** via PostgreSQL `tsvector`/`tsquery` -- language-aware stemming for SearchableText (30 languages), word-level matching for Title/Description/addon ZCTextIndex fields
 - **Zero ZODB cache pressure** -- no BTree/Bucket objects stored in ZODB
 - **In-transaction catalog visibility** -- pending catalog data is automatically flushed to PG before queries, no `transaction.commit()` needed between writes and reads
 - **Container-friendly** -- works on standard `postgres:17` Docker images, no extensions required
@@ -52,6 +52,8 @@ Once installed, `portal_catalog` is replaced with `PlonePGCatalogTool`. All cata
 results = catalog(portal_type="Document", review_state="published")
 results = catalog(Subject={"query": ["Python", "Plone"], "operator": "or"})
 results = catalog(SearchableText="my search term")
+results = catalog(SearchableText="Katzen", Language="de")  # language-aware stemming
+results = catalog(Title="quick fox")  # word-level match (finds "The Quick Brown Fox")
 results = catalog(path={"query": "/plone/folder", "depth": 1})
 
 # Recurring events (DateRecurringIndex)

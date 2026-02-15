@@ -46,6 +46,8 @@ _PLONE_DEFAULT_INDEXES = [
     ("effectiveRange", IndexType.DATE_RANGE, None),
     # UUIDIndex
     ("UID", IndexType.UUID, "UID"),
+    # FieldIndex (language — from plone.app.multilingual)
+    ("Language", IndexType.FIELD, "Language"),
     # ZCTextIndex
     ("SearchableText", IndexType.TEXT, None),
     ("Title", IndexType.TEXT, "Title"),

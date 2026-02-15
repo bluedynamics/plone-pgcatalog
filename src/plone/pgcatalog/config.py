@@ -361,7 +361,11 @@ def _write_pending_to_pg(conn, pending):
                         parent_path = %(parent_path)s,
                         path_depth = %(path_depth)s,
                         idx = %(idx)s,
-                        searchable_text = to_tsvector('simple'::regconfig, %(text)s)
+                        searchable_text = to_tsvector(
+                            pgcatalog_lang_to_regconfig(
+                                %(idx)s::jsonb->>'Language'
+                            )::regconfig,
+                            %(text)s)
                     WHERE zoid = %(zoid)s
                     """,
                     params,
@@ -529,7 +533,9 @@ class CatalogStateProcessor:
             ExtraColumn("idx", "%(idx)s"),
             ExtraColumn(
                 "searchable_text",
-                "to_tsvector('simple'::regconfig, %(searchable_text)s)",
+                "to_tsvector("
+                "pgcatalog_lang_to_regconfig(%(idx)s::jsonb->>'Language')"
+                "::regconfig, %(searchable_text)s)",
             ),
         ]
 
@@ -543,9 +549,16 @@ class CatalogStateProcessor:
         from plone.pgcatalog.schema import CATALOG_COLUMNS
         from plone.pgcatalog.schema import CATALOG_FUNCTIONS
         from plone.pgcatalog.schema import CATALOG_INDEXES
+        from plone.pgcatalog.schema import CATALOG_LANG_FUNCTION
         from plone.pgcatalog.schema import RRULE_FUNCTIONS
 
-        return CATALOG_COLUMNS + CATALOG_FUNCTIONS + CATALOG_INDEXES + RRULE_FUNCTIONS
+        return (
+            CATALOG_COLUMNS
+            + CATALOG_FUNCTIONS
+            + CATALOG_LANG_FUNCTION
+            + CATALOG_INDEXES
+            + RRULE_FUNCTIONS
+        )
 
     def process(self, zoid, class_mod, class_name, state):
         # Look up pending data from the thread-local store (set by
@@ -612,8 +625,53 @@ def register_catalog_processor(event):
         storage.register_state_processor(processor)
         log.info("Registered CatalogStateProcessor on %s", storage)
         _sync_registry_from_db(db)
+        _ensure_text_indexes(storage)
     else:
         log.debug("Storage %s does not support state processors", storage)
+
+
+def _ensure_text_indexes(storage):
+    """Create GIN expression indexes for dynamically discovered TEXT indexes.
+
+    For each TEXT-type index with idx_key != None (not SearchableText),
+    creates a GIN expression index on to_tsvector('simple', idx->>'{key}')
+    if it doesn't already exist.  Uses an autocommit connection to avoid
+    REPEATABLE READ lock conflicts.
+    """
+    from plone.pgcatalog.columns import get_registry
+    from plone.pgcatalog.columns import IndexType
+    from plone.pgcatalog.columns import validate_identifier
+
+    registry = get_registry()
+    text_indexes = [
+        (name, idx_key)
+        for name, (idx_type, idx_key, _) in registry.items()
+        if idx_type == IndexType.TEXT and idx_key is not None
+    ]
+    if not text_indexes:
+        return
+
+    dsn = getattr(storage, "_dsn", None)
+    if not dsn:
+        return
+
+    import psycopg
+
+    try:
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            for name, idx_key in text_indexes:
+                validate_identifier(idx_key)
+                idx_name = f"idx_os_cat_{idx_key.lower()}_tsv"
+                conn.execute(
+                    f"CREATE INDEX IF NOT EXISTS {idx_name} "
+                    f"ON object_state USING gin ("
+                    f"to_tsvector('simple'::regconfig, "
+                    f"COALESCE(idx->>'{idx_key}', ''))) "
+                    f"WHERE idx IS NOT NULL"
+                )
+                log.info("Ensured GIN text index %s for %s", idx_name, name)
+    except Exception:
+        log.warning("Failed to create text expression indexes", exc_info=True)
 
 
 def _register_dri_translators(catalog):

@@ -1,5 +1,34 @@
 # Changelog
 
+## 1.0.0b5
+
+### Added
+
+- **Language-aware full-text search**: SearchableText now uses per-object
+  language for stemming. The `pgcatalog_lang_to_regconfig()` PL/pgSQL function
+  maps Plone language codes (ISO 639-1, 30 languages) to PostgreSQL text search
+  configurations (e.g. `"de"` → `german`). Falls back to `'simple'` for
+  unmapped or missing languages. Non-multilingual sites are unaffected.
+
+  Python mirror: `columns.language_to_regconfig()` for testing/validation.
+
+- **Title/Description text search**: Title and Description queries now use
+  tsvector word-level matching instead of exact JSONB containment.
+  `catalog(Title="Hello")` now correctly matches `"Hello World"`.
+  Backed by GIN expression indexes with `'simple'` config (no stemming).
+
+- **Automatic addon ZCTextIndex support**: Addon-registered ZCTextIndex fields
+  are automatically discovered at startup. GIN expression indexes are created
+  dynamically by `_ensure_text_indexes()`, and queries use tsvector matching --
+  zero addon code needed.
+
+### Fixed
+
+- **Title/Description query broken**: Previously, querying Title or Description
+  as ZCTextIndex used JSONB exact containment (`idx @> '{"Title":"Hello"}'`),
+  which only matched exact values, not words within text. Now uses
+  `to_tsvector`/`plainto_tsquery` for proper word-level matching.
+
 ## 1.0.0b4
 
 ### Added

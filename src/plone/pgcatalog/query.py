@@ -171,6 +171,9 @@ class _QueryBuilder:
         }
 
     def process(self, query_dict):
+        # Store full query dict for cross-index lookups (e.g. Language)
+        self._query = query_dict
+
         # Always filter for cataloged objects
         self.clauses.append("idx IS NOT NULL")
 
@@ -388,19 +391,34 @@ class _QueryBuilder:
             return
 
         if idx_key is None:
-            # SearchableText → tsvector full-text search
+            # SearchableText → dedicated tsvector column, language-aware.
+            # Uses pgcatalog_lang_to_regconfig() SQL function to map
+            # Plone language codes to PG regconfig names at query time.
             p_text = self._pname("text")
             p_lang = self._pname("lang")
             self.clauses.append(
-                f"searchable_text @@ plainto_tsquery(%({p_lang})s::regconfig, %({p_text})s)"
+                f"searchable_text @@ plainto_tsquery("
+                f"pgcatalog_lang_to_regconfig(%({p_lang})s)::regconfig, "
+                f"%({p_text})s)"
             )
             self.params[p_text] = str(query_val)
-            self.params[p_lang] = "simple"
+            # Extract Language from the query dict if present
+            lang_val = self._query.get("Language")
+            if isinstance(lang_val, dict):
+                lang_val = lang_val.get("query", "")
+            self.params[p_lang] = str(lang_val) if lang_val else ""
         else:
-            # Title / Description — treat as field exact match
+            # Title / Description / addon ZCTextIndex →
+            # tsvector expression on idx JSONB, 'simple' config.
+            # Expression matches the GIN index created in schema.py /
+            # _ensure_text_indexes() for index-backed queries.
             p = self._pname(name)
-            self.clauses.append(f"idx @> %({p})s::jsonb")
-            self.params[p] = Json({idx_key: query_val})
+            self.clauses.append(
+                f"to_tsvector('simple'::regconfig, "
+                f"COALESCE(idx->>'{idx_key}', '')) "
+                f"@@ plainto_tsquery('simple'::regconfig, %({p})s)"
+            )
+            self.params[p] = str(query_val)
 
     # -- ExtendedPathIndex --------------------------------------------------
 
