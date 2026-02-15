@@ -318,6 +318,32 @@ class TestSearchableTextIntegration:
 
 
 # ---------------------------------------------------------------------------
+# Title / Description text search (tsvector expression on idx JSONB)
+# ---------------------------------------------------------------------------
+
+
+class TestTitleTextSearchIntegration:
+    def test_title_word_match(self, pg_conn_with_catalog):
+        """Title="Hello" matches Title="Hello World" (word-level match)."""
+        conn = pg_conn_with_catalog
+        _setup_test_data(conn)
+        zoids = _query_zoids(conn, {"Title": "Hello"})
+        assert 100 in zoids  # Title="Hello World"
+
+    def test_title_combined_with_portal_type(self, pg_conn_with_catalog):
+        conn = pg_conn_with_catalog
+        _setup_test_data(conn)
+        zoids = _query_zoids(conn, {"Title": "Hello", "portal_type": "Document"})
+        assert 100 in zoids
+
+    def test_title_no_match(self, pg_conn_with_catalog):
+        conn = pg_conn_with_catalog
+        _setup_test_data(conn)
+        zoids = _query_zoids(conn, {"Title": "Nonexistent"})
+        assert zoids == []
+
+
+# ---------------------------------------------------------------------------
 # Path queries
 # ---------------------------------------------------------------------------
 

@@ -196,15 +196,57 @@ class TestSearchableText:
     def test_full_text_search(self):
         qr = build_query({"SearchableText": "quick fox"})
         assert "searchable_text @@ plainto_tsquery" in qr["where"]
+        assert "pgcatalog_lang_to_regconfig" in qr["where"]
         assert "::regconfig" in qr["where"]
-        # Should use 'simple' language by default
-        assert "simple" in list(qr["params"].values())
+
+    def test_searchable_text_without_language(self):
+        """Without Language in query, empty string → 'simple' via SQL function."""
+        qr = build_query({"SearchableText": "hello"})
+        # Language param should be empty string (function maps to 'simple')
+        lang_params = [v for v in qr["params"].values() if v == ""]
+        assert lang_params
+
+    def test_searchable_text_with_language_filter(self):
+        """When Language is in query dict, it's passed to the SQL function."""
+        qr = build_query({"SearchableText": "hallo", "Language": "de"})
+        lang_params = [v for v in qr["params"].values() if v == "de"]
+        assert lang_params
+
+    def test_searchable_text_with_language_dict(self):
+        """Language as a dict query spec."""
+        qr = build_query({"SearchableText": "bonjour", "Language": {"query": "fr"}})
+        lang_params = [v for v in qr["params"].values() if v == "fr"]
+        assert lang_params
 
     def test_text_field_with_idx_key(self):
-        """Title/Description with idx_key → containment match."""
+        """Title/Description with idx_key → tsvector expression match."""
         qr = build_query({"Title": "Hello"})
-        param = _find_json_param(qr["params"])
-        assert param.obj == {"Title": "Hello"}
+        assert "to_tsvector('simple'::regconfig" in qr["where"]
+        assert "plainto_tsquery('simple'::regconfig" in qr["where"]
+        assert "idx->>'Title'" in qr["where"]
+        # Should NOT use JSONB containment for text indexes
+        assert "idx @>" not in qr["where"]
+
+    def test_description_text_search(self):
+        """Description index also uses tsvector expression match."""
+        qr = build_query({"Description": "overview"})
+        assert "to_tsvector('simple'::regconfig" in qr["where"]
+        assert "idx->>'Description'" in qr["where"]
+
+    def test_addon_text_index_uses_tsvector(self):
+        """A dynamically registered TEXT index uses tsvector, not containment."""
+        from plone.pgcatalog.columns import get_registry
+        from plone.pgcatalog.columns import IndexType
+
+        registry = get_registry()
+        registry.register("my_text_field", IndexType.TEXT, "my_text_field")
+        try:
+            qr = build_query({"my_text_field": "search term"})
+            assert "to_tsvector('simple'::regconfig" in qr["where"]
+            assert "idx->>'my_text_field'" in qr["where"]
+            assert "plainto_tsquery" in qr["where"]
+        finally:
+            registry._indexes.pop("my_text_field", None)
 
 
 # ---------------------------------------------------------------------------

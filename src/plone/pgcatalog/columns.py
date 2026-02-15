@@ -270,6 +270,61 @@ def _convert_zope_datetime(dt):
 
 
 # --------------------------------------------------------------------------
+# Language → PG text search configuration mapping
+# --------------------------------------------------------------------------
+
+# Plone language code (ISO 639-1) → PostgreSQL regconfig name.
+# Mirrors the SQL function pgcatalog_lang_to_regconfig() in schema.py.
+_LANG_TO_REGCONFIG = {
+    "ar": "arabic",
+    "hy": "armenian",
+    "eu": "basque",
+    "ca": "catalan",
+    "da": "danish",
+    "nl": "dutch",
+    "en": "english",
+    "fi": "finnish",
+    "fr": "french",
+    "de": "german",
+    "el": "greek",
+    "hi": "hindi",
+    "hu": "hungarian",
+    "id": "indonesian",
+    "ga": "irish",
+    "it": "italian",
+    "lt": "lithuanian",
+    "ne": "nepali",
+    "nb": "norwegian",
+    "nn": "norwegian",
+    "no": "norwegian",
+    "pt": "portuguese",
+    "ro": "romanian",
+    "ru": "russian",
+    "sr": "serbian",
+    "es": "spanish",
+    "sv": "swedish",
+    "ta": "tamil",
+    "tr": "turkish",
+    "yi": "yiddish",
+}
+
+
+def language_to_regconfig(lang):
+    """Map a Plone language code to a PG text search configuration name.
+
+    Args:
+        lang: Plone language code (e.g. "de", "en-us") or None/""
+
+    Returns:
+        PG regconfig name (e.g. "german", "english") or "simple"
+    """
+    if not lang:
+        return "simple"
+    base = lang.lower().split("-")[0].split("_")[0]
+    return _LANG_TO_REGCONFIG.get(base, "simple")
+
+
+# --------------------------------------------------------------------------
 # Path utilities
 # --------------------------------------------------------------------------
 

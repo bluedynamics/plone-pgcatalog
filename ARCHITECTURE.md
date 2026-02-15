@@ -41,6 +41,7 @@ Indexes are discovered from ZCatalog at startup, not hardcoded.
 4. `IndexRegistry.sync_from_catalog()` reads `catalog._catalog.indexes`
 5. Each index's `meta_type` is mapped via `META_TYPE_MAP` to an `IndexType` enum
 6. `_register_dri_translators()` discovers `DateRecurringIndex` instances and registers `IPGIndexTranslator` utilities
+7. `_ensure_text_indexes()` creates GIN expression indexes for any dynamically discovered `TEXT`-type indexes with `idx_key is not None` (Title, Description, addon ZCTextIndex fields)
 
 ### IndexType Enum
 
@@ -215,7 +216,9 @@ _HANDLERS = {
 
 **PathIndex**: `idx->>'path' LIKE '/plone/folder/%'` (subtree), `idx->>'path_parent' = '/plone/folder'` (children), navtree breadcrumb queries.
 
-**TextIndex**: `searchable_text @@ plainto_tsquery('simple', %(text)s)` for SearchableText; other text indexes treated as field match.
+**TextIndex (SearchableText)**: `searchable_text @@ plainto_tsquery(pgcatalog_lang_to_regconfig(%(lang)s)::regconfig, %(text)s)` -- language-aware stemming via the per-object `Language` field. Falls back to `'simple'` when no language is set.
+
+**TextIndex (Title/Description/addon)**: `to_tsvector('simple'::regconfig, COALESCE(idx->>'Title', '')) @@ plainto_tsquery('simple'::regconfig, %(text)s)` -- word-level matching on idx JSONB values, backed by GIN expression indexes. Uses `'simple'` config (no stemming) because expression indexes require a fixed regconfig.
 
 ## Transactional Writes
 
@@ -239,11 +242,45 @@ Includes:
 
 - `ALTER TABLE object_state ADD COLUMN IF NOT EXISTS ...` for catalog columns (`path`, `idx`, `searchable_text`)
 - `pgcatalog_to_timestamptz()` immutable wrapper for expression indexes
+- `pgcatalog_lang_to_regconfig()` maps Plone language codes (ISO 639-1) to PG text search configurations (e.g. `'de'` → `'german'`). Used at both write time (`to_tsvector`) and query time (`plainto_tsquery`). Returns `'simple'` for NULL, empty, or unmapped languages.
 - GIN index on `idx` JSONB
 - B-tree expression indexes on `idx` JSONB for path queries (`path`, `path_parent`, `path_depth`)
 - B-tree expression indexes for common sort/filter fields (modified, created, effective, expires, sortable_title, portal_type, review_state, UID)
 - Full-text GIN index on `searchable_text`
+- GIN expression indexes for Title/Description tsvector matching (`to_tsvector('simple', COALESCE(idx->>'Title', ''))`)
+- Dynamic GIN expression indexes for addon ZCTextIndex fields (created at startup by `_ensure_text_indexes()`)
 - rrule_plpgsql schema and functions (for DateRecurringIndex)
+
+## Full-Text Search
+
+Three tiers of text search, each with different characteristics:
+
+### SearchableText (Language-Aware)
+
+Uses the dedicated `searchable_text` TSVECTOR column with per-object language stemming:
+
+- **Write path**: `to_tsvector(pgcatalog_lang_to_regconfig(idx->>'Language')::regconfig, text)` -- language extracted from the object's `Language` field in idx JSONB
+- **Query path**: `searchable_text @@ plainto_tsquery(pgcatalog_lang_to_regconfig(%(lang)s)::regconfig, %(text)s)` -- language from the query's `Language` filter
+- **Index**: GIN on `searchable_text` column
+- **Stemming**: Yes, for the 30 supported languages (falls back to `'simple'` for unknown/empty)
+
+### Title / Description (Word-Level)
+
+Uses tsvector expression matching on idx JSONB values:
+
+- **Write path**: Values stored as plain text in `idx->>'Title'` / `idx->>'Description'`
+- **Query path**: `to_tsvector('simple', COALESCE(idx->>'Title', '')) @@ plainto_tsquery('simple', %(text)s)`
+- **Index**: GIN expression indexes (pre-created in DDL)
+- **Stemming**: No (`'simple'` config) -- expression indexes require a fixed regconfig. Language-aware stemmed search for titles is available via SearchableText (which includes title text).
+
+### Addon ZCTextIndex Fields
+
+Any addon that registers a ZCTextIndex in ZCatalog (via `catalog.xml`) is automatically supported:
+
+1. `sync_from_catalog()` discovers the index → registered as `(IndexType.TEXT, idx_key, source_attrs)`
+2. `_ensure_text_indexes()` creates a GIN expression index at startup: `to_tsvector('simple', COALESCE(idx->>'{idx_key}', ''))`
+3. Value extracted into idx JSONB during indexing (idx_key is not None)
+4. `_handle_text()` generates tsvector expression matching -- zero addon code needed
 
 ## Query Optimizations
 
