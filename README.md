@@ -68,6 +68,19 @@ results = catalog(start={
 - [BENCHMARKS.md](BENCHMARKS.md) -- performance comparison vs RelStorage+ZCatalog
 - [CHANGES.md](CHANGES.md) -- changelog
 
+## Source Code and Contributions
+
+The source code is managed in a Git repository, with its main branches hosted on GitHub.
+Issues can be reported there too.
+
+We'd be happy to see many forks and pull requests to make this package even better.
+We welcome AI-assisted contributions, but expect every contributor to fully understand and be able to explain the code they submit.
+Please don't send bulk auto-generated pull requests.
+
+Maintainers are Jens Klein and the BlueDynamics Alliance developer team.
+We appreciate any contribution and if a release on PyPI is needed, please just contact one of us.
+We also offer commercial support if any training, coaching, integration or adaptations are needed.
+
 ## License
 
 GPL-2.0
