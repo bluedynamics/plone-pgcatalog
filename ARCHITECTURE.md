@@ -234,6 +234,23 @@ This ensures catalog data is always consistent with object state -- no separate 
 
 The thread-local `set_pending()` approach avoids issues with CMFEditions, which clones objects (including annotations) during versioning. Thread-local storage ensures only the original object's catalog data is written.
 
+### Partial idx Updates
+
+When `reindexObject(idxs=['allowedRolesAndUsers'])` is called with specific index names (e.g. during `reindexObjectSecurity`), a lightweight path avoids full ZODB serialization:
+
+1. `PlonePGCatalogTool._partial_reindex()` extracts only the requested index values
+2. Calls `set_partial_pending(zoid, idx_updates)` -- stores a JSONB patch in a separate thread-local dict
+3. Does NOT set `_p_changed` -- no ZODB pickle-JSON round-trip
+4. During `tpc_vote`, `CatalogStateProcessor.finalize(cursor)` applies patches via `UPDATE object_state SET idx = idx || patch`
+
+This uses the `finalize(cursor)` hook from zodb-pgjsonb's state processor protocol, which runs after batch object writes in the same PG transaction.
+
+**Fallback to full reindex**: Special indexes with `idx_key=None` (SearchableText, effectiveRange, path) cannot be partially updated because they use dedicated columns, not idx JSONB keys. When any requested index is special, `_partial_reindex()` returns False and the full path runs.
+
+**Savepoint safety**: `set_partial_pending()` uses non-mutating merges (`{**old, **new}`) because `PendingSavepoint` snapshots are shallow copies. Mutating shared dicts would corrupt rollback state.
+
+**Interaction with full pending**: If a full `set_pending()` already exists for a zoid, the partial update merges into its `idx` dict. Conversely, a subsequent `set_pending()` removes any partial pending for the same zoid (full supersedes partial).
+
 ## Schema
 
 DDL is applied via `CatalogStateProcessor.get_schema_sql()` at Zope startup, using the storage's own connection to avoid REPEATABLE READ lock conflicts.
