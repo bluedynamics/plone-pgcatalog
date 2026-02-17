@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.0.0b5
+
+### Added
+
+- Add partial idx JSONB updates for lightweight reindex. [#6]
+
+  - When `reindexObject(idxs=[...])` is called with specific index names (e.g. during `reindexObjectSecurity`), extract only the requested values and register a JSONB merge patch (`idx || patch`) instead of full ZODB serialization + full idx column replacement
+  - Avoids `_p_changed = True` and the associated pickle-JSON round-trip for every object in a subtree
+  - Uses the new `finalize(cursor)` hook from zodb-pgjsonb to apply partial JSONB merges atomically in the same PG transaction
+
 ## 1.0.0b4
 
 ### Added
