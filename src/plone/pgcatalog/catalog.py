@@ -341,6 +341,44 @@ class PlonePGCatalogTool(CatalogTool):
         )
         return True
 
+    def _partial_reindex(self, obj, idxs):
+        """Perform a lightweight partial reindex for specific indexes.
+
+        Extracts only the requested index values and registers a JSONB
+        merge update.  Does NOT set ``_p_changed`` — avoids ZODB
+        serialization.
+
+        Args:
+            obj: persistent object
+            idxs: list/tuple of index names to reindex
+
+        Returns:
+            True if partial reindex was registered, False otherwise
+            (caller should fall through to full reindex).
+        """
+        from plone.pgcatalog.config import set_partial_pending
+
+        zoid = self._obj_to_zoid(obj)
+        if zoid is None:
+            return False
+
+        # Special indexes (SearchableText, effectiveRange, path) need
+        # full reindex because they use dedicated columns, not idx JSONB.
+        registry = get_registry()
+        for name in idxs:
+            entry = registry.get(name)
+            if entry is not None and entry[1] is None:  # idx_key is None
+                return False
+
+        wrapper = self._wrap_object(obj)
+        idx_updates = self._extract_idx(wrapper, idxs=idxs)
+
+        if not idx_updates:
+            return True  # Nothing to update, but partial path handled it
+
+        set_partial_pending(zoid, idx_updates)
+        return True
+
     def indexObject(self, object):  # noqa: A002
         """Set PG annotation immediately for new objects.
 
@@ -355,12 +393,16 @@ class PlonePGCatalogTool(CatalogTool):
         self._set_pg_annotation(object)
 
     def reindexObject(self, object, idxs=None, update_metadata=1, uid=None):  # noqa: A002
-        """Set PG annotation immediately.
+        """Reindex an object, optionally only specific indexes.
 
-        Same timing issue as ``indexObject`` — must annotate NOW.
+        When ``idxs`` is a non-empty list, performs a lightweight partial
+        reindex: extracts only the requested index values and registers
+        a JSONB merge update (no ZODB serialization, no ``_p_changed``).
 
-        Does NOT delegate to ZCatalog — BTree writes are skipped.
+        When ``idxs`` is empty/None, performs a full reindex.
         """
+        if idxs and self._partial_reindex(object, idxs):
+            return
         self._set_pg_annotation(object, uid)
 
     def catalog_object(
@@ -373,10 +415,11 @@ class PlonePGCatalogTool(CatalogTool):
     ):
         """Index an object via PG annotation.
 
-        Called from _reindexObject / _indexObject and directly.
-
-        Does NOT delegate to ZCatalog — BTree writes are skipped.
+        When ``idxs`` is a non-empty list, attempts partial reindex.
+        Falls through to full reindex if partial fails (e.g. no _p_oid).
         """
+        if idxs and self._partial_reindex(object, idxs):
+            return
         self._set_pg_annotation(object, uid)
 
     def uncatalog_object(self, uid):
@@ -548,17 +591,23 @@ class PlonePGCatalogTool(CatalogTool):
                 pass
 
         # IPGIndexTranslator fallback: custom extractors
-        self._extract_from_translators(wrapper, idx)
+        self._extract_from_translators(wrapper, idx, idxs=idxs)
 
         return idx
 
-    def _extract_from_translators(self, wrapper, idx):
-        """Call IPGIndexTranslator.extract() for all registered translators."""
+    def _extract_from_translators(self, wrapper, idx, idxs=None):
+        """Call IPGIndexTranslator.extract() for all registered translators.
+
+        When ``idxs`` is provided, only calls translators whose name
+        is in the filter list.
+        """
         try:
             from plone.pgcatalog.interfaces import IPGIndexTranslator
             from zope.component import getUtilitiesFor
 
             for name, translator in getUtilitiesFor(IPGIndexTranslator):
+                if idxs and name not in idxs:
+                    continue  # skip unrequested translator
                 try:
                     extra = translator.extract(wrapper, name)
                     if extra and isinstance(extra, dict):
