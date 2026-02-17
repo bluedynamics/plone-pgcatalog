@@ -228,14 +228,11 @@ class TestRequestConnection:
 
 def _clean_pending():
     """Clear thread-local pending state and abort current transaction."""
-    try:
-        del config_mod._local.pending
-    except AttributeError:
-        pass
-    try:
-        del config_mod._local._pending_dm
-    except AttributeError:
-        pass
+    for attr in ("pending", "partial_pending", "_pending_dm"):
+        try:
+            delattr(config_mod._local, attr)
+        except AttributeError:
+            pass
     transaction.abort()
 
 
@@ -412,7 +409,7 @@ class TestPendingSavepoint:
 
         dm = PendingDataManager(transaction.get())
         assert verifyObject(ISavepointDataManager, dm)
-        sp = PendingSavepoint({})
+        sp = PendingSavepoint({}, {})
         assert verifyObject(IDataManagerSavepoint, sp)
 
 
@@ -645,3 +642,177 @@ class TestOrjsonLoader:
         # orjson.loads returns bytes → same Python types as json.loads
         result = orjson.loads(b'{"key": "value"}')
         assert result == {"key": "value"}
+
+
+class TestPartialPending:
+    """Partial pending store for lightweight idx merges."""
+
+    def setup_method(self):
+        _clean_pending()
+
+    def teardown_method(self):
+        _clean_pending()
+
+    def test_set_and_pop_partial_pending(self):
+        from plone.pgcatalog.config import pop_all_partial_pending
+        from plone.pgcatalog.config import set_partial_pending
+
+        set_partial_pending(42, {"allowedRolesAndUsers": ["Manager"]})
+        result = pop_all_partial_pending()
+        assert result == {42: {"allowedRolesAndUsers": ["Manager"]}}
+
+    def test_pop_all_clears_store(self):
+        from plone.pgcatalog.config import _get_partial_pending
+        from plone.pgcatalog.config import pop_all_partial_pending
+        from plone.pgcatalog.config import set_partial_pending
+
+        set_partial_pending(42, {"allowedRolesAndUsers": ["Manager"]})
+        pop_all_partial_pending()
+        assert _get_partial_pending() == {}
+
+    def test_multiple_partials_same_zoid_merge(self):
+        from plone.pgcatalog.config import pop_all_partial_pending
+        from plone.pgcatalog.config import set_partial_pending
+
+        set_partial_pending(42, {"allowedRolesAndUsers": ["Manager"]})
+        set_partial_pending(42, {"Subject": ["test"]})
+        result = pop_all_partial_pending()
+        assert result[42] == {
+            "allowedRolesAndUsers": ["Manager"],
+            "Subject": ["test"],
+        }
+
+    def test_set_pending_removes_partial(self):
+        """Full pending supersedes partial pending for same zoid."""
+        from plone.pgcatalog.config import _get_partial_pending
+        from plone.pgcatalog.config import set_partial_pending
+        from plone.pgcatalog.config import set_pending
+
+        set_partial_pending(42, {"allowedRolesAndUsers": ["Manager"]})
+        set_pending(
+            42, {"path": "/doc", "idx": {"portal_type": "Doc"}, "searchable_text": None}
+        )
+        assert 42 not in _get_partial_pending()
+
+    def test_partial_merges_into_full_pending(self):
+        """If full pending exists, partial merges into its idx."""
+        from plone.pgcatalog.config import _get_pending
+        from plone.pgcatalog.config import set_partial_pending
+        from plone.pgcatalog.config import set_pending
+
+        set_pending(
+            42, {"path": "/doc", "idx": {"portal_type": "Doc"}, "searchable_text": None}
+        )
+        set_partial_pending(42, {"allowedRolesAndUsers": ["Manager"]})
+        pending = _get_pending()
+        assert pending[42]["idx"]["allowedRolesAndUsers"] == ["Manager"]
+        assert pending[42]["idx"]["portal_type"] == "Doc"
+
+    def test_partial_does_not_merge_into_uncatalog_sentinel(self):
+        """If full pending is None (uncatalog), partial goes to partial store."""
+        from plone.pgcatalog.config import _get_partial_pending
+        from plone.pgcatalog.config import set_partial_pending
+        from plone.pgcatalog.config import set_pending
+
+        set_pending(42, None)  # uncatalog sentinel
+        set_partial_pending(42, {"allowedRolesAndUsers": ["Manager"]})
+        assert 42 in _get_partial_pending()
+
+    def test_partial_joins_transaction(self):
+        from plone.pgcatalog.config import PendingDataManager
+        from plone.pgcatalog.config import set_partial_pending
+
+        txn = transaction.get()
+        set_partial_pending(42, {"allowedRolesAndUsers": ["Manager"]})
+        assert any(isinstance(r, PendingDataManager) for r in txn._resources)
+
+    def test_abort_clears_partial_pending(self):
+        from plone.pgcatalog.config import _get_partial_pending
+        from plone.pgcatalog.config import set_partial_pending
+
+        set_partial_pending(42, {"allowedRolesAndUsers": ["Manager"]})
+        transaction.abort()
+        assert _get_partial_pending() == {}
+
+    def test_savepoint_rollback_restores_partial(self):
+        from plone.pgcatalog.config import _get_partial_pending
+        from plone.pgcatalog.config import set_partial_pending
+
+        set_partial_pending(42, {"allowedRolesAndUsers": ["Manager"]})
+        sp = transaction.savepoint()
+        set_partial_pending(42, {"allowedRolesAndUsers": ["Anonymous"]})
+        sp.rollback()
+        pp = _get_partial_pending()
+        assert pp[42] == {"allowedRolesAndUsers": ["Manager"]}
+
+    def test_nested_savepoints_partial(self):
+        from plone.pgcatalog.config import _get_partial_pending
+        from plone.pgcatalog.config import set_partial_pending
+
+        set_partial_pending(1, {"a": 1})
+        sp1 = transaction.savepoint()
+        set_partial_pending(2, {"b": 2})
+        sp2 = transaction.savepoint()
+        set_partial_pending(3, {"c": 3})
+        sp2.rollback()
+        assert set(_get_partial_pending().keys()) == {1, 2}
+        sp1.rollback()
+        assert set(_get_partial_pending().keys()) == {1}
+
+    def test_savepoint_non_mutating_merge_integrity(self):
+        """Non-mutating merges preserve snapshot integrity.
+
+        This is the key savepoint safety test: set_partial_pending must
+        create NEW dicts, not mutate existing ones, because PendingSavepoint
+        uses shallow copies.
+        """
+        from plone.pgcatalog.config import _get_partial_pending
+        from plone.pgcatalog.config import set_partial_pending
+
+        set_partial_pending(42, {"allowedRolesAndUsers": ["Manager"]})
+        sp = transaction.savepoint()
+        # Merge new key into same zoid — must create new dict, not mutate
+        set_partial_pending(42, {"Subject": ["test"]})
+        pp_before_rollback = _get_partial_pending()
+        assert pp_before_rollback[42] == {
+            "allowedRolesAndUsers": ["Manager"],
+            "Subject": ["test"],
+        }
+        sp.rollback()
+        pp_after = _get_partial_pending()
+        # Must be restored to pre-savepoint state (only allowedRolesAndUsers)
+        assert pp_after[42] == {"allowedRolesAndUsers": ["Manager"]}
+
+    def test_savepoint_full_pending_merge_integrity(self):
+        """Merging partial into full pending preserves savepoint integrity."""
+        from plone.pgcatalog.config import _get_pending
+        from plone.pgcatalog.config import set_partial_pending
+        from plone.pgcatalog.config import set_pending
+
+        set_pending(
+            42, {"path": "/doc", "idx": {"portal_type": "Doc"}, "searchable_text": None}
+        )
+        sp = transaction.savepoint()
+        set_partial_pending(42, {"allowedRolesAndUsers": ["Manager"]})
+        sp.rollback()
+        pending = _get_pending()
+        assert "allowedRolesAndUsers" not in pending[42]["idx"]
+        assert pending[42]["idx"]["portal_type"] == "Doc"
+
+    def test_tpc_finish_clears_partial(self):
+        from plone.pgcatalog.config import _get_partial_pending
+        from plone.pgcatalog.config import set_partial_pending
+
+        set_partial_pending(42, {"allowedRolesAndUsers": ["Manager"]})
+        dm = config_mod._local._pending_dm
+        dm.tpc_finish(transaction.get())
+        assert _get_partial_pending() == {}
+
+    def test_tpc_abort_clears_partial(self):
+        from plone.pgcatalog.config import _get_partial_pending
+        from plone.pgcatalog.config import set_partial_pending
+
+        set_partial_pending(42, {"allowedRolesAndUsers": ["Manager"]})
+        dm = config_mod._local._pending_dm
+        dm.tpc_abort(transaction.get())
+        assert _get_partial_pending() == {}

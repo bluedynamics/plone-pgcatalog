@@ -57,6 +57,15 @@ def _get_pending():
         return _local.pending
 
 
+def _get_partial_pending():
+    """Return the thread-local partial pending idx patches dict."""
+    try:
+        return _local.partial_pending
+    except AttributeError:
+        _local.partial_pending = {}
+        return _local.partial_pending
+
+
 def set_pending(zoid, data):
     """Register pending catalog data for a zoid.
 
@@ -65,6 +74,8 @@ def set_pending(zoid, data):
         data: dict with catalog columns, or None for uncatalog sentinel
     """
     _get_pending()[zoid] = data
+    # Full update supersedes any partial pending for same zoid
+    _get_partial_pending().pop(zoid, None)
     _ensure_joined()
 
 
@@ -80,17 +91,62 @@ def pop_pending(zoid):
 _MISSING = object()  # Sentinel for "no pending data"
 
 
+def set_partial_pending(zoid, idx_updates):
+    """Register partial idx updates for a zoid.
+
+    If a full pending entry already exists for this zoid (from a prior
+    catalog_object call in the same transaction), merges the updates
+    into the full pending's idx dict.  Otherwise stores in the
+    partial_pending dict.
+
+    IMPORTANT: Uses non-mutating merges (``{**old, **new}``) to preserve
+    savepoint snapshot integrity.  ``PendingSavepoint`` uses shallow copies,
+    so mutating shared dicts would corrupt rollback state.
+
+    Args:
+        zoid: ZODB OID as int
+        idx_updates: dict of idx JSONB keys to update
+    """
+    full = _get_pending()
+    if zoid in full and full[zoid] is not None:
+        # Full pending exists: create new entry with merged idx.
+        old = full[zoid]
+        full[zoid] = {**old, "idx": {**old.get("idx", {}), **idx_updates}}
+        return
+    # Standalone partial: create new merged dict (savepoint-safe).
+    pp = _get_partial_pending()
+    existing = pp.get(zoid, {})
+    pp[zoid] = {**existing, **idx_updates}
+    _ensure_joined()
+
+
+def pop_all_partial_pending():
+    """Pop all partial pending data, returning and clearing the dict.
+
+    Returns:
+        dict of {zoid: {idx_key: value, ...}}
+    """
+    pp = _get_partial_pending()
+    result = dict(pp)
+    pp.clear()
+    return result
+
+
 @implementer(IDataManagerSavepoint)
 class PendingSavepoint:
     """Snapshot of pending catalog data for savepoint rollback."""
 
-    def __init__(self, snapshot):
+    def __init__(self, snapshot, partial_snapshot):
         self._snapshot = snapshot
+        self._partial_snapshot = partial_snapshot
 
     def rollback(self):
         pending = _get_pending()
         pending.clear()
         pending.update(self._snapshot)
+        partial = _get_partial_pending()
+        partial.clear()
+        partial.update(self._partial_snapshot)
 
 
 @implementer(ISavepointDataManager)
@@ -108,10 +164,11 @@ class PendingDataManager:
         self._joined = True
 
     def savepoint(self):
-        return PendingSavepoint(dict(_get_pending()))
+        return PendingSavepoint(dict(_get_pending()), dict(_get_partial_pending()))
 
     def abort(self, transaction):
         _get_pending().clear()
+        _get_partial_pending().clear()
         self._joined = False  # AbortSavepoint may have unjoined us
 
     def tpc_begin(self, transaction):
@@ -125,9 +182,11 @@ class PendingDataManager:
 
     def tpc_finish(self, transaction):
         _get_pending().clear()
+        _get_partial_pending().clear()
 
     def tpc_abort(self, transaction):
         _get_pending().clear()
+        _get_partial_pending().clear()
 
     def sortKey(self):
         return "~plone.pgcatalog.pending"
@@ -372,6 +431,28 @@ class CatalogStateProcessor:
             "idx": Json(idx) if idx else None,
             "searchable_text": pending.get("searchable_text"),
         }
+
+    def finalize(self, cursor):
+        """Execute partial idx updates via JSONB merge.
+
+        Called by zodb-pgjsonb after batch object writes, using the
+        same cursor (same PG transaction).  Partial updates are
+        registered by ``reindexObject(idxs=[...])`` for objects that
+        don't need full ZODB serialization.
+        """
+        partial = pop_all_partial_pending()
+        if not partial:
+            return
+
+        from psycopg.types.json import Json
+
+        for zoid, idx_updates in partial.items():
+            cursor.execute(
+                "UPDATE object_state SET "
+                "idx = COALESCE(idx, '{}'::jsonb) || %(patch)s::jsonb "
+                "WHERE zoid = %(zoid)s AND idx IS NOT NULL",
+                {"zoid": zoid, "patch": Json(idx_updates)},
+            )
 
 
 def _get_main_storage(db):
