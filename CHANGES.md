@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.0.0b6 (unreleased)
+
+### Added
+
+- Relevance-ranked search results: SearchableText queries now automatically
+  return results ordered by relevance when no explicit `sort_on` is specified.
+  Title matches rank highest (weight A), followed by Description (weight B),
+  then body text (weight D). Uses PostgreSQL's built-in `ts_rank_cd()` with
+  cover density ranking. No extensions required.
+  **Note:** Requires a full catalog reindex after upgrade.
+
 ## 1.0.0b5
 
 ### Added

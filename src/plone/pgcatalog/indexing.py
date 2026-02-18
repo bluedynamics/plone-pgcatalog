@@ -13,6 +13,17 @@ from psycopg.types.json import Json
 # Sentinel for detecting "not provided" vs None
 _SENTINEL = object()
 
+# Weighted tsvector SQL template for field-boosted relevance ranking.
+# Title gets weight A (highest), Description weight B, body text weight D.
+# {idx_expr} is the SQL expression yielding the idx JSONB value.
+_WEIGHTED_TSVECTOR = (
+    "setweight(to_tsvector('simple'::regconfig, "
+    "COALESCE({idx_expr}->>'Title', '')), 'A') || "
+    "setweight(to_tsvector('simple'::regconfig, "
+    "COALESCE({idx_expr}->>'Description', '')), 'B') || "
+    "setweight(to_tsvector({lang_expr}::regconfig, {text_expr}), 'D')"
+)
+
 
 def catalog_object(conn, zoid, path, idx, searchable_text=None, language="simple"):
     """Write full catalog data for an object.
@@ -33,14 +44,19 @@ def catalog_object(conn, zoid, path, idx, searchable_text=None, language="simple
     idx.setdefault("path_depth", path_depth)
 
     if searchable_text is not None:
+        tsvector_sql = _WEIGHTED_TSVECTOR.format(
+            idx_expr="%(idx)s::jsonb",
+            lang_expr="%(lang)s",
+            text_expr="%(text)s",
+        )
         conn.execute(
-            """
+            f"""
             UPDATE object_state SET
                 path = %(path)s,
                 parent_path = %(parent_path)s,
                 path_depth = %(path_depth)s,
                 idx = %(idx)s,
-                searchable_text = to_tsvector(%(lang)s::regconfig, %(text)s)
+                searchable_text = {tsvector_sql}
             WHERE zoid = %(zoid)s
             """,
             {
@@ -126,11 +142,17 @@ def reindex_object(
             },
         )
     elif searchable_text is not None:
+        merged_idx = "COALESCE(idx, '{}'::jsonb) || %(updates)s::jsonb"
+        tsvector_sql = _WEIGHTED_TSVECTOR.format(
+            idx_expr=f"({merged_idx})",
+            lang_expr="%(lang)s",
+            text_expr="%(text)s",
+        )
         conn.execute(
-            """
+            f"""
             UPDATE object_state SET
-                idx = COALESCE(idx, '{}'::jsonb) || %(updates)s::jsonb,
-                searchable_text = to_tsvector(%(lang)s::regconfig, %(text)s)
+                idx = {merged_idx},
+                searchable_text = {tsvector_sql}
             WHERE zoid = %(zoid)s
             """,
             {

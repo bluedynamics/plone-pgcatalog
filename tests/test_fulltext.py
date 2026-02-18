@@ -222,6 +222,143 @@ class TestRanking:
         assert len(rows) == 2
         assert rows[0]["zoid"] == 340  # more mentions → higher rank
 
+    def test_title_match_ranks_higher_than_body_only(self, pg_conn_with_catalog):
+        """Title (weight A) in tsvector should rank higher than body-only (D)."""
+        conn = pg_conn_with_catalog
+        # Doc A: "Python" in Title → weight A
+        insert_object(conn, zoid=342)
+        catalog_object(
+            conn,
+            zoid=342,
+            path="/plone/guide",
+            idx={"portal_type": "Document", "Title": "Python Guide"},
+            searchable_text="Python Guide A guide about Python",
+        )
+        # Doc B: "Python" only in body → weight D
+        insert_object(conn, zoid=343)
+        catalog_object(
+            conn,
+            zoid=343,
+            path="/plone/notes",
+            idx={"portal_type": "Document", "Title": "General Notes"},
+            searchable_text="General Notes Some notes mentioning Python in the body",
+        )
+        conn.commit()
+
+        # Use ts_rank_cd with weight array to verify A-weight beats D-weight
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT zoid, ts_rank_cd("
+                "  '{0.1, 0.2, 0.4, 1.0}'::float4[], "
+                "  searchable_text, "
+                "  plainto_tsquery('simple', 'Python')"
+                ") AS rank "
+                "FROM object_state "
+                "WHERE searchable_text @@ plainto_tsquery('simple', 'Python') "
+                "ORDER BY rank DESC"
+            )
+            rows = cur.fetchall()
+        assert len(rows) == 2
+        assert rows[0]["zoid"] == 342  # Title match ranks higher
+
+    def test_auto_relevance_ordering(self, pg_conn_with_catalog):
+        """SearchableText query without sort_on returns results by relevance."""
+        conn = pg_conn_with_catalog
+        # Doc with "Python" in Title (weight A) should come first
+        insert_object(conn, zoid=344)
+        catalog_object(
+            conn,
+            zoid=344,
+            path="/plone/body_only",
+            idx={"portal_type": "Document", "Title": "Random Notes"},
+            searchable_text="Random Notes mention Python briefly",
+        )
+        insert_object(conn, zoid=345)
+        catalog_object(
+            conn,
+            zoid=345,
+            path="/plone/title_match",
+            idx={"portal_type": "Document", "Title": "Python Tutorial"},
+            searchable_text="Python Tutorial Learn Python programming step by step",
+        )
+        conn.commit()
+
+        rows = execute_query(
+            conn,
+            {"SearchableText": "Python"},
+            columns="zoid",
+        )
+        zoids = [r["zoid"] for r in rows]
+        assert len(zoids) == 2
+        assert zoids[0] == 345  # Title match first (auto-relevance)
+
+    def test_sort_on_overrides_relevance(self, pg_conn_with_catalog):
+        """Explicit sort_on should override auto-relevance ranking."""
+        conn = pg_conn_with_catalog
+        insert_object(conn, zoid=346)
+        catalog_object(
+            conn,
+            zoid=346,
+            path="/plone/b_doc",
+            idx={
+                "portal_type": "Document",
+                "Title": "Python Guide",
+                "sortable_title": "python guide",
+            },
+            searchable_text="Python Guide A comprehensive guide",
+        )
+        insert_object(conn, zoid=347)
+        catalog_object(
+            conn,
+            zoid=347,
+            path="/plone/a_doc",
+            idx={
+                "portal_type": "Document",
+                "Title": "Alpha Doc",
+                "sortable_title": "alpha doc",
+            },
+            searchable_text="Alpha Doc This mentions Python once",
+        )
+        conn.commit()
+
+        # With sort_on=sortable_title, Alpha should come first alphabetically
+        rows = execute_query(
+            conn,
+            {"SearchableText": "Python", "sort_on": "sortable_title"},
+            columns="zoid",
+        )
+        zoids = [r["zoid"] for r in rows]
+        assert len(zoids) == 2
+        assert zoids[0] == 347  # "alpha doc" before "python guide"
+
+    def test_weighted_tsvector_has_weights(self, pg_conn_with_catalog):
+        """Stored tsvector should contain A/B/D weight labels."""
+        conn = pg_conn_with_catalog
+        insert_object(conn, zoid=348)
+        catalog_object(
+            conn,
+            zoid=348,
+            path="/plone/weighted",
+            idx={
+                "portal_type": "Document",
+                "Title": "Unique Title Word",
+                "Description": "Unique Description Word",
+            },
+            searchable_text="Unique Title Word Unique Description Word Some body content",
+        )
+        conn.commit()
+
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT searchable_text::text AS tsv FROM object_state WHERE zoid = 348"
+            )
+            tsv_text = cur.fetchone()["tsv"]
+        # Weight A from Title, B from Description, D from body
+        assert "'title':2A" in tsv_text or "'titl':2A" in tsv_text or ":2A" in tsv_text
+        # Just verify A and B weights are present somewhere
+        assert "A" in tsv_text  # Title weight
+        assert "B" in tsv_text  # Description weight
+
 
 # ---------------------------------------------------------------------------
 # Edge cases

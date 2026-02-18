@@ -369,9 +369,13 @@ class CatalogStateProcessor:
             ExtraColumn("idx", "%(idx)s"),
             ExtraColumn(
                 "searchable_text",
-                "to_tsvector("
+                "setweight(to_tsvector('simple'::regconfig, "
+                "COALESCE(%(idx)s::jsonb->>'Title', '')), 'A') || "
+                "setweight(to_tsvector('simple'::regconfig, "
+                "COALESCE(%(idx)s::jsonb->>'Description', '')), 'B') || "
+                "setweight(to_tsvector("
                 "pgcatalog_lang_to_regconfig(%(idx)s::jsonb->>'Language')"
-                "::regconfig, %(searchable_text)s)",
+                "::regconfig, %(searchable_text)s), 'D')",
             ),
         ]
 
