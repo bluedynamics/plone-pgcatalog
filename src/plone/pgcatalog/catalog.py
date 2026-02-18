@@ -60,7 +60,7 @@ class _PendingBrain:
     find and reindex the object.
     """
 
-    __slots__ = ("_path", "_obj")
+    __slots__ = ("_obj", "_path")
 
     def __init__(self, path, obj):
         self._path = path
