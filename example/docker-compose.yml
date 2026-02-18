@@ -1,6 +1,8 @@
 services:
   postgres:
-    image: postgres:17
+    # Default: postgres:17 (tsvector ranking, no extensions needed)
+    # For BM25: PG_IMAGE=tensorchord/vchord-suite:pg17-latest docker compose up -d
+    image: ${PG_IMAGE:-postgres:17}
     environment:
       POSTGRES_USER: zodb
       POSTGRES_PASSWORD: zodb

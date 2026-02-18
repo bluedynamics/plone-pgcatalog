@@ -13,14 +13,34 @@ Try out **plone.pgcatalog** with a full Plone 6 site backed by
 
 ### 1. Start PostgreSQL
 
+**Standard (tsvector ranking):**
+
 ```bash
 cd example/
 docker compose up -d
 ```
 
-| Service    | Port | Purpose                     | Credentials                     |
-|------------|------|-----------------------------|---------------------------------|
-| PostgreSQL | 5433 | ZODB object storage (JSONB) | user=zodb password=zodb db=zodb |
+**With BM25 ranking (recommended):**
+
+```bash
+cd example/
+PG_IMAGE=tensorchord/vchord-suite:pg17-latest docker compose up -d
+```
+
+The BM25 variant uses the same PostgreSQL 17 but adds the `vchord_bm25` and
+`pg_tokenizer` extensions. plone.pgcatalog auto-detects them at startup --
+no configuration changes needed.
+
+| Variant    | Image                                    | Search ranking               |
+|------------|------------------------------------------|------------------------------|
+| Standard   | `postgres:17`                            | `ts_rank_cd` (tsvector)      |
+| BM25       | `tensorchord/vchord-suite:pg17-latest`   | BM25 (IDF + term saturation) |
+
+Both variants expose PostgreSQL on **port 5433**.
+
+> **Switching later:** stop the container, remove the volume
+> (`docker compose down -v`), then restart with the other image.
+> A full catalog reindex is needed after switching.
 
 ### 2. Create a Python virtual environment
 
@@ -59,6 +79,18 @@ mkdir -p instance/var/blobtemp
 .venv/bin/runwsgi instance/etc/zope.ini
 ```
 
+Watch the startup log. You will see one of:
+
+```
+BM25 search backend activated (vchord_bm25 + pg_tokenizer detected)
+```
+
+or:
+
+```
+Tsvector search backend activated (default)
+```
+
 ### 6. Create a Plone site
 
 Open http://localhost:8081 in your browser and create a new Plone site
@@ -68,7 +100,8 @@ using the admin/admin credentials.
 
 Go to **Site Setup > Add-ons** and install **plone.pgcatalog**.
 This adds the catalog columns (`path`, `idx`, `searchable_text`) and
-indexes to the `object_state` table.
+indexes to the `object_state` table. With BM25, it also creates the
+`search_bm25` column, tokenizer, and BM25 index.
 
 ## Exploring the Catalog Data
 
@@ -102,13 +135,25 @@ GROUP BY 1
 ORDER BY 2 DESC;
 ```
 
-**Full-text search using the tsvector column:**
+**Full-text search (tsvector -- works with both variants):**
 
 ```sql
 SELECT zoid, path, idx->>'Title' AS title
 FROM object_state
 WHERE searchable_text @@ plainto_tsquery('simple', 'your search term')
 ORDER BY ts_rank(searchable_text, plainto_tsquery('simple', 'your search term')) DESC
+LIMIT 20;
+```
+
+**Full-text search with BM25 ranking (BM25 variant only):**
+
+```sql
+SELECT zoid, path, idx->>'Title' AS title,
+       search_bm25 <&> to_bm25query('idx_os_search_bm25',
+           tokenize('your search term', 'pgcatalog_default')) AS score
+FROM object_state
+WHERE searchable_text @@ plainto_tsquery('simple', 'your search term')
+ORDER BY score ASC
 LIMIT 20;
 ```
 
@@ -158,6 +203,7 @@ ORDER BY path;
 
 You should see columns: `path`, `parent_path`, `path_depth`, `idx` (jsonb),
 `searchable_text` (tsvector) alongside the base zodb-pgjsonb columns.
+With BM25, you will also see `search_bm25` (bm25vector).
 
 ## Cleanup
 

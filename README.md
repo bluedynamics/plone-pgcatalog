@@ -12,8 +12,9 @@ Requires [zodb-pgjsonb](https://github.com/bluedynamics/zodb-pgjsonb) as the ZOD
 - **Dynamic index discovery** from ZCatalog at startup -- addons adding indexes via `catalog.xml` just work
 - **Transactional writes** -- catalog data written atomically alongside object state during ZODB commit
 - **Full-text search** via PostgreSQL `tsvector`/`tsquery` -- language-aware stemming for SearchableText (30 languages), word-level matching for Title/Description/addon ZCTextIndex fields
+- **Optional BM25 ranking** -- when `vchord_bm25` + `pg_tokenizer` extensions are detected, search results are automatically ranked using BM25 (IDF, term saturation, length normalization) instead of `ts_rank_cd`. Title matches are boosted. Falls back to tsvector ranking on vanilla PostgreSQL.
 - **Zero ZODB cache pressure** -- no BTree/Bucket objects stored in ZODB
-- **Container-friendly** -- works on standard `postgres:17` Docker images, no extensions required
+- **Container-friendly** -- works on standard `postgres:17` Docker images; for BM25 use `tensorchord/vchord-suite:pg17-latest`
 
 ## Requirements
 
