@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.0.0b5
+## 1.0.0b6 (unreleased)
 
 ### Added
 
@@ -10,6 +10,10 @@
   then body text (weight D). Uses PostgreSQL's built-in `ts_rank_cd()` with
   cover density ranking. No extensions required.
   **Note:** Requires a full catalog reindex after upgrade.
+
+## 1.0.0b5
+
+### Added
 
 - Add partial idx JSONB updates for lightweight reindex. [#6]
 
