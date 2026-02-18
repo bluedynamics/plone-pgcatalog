@@ -81,6 +81,17 @@ class SearchBackend(abc.ABC):
         """Column: None pairs for uncatalog. Default: empty."""
         return {}
 
+    def install_schema(self, conn):
+        """Execute schema DDL statement-by-statement.
+
+        Default implementation sends get_schema_sql() as one string.
+        Override for backends that need per-statement execution
+        (e.g. CREATE EXTENSION + DO blocks).
+        """
+        sql = self.get_schema_sql()
+        if sql:
+            conn.execute(sql)
+
     @classmethod
     @abc.abstractmethod
     def detect(cls, dsn):
@@ -147,13 +158,14 @@ class TsvectorBackend(SearchBackend):
 # ── BM25 (Level 2, requires extensions) ──────────────────────────────
 
 _DEFAULT_TOKENIZER_CONFIG = """\
+model = "bert_base_uncased"
 pre_tokenizer = "unicode_segmentation"
 [[character_filters]]
 to_lowercase = {}
 [[token_filters]]
 skip_non_alphanumeric = {}
 [[token_filters]]
-stemmer = { language = "english" }
+stemmer = { english_porter2 = {} }
 """
 
 
@@ -175,8 +187,8 @@ class BM25Backend(SearchBackend):
             ExtraColumn("searchable_text", _WEIGHTED_TSVECTOR_EXPR),
             ExtraColumn(
                 "search_bm25",
-                f"CASE WHEN %(search_bm25)s IS NOT NULL "
-                f"THEN tokenize(%(search_bm25)s, '{self.tokenizer_name}') "
+                f"CASE WHEN %(search_bm25)s::text IS NOT NULL "
+                f"THEN tokenize(%(search_bm25)s::text, '{self.tokenizer_name}') "
                 f"ELSE NULL END",
             ),
         ]
@@ -188,11 +200,33 @@ class BM25Backend(SearchBackend):
             "ALTER TABLE object_state "
             "ADD COLUMN IF NOT EXISTS search_bm25 bm25vector;\n"
             f"DO $$ BEGIN "
-            f"PERFORM create_text_analyzer('{self.tokenizer_name}', $cfg$\n"
+            f"PERFORM create_tokenizer('{self.tokenizer_name}', $cfg$\n"
             f"{self.tokenizer_config}$cfg$);\n"
-            f"EXCEPTION WHEN duplicate_object THEN NULL; END $$;\n"
+            f"EXCEPTION WHEN OTHERS THEN NULL; END $$;\n"
             "CREATE INDEX IF NOT EXISTS idx_os_search_bm25 "
             "ON object_state USING bm25 (search_bm25 bm25_ops);\n"
+        )
+
+    def install_schema(self, conn):
+        """Execute BM25 schema DDL statement-by-statement.
+
+        CREATE EXTENSION + DO $$ blocks require per-statement execution;
+        multi-statement strings fail silently in transactional connections.
+        """
+        conn.execute("CREATE EXTENSION IF NOT EXISTS pg_tokenizer CASCADE")
+        conn.execute("CREATE EXTENSION IF NOT EXISTS vchord_bm25 CASCADE")
+        conn.execute(
+            "ALTER TABLE object_state ADD COLUMN IF NOT EXISTS search_bm25 bm25vector"
+        )
+        conn.execute(
+            f"DO $$ BEGIN "
+            f"PERFORM create_tokenizer('{self.tokenizer_name}', $cfg$\n"
+            f"{self.tokenizer_config}$cfg$);\n"
+            f"EXCEPTION WHEN OTHERS THEN NULL; END $$"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_os_search_bm25 "
+            "ON object_state USING bm25 (search_bm25 bm25_ops)"
         )
 
     def process_search_data(self, pending):
@@ -241,6 +275,11 @@ class BM25Backend(SearchBackend):
 
     @classmethod
     def detect(cls, dsn):
+        """Check whether vchord_bm25 and pg_tokenizer are available.
+
+        Checks ``pg_available_extensions`` (not ``pg_extension``) so that
+        detection works before ``CREATE EXTENSION`` has been executed.
+        """
         if not dsn:
             return False
         try:
@@ -248,8 +287,8 @@ class BM25Backend(SearchBackend):
 
             with psycopg.connect(dsn) as conn, conn.cursor() as cur:
                 cur.execute(
-                    "SELECT COUNT(*) FROM pg_extension "
-                    "WHERE extname IN ('vchord_bm25', 'pg_tokenizer')"
+                    "SELECT COUNT(*) FROM pg_available_extensions "
+                    "WHERE name IN ('vchord_bm25', 'pg_tokenizer')"
                 )
                 row = cur.fetchone()
                 return row[0] == 2

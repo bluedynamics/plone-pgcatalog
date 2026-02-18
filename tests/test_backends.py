@@ -130,9 +130,10 @@ class TestBM25Backend:
 
     def test_get_schema_sql_has_tokenizer_creation(self):
         sql = self.backend.get_schema_sql()
-        assert "create_text_analyzer" in sql
+        assert "create_tokenizer" in sql
         assert "pgcatalog_default" in sql
-        assert "EXCEPTION WHEN duplicate_object" in sql
+        assert "EXCEPTION WHEN OTHERS" in sql
+        assert "bert_base_uncased" in sql
 
     def test_process_search_data_title_boost(self):
         pending = {

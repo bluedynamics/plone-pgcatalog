@@ -1,21 +1,29 @@
 """Integration tests for BM25 search backend (requires vchord_bm25 + pg_tokenizer).
 
 Skipped entirely when extensions are not available.
+Uses a separate DSN (BM25_TEST_DSN / port 5434) pointing to a
+vchord-suite PostgreSQL instance with the required extensions.
 """
 
 from plone.pgcatalog.backends import BM25Backend
 from plone.pgcatalog.backends import reset_backend
 from plone.pgcatalog.backends import set_backend
 from plone.pgcatalog.query import build_query
-from tests.conftest import DSN
+from plone.pgcatalog.schema import install_catalog_schema
+from psycopg.rows import dict_row
+from psycopg.types.json import Json
+from tests.conftest import BM25_DSN
+from tests.conftest import TABLES_TO_DROP
+from zodb_pgjsonb.schema import HISTORY_FREE_SCHEMA
 
+import psycopg
 import pytest
 
 
 # Skip entire module if BM25 extensions are not installed
 pytestmark = pytest.mark.skipif(
-    not BM25Backend.detect(DSN),
-    reason="vchord_bm25 and/or pg_tokenizer not available",
+    not BM25Backend.detect(BM25_DSN),
+    reason="vchord_bm25 and/or pg_tokenizer not available at BM25_TEST_DSN",
 )
 
 
@@ -29,22 +37,29 @@ def _bm25_backend():
 
 
 @pytest.fixture
-def pg_conn_with_bm25(pg_conn_with_catalog):
-    """Database connection with catalog schema + BM25 extensions."""
-    conn = pg_conn_with_catalog
-    backend = BM25Backend()
-    schema_sql = backend.get_schema_sql()
-    conn.execute(schema_sql)
+def pg_conn_with_bm25():
+    """Database connection to vchord-suite PG with BM25 schema installed."""
+    conn = psycopg.connect(BM25_DSN, row_factory=dict_row)
+    with conn.cursor() as cur:
+        cur.execute(TABLES_TO_DROP)
     conn.commit()
-    return conn
+    conn.execute(HISTORY_FREE_SCHEMA)
+    conn.commit()
+    install_catalog_schema(conn)
+    conn.commit()
+    # Install BM25 extensions + tokenizer + column + index
+    # (must use install_schema for per-statement execution)
+    backend = BM25Backend()
+    backend.install_schema(conn)
+    conn.commit()
+    yield conn
+    conn.close()
 
 
 def _insert_and_catalog(
     conn, zoid, path, title, description, body, tid=1, language="simple"
 ):
     """Insert an object and write BM25 + tsvector data."""
-    from psycopg.types.json import Json
-
     idx = {"Title": title, "Description": description, "Language": language}
     combined = " ".join(filter(None, [title, title, title, description, body])) or None
 
@@ -71,8 +86,8 @@ def _insert_and_catalog(
                     to_tsvector('simple'::regconfig, COALESCE(%(title)s, '')), 'A') ||
                     setweight(to_tsvector('simple'::regconfig, COALESCE(%(desc)s, '')), 'B') ||
                     setweight(to_tsvector(%(lang)s::regconfig, COALESCE(%(body)s, '')), 'D'),
-                search_bm25 = CASE WHEN %(combined)s IS NOT NULL
-                    THEN tokenize(%(combined)s, 'pgcatalog_default')
+                search_bm25 = CASE WHEN %(combined)s::text IS NOT NULL
+                    THEN tokenize(%(combined)s::text, 'pgcatalog_default')
                     ELSE NULL END
             WHERE zoid = %(zoid)s
             """,
