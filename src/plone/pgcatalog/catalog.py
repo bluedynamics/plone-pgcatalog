@@ -190,15 +190,20 @@ def reindex_index(conn, name):
 
 
 def clear_catalog_data(conn):
-    """Clear all catalog data (path, idx, searchable_text).
+    """Clear all catalog data (path, idx, searchable_text, and backend extras).
 
     The base object_state rows are preserved.
     """
+    from plone.pgcatalog.backends import get_backend
+
+    extra_nulls = get_backend().uncatalog_extra()
+    extra_sql = "".join(f", {col} = NULL" for col in extra_nulls)
+
     with conn.cursor() as cur:
         cur.execute(
             "UPDATE object_state SET "
             "path = NULL, parent_path = NULL, path_depth = NULL, "
-            "idx = NULL, searchable_text = NULL "
+            f"idx = NULL, searchable_text = NULL{extra_sql} "
             "WHERE idx IS NOT NULL"
         )
         count = cur.rowcount

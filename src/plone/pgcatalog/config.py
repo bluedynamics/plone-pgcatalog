@@ -362,21 +362,13 @@ class CatalogStateProcessor:
     """
 
     def get_extra_columns(self):
+        from plone.pgcatalog.backends import get_backend
         from zodb_pgjsonb import ExtraColumn
 
         return [
             ExtraColumn("path", "%(path)s"),
             ExtraColumn("idx", "%(idx)s"),
-            ExtraColumn(
-                "searchable_text",
-                "setweight(to_tsvector('simple'::regconfig, "
-                "COALESCE(%(idx)s::jsonb->>'Title', '')), 'A') || "
-                "setweight(to_tsvector('simple'::regconfig, "
-                "COALESCE(%(idx)s::jsonb->>'Description', '')), 'B') || "
-                "setweight(to_tsvector("
-                "pgcatalog_lang_to_regconfig(%(idx)s::jsonb->>'Language')"
-                "::regconfig, %(searchable_text)s), 'D')",
-            ),
+            *get_backend().get_extra_columns(),
         ]
 
     def get_schema_sql(self):
@@ -385,7 +377,9 @@ class CatalogStateProcessor:
         Applied by PGJsonbStorage.register_state_processor() using
         the storage's own connection — no REPEATABLE READ lock conflicts.
         Includes rrule_plpgsql functions for DateRecurringIndex support.
+        Appends backend-specific DDL (e.g. BM25 column + index).
         """
+        from plone.pgcatalog.backends import get_backend
         from plone.pgcatalog.schema import CATALOG_COLUMNS
         from plone.pgcatalog.schema import CATALOG_FUNCTIONS
         from plone.pgcatalog.schema import CATALOG_INDEXES
@@ -398,6 +392,7 @@ class CatalogStateProcessor:
             + CATALOG_LANG_FUNCTION
             + CATALOG_INDEXES
             + RRULE_FUNCTIONS
+            + get_backend().get_schema_sql()
         )
 
     def process(self, zoid, class_mod, class_name, state):
@@ -420,21 +415,28 @@ class CatalogStateProcessor:
 
         if pending is None:
             # Uncatalog sentinel: NULL all catalog columns
-            return {
+            from plone.pgcatalog.backends import get_backend
+
+            result = {
                 "path": None,
                 "idx": None,
                 "searchable_text": None,
             }
+            result.update(get_backend().uncatalog_extra())
+            return result
 
         # Normal catalog: return column values
+        from plone.pgcatalog.backends import get_backend
         from psycopg.types.json import Json
 
         idx = pending.get("idx")
-        return {
+        result = {
             "path": pending.get("path"),
             "idx": Json(idx) if idx else None,
             "searchable_text": pending.get("searchable_text"),
         }
+        result.update(get_backend().process_search_data(pending))
+        return result
 
     def finalize(self, cursor):
         """Execute partial idx updates via JSONB merge.
@@ -471,7 +473,8 @@ def register_catalog_processor(event):
     """IDatabaseOpenedWithRoot subscriber: register the processor.
 
     Called once at Zope startup when the database is opened.
-    Registers the CatalogStateProcessor on the PGJsonbStorage.
+    Detects the best search backend (BM25 or tsvector), then registers
+    the CatalogStateProcessor on the PGJsonbStorage.
     The processor's ``get_schema_sql()`` provides DDL which is applied
     by the storage using its own connection (no REPEATABLE READ lock
     conflicts).
@@ -483,6 +486,12 @@ def register_catalog_processor(event):
     db = event.database
     storage = _get_main_storage(db)
     if hasattr(storage, "register_state_processor"):
+        # Detect search backend before registering (affects schema DDL)
+        from plone.pgcatalog.backends import detect_and_set_backend
+
+        dsn = getattr(storage, "_dsn", None)
+        detect_and_set_backend(dsn)
+
         processor = CatalogStateProcessor()
         storage.register_state_processor(processor)
         log.info("Registered CatalogStateProcessor on %s", storage)

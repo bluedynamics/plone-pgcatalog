@@ -192,7 +192,10 @@ class _QueryBuilder:
         # Auto-rank by relevance when SearchableText is queried without
         # explicit sort_on.  Title(A) > Description(B) > body(D).
         if self.order_by is None and hasattr(self, "_text_rank_expr"):
-            self.order_by = f"{self._text_rank_expr} DESC"
+            from plone.pgcatalog.backends import get_backend
+
+            direction = "ASC" if get_backend().rank_ascending else "DESC"
+            self.order_by = f"{self._text_rank_expr} {direction}"
 
         # Limit/offset
         sort_limit = query_dict.get("sort_limit")
@@ -396,33 +399,21 @@ class _QueryBuilder:
             return
 
         if idx_key is None:
-            # SearchableText → dedicated tsvector column, language-aware.
-            # Uses pgcatalog_lang_to_regconfig() SQL function to map
-            # Plone language codes to PG regconfig names at query time.
-            p_text = self._pname("text")
-            p_lang = self._pname("lang")
-            self.clauses.append(
-                f"searchable_text @@ plainto_tsquery("
-                f"pgcatalog_lang_to_regconfig(%({p_lang})s)::regconfig, "
-                f"%({p_text})s)"
-            )
-            self.params[p_text] = str(query_val)
-            # Extract Language from the query dict if present
+            # SearchableText → delegate to active search backend.
+            from plone.pgcatalog.backends import get_backend
+
             lang_val = self._query.get("Language")
             if isinstance(lang_val, dict):
                 lang_val = lang_val.get("query", "")
-            self.params[p_lang] = str(lang_val) if lang_val else ""
+            lang_val = str(lang_val) if lang_val else ""
 
-            # Store relevance ranking expression for auto-ranking.
-            # Uses ts_rank_cd (cover density) with weight array {D,C,B,A}.
-            self._text_rank_expr = (
-                f"ts_rank_cd("
-                f"'{{0.1, 0.2, 0.4, 1.0}}'::float4[], "
-                f"searchable_text, "
-                f"plainto_tsquery("
-                f"pgcatalog_lang_to_regconfig(%({p_lang})s)::regconfig, "
-                f"%({p_text})s))"
+            clause, params, rank_expr = get_backend().build_search_clause(
+                query_val, lang_val, self._pname
             )
+            self.clauses.append(clause)
+            self.params.update(params)
+            if rank_expr is not None:
+                self._text_rank_expr = rank_expr
         else:
             # Title / Description / addon ZCTextIndex →
             # tsvector expression on idx JSONB, 'simple' config.

@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.0.0b7 (unreleased)
+
+### Added
+
+- Optional BM25 ranking via VectorChord-BM25 extension. When `vchord_bm25`
+  and `pg_tokenizer` extensions are detected at startup, search results are
+  automatically ranked using BM25 (IDF, term saturation, length normalization)
+  instead of `ts_rank_cd`. Title matches are boosted via combined text.
+  Vanilla PostgreSQL installations continue using weighted tsvector
+  ranking with no changes needed.
+  **Requires:** `vchord_bm25` + `pg_tokenizer` PostgreSQL extensions.
+  **Note:** Full catalog reindex required after enabling.
+
+- `SearchBackend` abstraction: thin interface for swappable search/ranking
+  backends. `TsvectorBackend` (always available) and `BM25Backend` (optional).
+  Backend auto-detected at Zope startup.
+
 ## 1.0.0b6 (unreleased)
 
 ### Added

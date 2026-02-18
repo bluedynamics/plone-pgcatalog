@@ -93,21 +93,27 @@ def catalog_object(conn, zoid, path, idx, searchable_text=None, language="simple
 def uncatalog_object(conn, zoid):
     """Clear all catalog data for an object.
 
-    Sets path, parent_path, path_depth, idx, and searchable_text to NULL.
+    Sets path, parent_path, path_depth, idx, searchable_text (and
+    search_bm25 if BM25 backend is active) to NULL.
     The base object_state row (zoid, tid, state, etc.) is preserved.
 
     Args:
         conn: psycopg connection
         zoid: integer object id
     """
+    from plone.pgcatalog.backends import get_backend
+
+    extra_nulls = get_backend().uncatalog_extra()
+    extra_sql = "".join(f",\n            {col} = NULL" for col in extra_nulls)
+
     conn.execute(
-        """
+        f"""
         UPDATE object_state SET
             path = NULL,
             parent_path = NULL,
             path_depth = NULL,
             idx = NULL,
-            searchable_text = NULL
+            searchable_text = NULL{extra_sql}
         WHERE zoid = %(zoid)s
         """,
         {"zoid": zoid},
