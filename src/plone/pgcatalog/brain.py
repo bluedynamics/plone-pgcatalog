@@ -10,6 +10,7 @@ batched queries where LIMIT < total matching rows.
 
 from Products.ZCatalog.interfaces import ICatalogBrain
 from zope.interface import implementer
+from zope.interface.common.sequence import IFiniteSequence
 from ZTUtils.Lazy import Lazy
 
 
@@ -78,6 +79,20 @@ class PGCatalogBrain:
         except (KeyError, AttributeError):
             return None
 
+    def getId(self):
+        """Return the object ID (last path segment)."""
+        path = self._row.get("path", "")
+        return path.rsplit("/", 1)[-1] if path else ""
+
+    def pretty_title_or_id(self):
+        """Return the title if available, otherwise the id."""
+        idx = self._row.get("idx")
+        if idx:
+            title = idx.get("Title")
+            if title:
+                return title
+        return self.getId()
+
     def getRID(self):
         """Return the record ID (zoid) for this object."""
         return self._row["zoid"]
@@ -132,6 +147,7 @@ class PGCatalogBrain:
         return f"<PGCatalogBrain zoid={self._row.get('zoid')} path={self._row.get('path')!r}>"
 
 
+@implementer(IFiniteSequence)
 class CatalogSearchResults(Lazy):
     """Result sequence from a catalog query.
 

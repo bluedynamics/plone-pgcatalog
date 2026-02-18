@@ -53,6 +53,26 @@ def _path_value_to_string(value):
     return str(value)
 
 
+class _PendingBrain:
+    """Minimal brain for objects in pending store (not yet in PG).
+
+    Provides just enough interface for ``reindexObjectSecurity`` to
+    find and reindex the object.
+    """
+
+    __slots__ = ("_path", "_obj")
+
+    def __init__(self, path, obj):
+        self._path = path
+        self._obj = obj
+
+    def getPath(self):
+        return self._path
+
+    def _unrestrictedGetObject(self):
+        return self._obj
+
+
 # Fixed set of columns for catalog queries (never user-supplied).
 # Lazy mode: only zoid + path; idx fetched on demand via batch load.
 # Eager mode: includes idx (backward compat for direct _run_search calls).
@@ -498,7 +518,79 @@ class PlonePGCatalogTool(CatalogTool):
         REQUEST.update(kw)
 
         conn = self._get_pg_read_connection()
-        return _run_search(conn, REQUEST, catalog=self, lazy_conn=conn)
+        results = _run_search(conn, REQUEST, catalog=self, lazy_conn=conn)
+
+        # Extend results with pending objects for path queries.
+        # Needed for reindexObjectSecurity: newly created objects are
+        # only in the pending store (not yet committed to PG), so a
+        # normal PG query won't find them.
+        path_query = REQUEST.get("path")
+        if path_query is not None:
+            pending_brains = self._pending_brains_for_path(
+                path_query, {b.getPath() for b in results}
+            )
+            if pending_brains:
+                all_brains = list(results) + pending_brains
+                results = CatalogSearchResults(all_brains)
+
+        return results
+
+    def _unrestrictedSearchResults(self, REQUEST=None, **kw):
+        """Like unrestrictedSearchResults, without processQueue().
+
+        Provided for forward compatibility with Products.CMFCore PR #155
+        which uses this method in reindexObjectSecurity.  Our implementation
+        is identical to unrestrictedSearchResults since we have no queue.
+        """
+        return self.unrestrictedSearchResults(REQUEST, **kw)
+
+    def _pending_brains_for_path(self, path_query, found_paths):
+        """Return synthetic brains for pending objects matching a path query.
+
+        Scans the thread-local pending store for objects whose path
+        matches ``path_query`` and that are not already in ``found_paths``.
+        Loads objects from the ZODB connection cache by OID.
+        """
+        from plone.pgcatalog.config import _get_pending
+        from ZODB.utils import p64
+
+        pending = _get_pending()
+        if not pending:
+            return []
+
+        jar = getattr(self, "_p_jar", None)
+        if jar is None:
+            return []
+
+        # Normalize path query to a prefix string
+        if isinstance(path_query, str):
+            prefix = path_query
+        elif isinstance(path_query, dict):
+            prefix = path_query.get("query", "")
+        else:
+            return []
+
+        if not prefix:
+            return []
+
+        brains = []
+        for zoid, data in pending.items():
+            if data is None:
+                continue  # uncatalog sentinel
+            obj_path = data.get("path")
+            if obj_path is None or obj_path in found_paths:
+                continue
+            # Path match: exact or starts-with (subtree)
+            if obj_path != prefix and not obj_path.startswith(prefix + "/"):
+                continue
+            try:
+                obj = jar.get(p64(zoid))
+            except Exception:
+                continue
+            if obj is not None:
+                brains.append(_PendingBrain(obj_path, obj))
+
+        return brains
 
     # -- Maintenance ---------------------------------------------------------
 

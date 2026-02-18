@@ -2,5 +2,5 @@
 Plone
 waitress
 Paste
--e ../zodb-pgjsonb
--e ../plone-pgcatalog
+zodb-pgjsonb
+plone-pgcatalog
