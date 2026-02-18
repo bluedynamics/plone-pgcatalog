@@ -17,6 +17,26 @@
   backends. `TsvectorBackend` (always available) and `BM25Backend` (optional).
   Backend auto-detected at Zope startup.
 
+- Example setup: `create_site.py` zconsole script creates a Plone site,
+  installs plone.pgcatalog, and imports ~800 Wikipedia geography articles
+  for search testing. See `example/README.md`.
+
+### Fixed
+
+- `reindexObjectSecurity` now works for newly created objects.
+  `unrestrictedSearchResults` extends PG results with objects from the
+  thread-local pending store (not yet committed to PG) for path queries.
+  Previously, newly created objects were invisible to the path search in
+  `CMFCatalogAware.reindexObjectSecurity`, so their security indexes
+  (e.g. `allowedRolesAndUsers`) were never updated during workflow
+  transitions in the same transaction.
+
+- `CatalogSearchResults` now implements `IFiniteSequence`, enabling
+  `IContentListing` adaptation in Plone's search view.
+
+- `PGCatalogBrain` now provides `getId()` and `pretty_title_or_id()`
+  methods for compatibility with Plone's Classic UI search template.
+
 ## 1.0.0b6 (unreleased)
 
 ### Added
