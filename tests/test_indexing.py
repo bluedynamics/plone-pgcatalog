@@ -77,6 +77,34 @@ class TestCatalogObject:
             zoids = [r["zoid"] for r in cur.fetchall()]
         assert 13 in zoids
 
+    def test_searchable_text_has_weight_labels(self, pg_conn_with_catalog):
+        """Stored tsvector should have A/B/D weight labels from Title/Description."""
+        conn = pg_conn_with_catalog
+        insert_object(conn, zoid=18)
+
+        catalog_object(
+            conn,
+            zoid=18,
+            path="/plone/weighted",
+            idx={
+                "portal_type": "Document",
+                "Title": "Alpha",
+                "Description": "Beta",
+            },
+            searchable_text="Alpha Beta Gamma body text",
+        )
+        conn.commit()
+
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT searchable_text::text AS tsv FROM object_state WHERE zoid = 18"
+            )
+            tsv = cur.fetchone()["tsv"]
+        # 'alpha' appears with weight A (from Title) and D (from body)
+        assert "A" in tsv
+        # 'beta' appears with weight B (from Description)
+        assert "B" in tsv
+
     def test_no_searchable_text_leaves_null(self, pg_conn_with_catalog):
         conn = pg_conn_with_catalog
         insert_object(conn, zoid=14)

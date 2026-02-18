@@ -4,6 +4,13 @@
 
 ### Added
 
+- Relevance-ranked search results: SearchableText queries now automatically
+  return results ordered by relevance when no explicit `sort_on` is specified.
+  Title matches rank highest (weight A), followed by Description (weight B),
+  then body text (weight D). Uses PostgreSQL's built-in `ts_rank_cd()` with
+  cover density ranking. No extensions required.
+  **Note:** Requires a full catalog reindex after upgrade.
+
 - Add partial idx JSONB updates for lightweight reindex. [#6]
 
   - When `reindexObject(idxs=[...])` is called with specific index names (e.g. during `reindexObjectSecurity`), extract only the requested values and register a JSONB merge patch (`idx || patch`) instead of full ZODB serialization + full idx column replacement

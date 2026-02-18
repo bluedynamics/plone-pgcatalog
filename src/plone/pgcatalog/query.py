@@ -189,6 +189,11 @@ class _QueryBuilder:
             sort_order = query_dict.get("sort_order", "ascending")
             self._process_sort(sort_on, sort_order)
 
+        # Auto-rank by relevance when SearchableText is queried without
+        # explicit sort_on.  Title(A) > Description(B) > body(D).
+        if self.order_by is None and hasattr(self, "_text_rank_expr"):
+            self.order_by = f"{self._text_rank_expr} DESC"
+
         # Limit/offset
         sort_limit = query_dict.get("sort_limit")
         b_start = query_dict.get("b_start", 0)
@@ -407,6 +412,17 @@ class _QueryBuilder:
             if isinstance(lang_val, dict):
                 lang_val = lang_val.get("query", "")
             self.params[p_lang] = str(lang_val) if lang_val else ""
+
+            # Store relevance ranking expression for auto-ranking.
+            # Uses ts_rank_cd (cover density) with weight array {D,C,B,A}.
+            self._text_rank_expr = (
+                f"ts_rank_cd("
+                f"'{{0.1, 0.2, 0.4, 1.0}}'::float4[], "
+                f"searchable_text, "
+                f"plainto_tsquery("
+                f"pgcatalog_lang_to_regconfig(%({p_lang})s)::regconfig, "
+                f"%({p_text})s))"
+            )
         else:
             # Title / Description / addon ZCTextIndex →
             # tsvector expression on idx JSONB, 'simple' config.

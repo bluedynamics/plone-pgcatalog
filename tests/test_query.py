@@ -248,6 +248,30 @@ class TestSearchableText:
         finally:
             registry._indexes.pop("my_text_field", None)
 
+    def test_auto_relevance_order_by(self):
+        """SearchableText query should auto-add ts_rank_cd ORDER BY."""
+        qr = build_query({"SearchableText": "hello"})
+        assert qr["order_by"] is not None
+        assert "ts_rank_cd" in qr["order_by"]
+        assert "DESC" in qr["order_by"]
+
+    def test_sort_on_overrides_relevance(self):
+        """Explicit sort_on should override auto-relevance ranking."""
+        qr = build_query(
+            {
+                "SearchableText": "hello",
+                "sort_on": "modified",
+                "sort_order": "descending",
+            }
+        )
+        assert "ts_rank_cd" not in qr["order_by"]
+        assert "modified" in qr["order_by"]
+
+    def test_no_relevance_without_searchable_text(self):
+        """Without SearchableText, no auto-relevance ORDER BY."""
+        qr = build_query({"portal_type": "Document"})
+        assert qr["order_by"] is None
+
 
 # ---------------------------------------------------------------------------
 # PathIndex
