@@ -97,6 +97,13 @@ DSN = os.environ.get(
     "dbname=zodb_test user=zodb password=zodb host=localhost port=5433",
 )
 
+# BM25 tests need vchord_bm25 + pg_tokenizer extensions.
+# Default: vchord-suite container on port 5434.
+BM25_DSN = os.environ.get(
+    "BM25_TEST_DSN",
+    "dbname=zodb_test user=zodb password=zodb host=localhost port=5434",
+)
+
 TABLES_TO_DROP = (
     "DROP TABLE IF EXISTS blob_state, object_state, transaction_log CASCADE"
 )

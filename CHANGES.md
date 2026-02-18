@@ -1,5 +1,42 @@
 # Changelog
 
+## 1.0.0b7 (unreleased)
+
+### Added
+
+- Optional BM25 ranking via VectorChord-BM25 extension. When `vchord_bm25`
+  and `pg_tokenizer` extensions are detected at startup, search results are
+  automatically ranked using BM25 (IDF, term saturation, length normalization)
+  instead of `ts_rank_cd`. Title matches are boosted via combined text.
+  Vanilla PostgreSQL installations continue using weighted tsvector
+  ranking with no changes needed.
+  **Requires:** `vchord_bm25` + `pg_tokenizer` PostgreSQL extensions.
+  **Note:** Full catalog reindex required after enabling.
+
+- `SearchBackend` abstraction: thin interface for swappable search/ranking
+  backends. `TsvectorBackend` (always available) and `BM25Backend` (optional).
+  Backend auto-detected at Zope startup.
+
+- Example setup: `create_site.py` zconsole script creates a Plone site,
+  installs plone.pgcatalog, and imports ~800 Wikipedia geography articles
+  for search testing. See `example/README.md`.
+
+### Fixed
+
+- `reindexObjectSecurity` now works for newly created objects.
+  `unrestrictedSearchResults` extends PG results with objects from the
+  thread-local pending store (not yet committed to PG) for path queries.
+  Previously, newly created objects were invisible to the path search in
+  `CMFCatalogAware.reindexObjectSecurity`, so their security indexes
+  (e.g. `allowedRolesAndUsers`) were never updated during workflow
+  transitions in the same transaction.
+
+- `CatalogSearchResults` now implements `IFiniteSequence`, enabling
+  `IContentListing` adaptation in Plone's search view.
+
+- `PGCatalogBrain` now provides `getId()` and `pretty_title_or_id()`
+  methods for compatibility with Plone's Classic UI search template.
+
 ## 1.0.0b6 (unreleased)
 
 ### Added

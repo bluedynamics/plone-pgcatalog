@@ -31,8 +31,23 @@ jobs:
           --health-timeout 3s
           --health-retries 5
 
+      vchord:
+        image: tensorchord/vchord-suite:pg17-latest
+        env:
+          POSTGRES_USER: zodb
+          POSTGRES_PASSWORD: zodb
+          POSTGRES_DB: zodb_test
+        ports:
+          - 5434:5432
+        options: >-
+          --health-cmd "pg_isready -U zodb"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
     env:
       ZODB_TEST_DSN: "dbname=zodb_test user=zodb password=zodb host=localhost port=5432"
+      BM25_TEST_DSN: "dbname=zodb_test user=zodb password=zodb host=localhost port=5434"
 
     steps:
       - uses: actions/checkout@v4

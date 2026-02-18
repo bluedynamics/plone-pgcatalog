@@ -11,6 +11,7 @@ plone.pgcatalog extends the `object_state` table (owned by zodb-pgjsonb) with ca
 | `path` | TEXT | Physical path for brain construction |
 | `idx` | JSONB | All index values as a single JSON object |
 | `searchable_text` | TSVECTOR | Full-text search vector |
+| `search_bm25` | BM25VECTOR | BM25 ranking vector (optional, when extensions detected) |
 
 All catalog data lives in these columns -- no BTree/Bucket objects are written to ZODB.
 
@@ -25,6 +26,7 @@ All catalog data lives in these columns -- no BTree/Bucket objects are written t
 | `config.py` | `CatalogStateProcessor`, pool discovery, DRI translator registration |
 | `schema.py` | DDL for catalog columns, functions, and indexes |
 | `brain.py` | `PGCatalogBrain` + lazy `CatalogSearchResults` |
+| `backends.py` | `SearchBackend` ABC, `TsvectorBackend`, `BM25Backend` |
 | `dri.py` | `DateRecurringIndexTranslator` for recurring events |
 | `interfaces.py` | `IPGCatalogTool`, `IPGIndexTranslator` |
 | `setuphandlers.py` | GenericSetup integration |
@@ -179,6 +181,46 @@ The `CASE WHEN` dispatches between recurring and non-recurring at query time bas
 
 Sorting is by base date: `pgcatalog_to_timestamptz(idx->>'start')`.
 
+## Search Backends
+
+The `SearchBackend` abstraction (in `backends.py`) decouples search ranking from the rest of the catalog. Two backends ship:
+
+### TsvectorBackend (default)
+
+Always available. Uses PostgreSQL's built-in `ts_rank_cd()` with weighted tsvector for relevance ranking (title=A, description=B, body=D). Higher scores = more relevant.
+
+### BM25Backend (optional)
+
+Activated automatically when `vchord_bm25` + `pg_tokenizer` extensions are detected at startup via `detect_and_set_backend(dsn)`. Adds a `search_bm25` column (`bm25vector` type) alongside the existing tsvector column:
+
+- **Pre-filtering**: Same GIN-indexed `searchable_text @@ plainto_tsquery(...)` clause (fast boolean filter)
+- **Ranking**: `search_bm25 <&> to_bm25query(...)` operator (BM25 scoring with IDF, term saturation, length normalization)
+- **Title boost**: Combined text repeats title 3x for field boosting (`title title title description body`)
+- **Score direction**: Lower = more relevant (ascending sort)
+
+### Backend Interface
+
+```python
+class SearchBackend(abc.ABC):
+    def get_extra_columns(self) -> list[ExtraColumn]: ...
+    def get_schema_sql(self) -> str: ...
+    def process_search_data(self, pending: dict) -> dict: ...
+    def build_search_clause(self, query_val, lang_val, pname_func): ...
+    @property
+    def rank_ascending(self) -> bool: ...
+    def uncatalog_extra(self) -> dict: ...
+    @classmethod
+    def detect(cls, dsn) -> bool: ...
+```
+
+The active backend is a module-level singleton. `config.py` calls `detect_and_set_backend()` during startup; `query.py` delegates SearchableText WHERE/ranking to `get_backend().build_search_clause()`.
+
+## Pending-Store Lookup
+
+`unrestrictedSearchResults` extends PG results with objects from the thread-local pending store for path queries. This is needed because `CMFCatalogAware.reindexObjectSecurity` searches `catalog.unrestrictedSearchResults(path=path)` to find objects in a subtree, but newly created objects only exist in the pending store (not yet committed to PG). Without this, security indexes are never updated for new objects during workflow transitions.
+
+`_pending_brains_for_path()` scans the pending store, matches paths, and returns `_PendingBrain` instances with just enough interface (`getPath()`, `_unrestrictedGetObject()`) for `reindexObjectSecurity` to work.
+
 ## Query Translation
 
 `query.py` translates ZCatalog query dicts into parameterized SQL.
@@ -267,10 +309,11 @@ Includes:
 - GIN expression indexes for Title/Description tsvector matching (`to_tsvector('simple', COALESCE(idx->>'Title', ''))`)
 - Dynamic GIN expression indexes for addon ZCTextIndex fields (created at startup by `_ensure_text_indexes()`)
 - rrule_plpgsql schema and functions (for DateRecurringIndex)
+- When BM25 backend is active: `search_bm25` column, `pg_tokenizer` + `vchord_bm25` extensions, tokenizer creation, BM25 index
 
 ## Full-Text Search
 
-Three tiers of text search, each with different characteristics:
+Four tiers of text search, each with different characteristics:
 
 ### SearchableText (Language-Aware)
 
@@ -280,6 +323,15 @@ Uses the dedicated `searchable_text` TSVECTOR column with per-object language st
 - **Query path**: `searchable_text @@ plainto_tsquery(pgcatalog_lang_to_regconfig(%(lang)s)::regconfig, %(text)s)` -- language from the query's `Language` filter
 - **Index**: GIN on `searchable_text` column
 - **Stemming**: Yes, for the 30 supported languages (falls back to `'simple'` for unknown/empty)
+
+### SearchableText with BM25 (Optional)
+
+When the BM25 backend is active, ranking uses BM25 scores instead of `ts_rank_cd`:
+
+- **Write path**: Combined text (`title * 3 + description + body`) tokenized via `tokenize(text, 'pgcatalog_default')` into `search_bm25` column
+- **Query path**: Pre-filter via tsvector GIN (same as above), rank via `search_bm25 <&> to_bm25query('idx_os_search_bm25', tokenize(%(text)s, 'pgcatalog_default'))`
+- **Index**: BM25 index on `search_bm25` column
+- **Advantages**: IDF (rare terms rank higher), term saturation, length normalization, title boosting via repetition
 
 ### Title / Description (Word-Level)
 
