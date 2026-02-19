@@ -6,7 +6,7 @@ One-time script -- not needed by users.  Output is committed as
 
 Usage::
 
-    python example/fetch_wikipedia.py
+    python example/scripts/fetch_wikipedia.py
 
 Fetches ~300 articles per language (English, German, Chinese) from
 geography-related categories via the MediaWiki API, discovers cross-language
@@ -160,11 +160,11 @@ def split_extract(extract):
 
 
 def main():
-    out_path = Path(__file__).parent / "seed_data.json.gz"
+    out_path = Path(__file__).resolve().parent.parent / "seed_data.json.gz"
 
-    print("Fetching multilingual geography articles from Wikipedia...")
-    print(f"Languages: {', '.join(LANGUAGES)}")
-    print(f"Target: ~{TARGET_TOTAL} English articles + translations\n")
+    print("Fetching multilingual geography articles from Wikipedia...", flush=True)
+    print(f"Languages: {', '.join(LANGUAGES)}", flush=True)
+    print(f"Target: ~{TARGET_TOTAL} English articles + translations\n", flush=True)
 
     en_api = WIKI_APIS["en"]
 
@@ -197,7 +197,7 @@ def main():
         time.sleep(0.2)
 
     # Step 2: For each English article, find langlinks + fetch extracts
-    print(f"\nFetching extracts + translations for {len(all_pages)} articles...")
+    print(f"\nFetching extracts + translations for {len(all_pages)} articles...", flush=True)
     target_langs = set(LANGUAGES) - {"en"}
 
     # translation_groups: list of dicts with articles keyed by language
@@ -252,9 +252,14 @@ def main():
             articles_by_lang[lang].append(art["title"])
         group_id += 1
 
-        if (i + 1) % 25 == 0:
-            counts = {l: len(a) for l, a in articles_by_lang.items()}
-            print(f"  {i + 1}/{len(all_pages)} processed — {counts}")
+        langs_got = list(group["articles"].keys())
+        if (i + 1) % 5 == 0 or len(langs_got) > 1:
+            counts = {lang: len(a) for lang, a in articles_by_lang.items()}
+            print(
+                f"  {i + 1}/{len(all_pages)} {en_title[:40]}"
+                f" [{','.join(langs_got)}] — totals: {counts}",
+                flush=True,
+            )
         time.sleep(0.1)
 
     # Flatten to articles list with language + group_id

@@ -72,7 +72,7 @@ mkdir -p instance/var/blobtemp
 ### 4. Create the site and import content
 
 ```bash
-zconsole run instance/etc/zope.conf create_site.py
+zconsole run instance/etc/zope.conf scripts/create_site.py
 ```
 
 This single command:

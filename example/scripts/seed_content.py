@@ -2,7 +2,7 @@
 
 Run via zconsole::
 
-    .venv/bin/zconsole run instance/etc/zope.conf example/seed_content.py
+    .venv/bin/zconsole run instance/etc/zope.conf scripts/seed_content.py
 
 Creates Documents in language folders (``/plone/en/library/``,
 ``/plone/de/library/``, ``/plone/zh/library/``) from
@@ -31,7 +31,9 @@ from zope.component.hooks import setSite
 
 # ── Configuration ────────────────────────────────────────────────────
 
-DATA_FILE = Path(__file__).parent / "seed_data.json.gz"
+DATA_FILE = Path(
+    globals().get("__file__", "scripts/seed_content.py")
+).resolve().parent.parent / "seed_data.json.gz"
 SITE_ID = "Plone"
 LANGUAGES = ["en", "de", "zh"]
 DEFAULT_LANGUAGE = "en"

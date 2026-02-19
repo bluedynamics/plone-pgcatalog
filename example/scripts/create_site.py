@@ -2,7 +2,7 @@
 
 Run via zconsole::
 
-    zconsole run instance/etc/zope.conf create_site.py
+    zconsole run instance/etc/zope.conf scripts/create_site.py
 
 This single script:
 
@@ -38,7 +38,8 @@ SITE_ID = "Plone"
 SITE_TITLE = "plone.pgcatalog Multilingual Example"
 # __file__ is not defined in zconsole exec context — use script name from sys.argv
 _script_dir = Path(sys.argv[-1]).resolve().parent
-DATA_FILE = _script_dir / "seed_data.json.gz"
+_example_dir = _script_dir.parent
+DATA_FILE = _example_dir / "seed_data.json.gz"
 LANGUAGES = ["en", "de", "zh"]
 DEFAULT_LANGUAGE = "en"
 FOLDER_ID = "library"
@@ -209,7 +210,7 @@ def import_seed_content(site):
 
     if not DATA_FILE.exists():
         print(f"Seed data not found: {DATA_FILE}")
-        print("Run 'python fetch_wikipedia.py' first to generate it.")
+        print("Run 'python scripts/fetch_wikipedia.py' first to generate it.")
         print("Skipping seed content import.")
         return
 
