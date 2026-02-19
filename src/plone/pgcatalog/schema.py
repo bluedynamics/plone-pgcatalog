@@ -53,6 +53,7 @@ BEGIN
         WHEN 'da' THEN 'danish'
         WHEN 'nl' THEN 'dutch'
         WHEN 'en' THEN 'english'
+        WHEN 'et' THEN 'estonian'
         WHEN 'fi' THEN 'finnish'
         WHEN 'fr' THEN 'french'
         WHEN 'de' THEN 'german'

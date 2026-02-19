@@ -235,7 +235,10 @@ class _QueryBuilder:
                 self.clauses.append(sql_fragment)
                 self.params.update(params)
                 return
-            log.warning("Unknown catalog index %r — skipping", name)
+            # Fall back to simple JSONB field query for unregistered indexes
+            # (e.g. Language, TranslationGroup from plone.app.multilingual).
+            spec = _normalize_query(raw)
+            self._handle_field(name, name, spec)
             return
 
         idx_type, idx_key, _source_attrs = entry

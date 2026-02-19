@@ -1,8 +1,15 @@
 # Changelog
 
-## 1.0.0b7 (unreleased)
+## 1.0.0b6
 
 ### Added
+
+- Relevance-ranked search results: SearchableText queries now automatically
+  return results ordered by relevance when no explicit `sort_on` is specified.
+  Title matches rank highest (weight A), followed by Description (weight B),
+  then body text (weight D). Uses PostgreSQL's built-in `ts_rank_cd()` with
+  cover density ranking. No extensions required.
+  **Note:** Requires a full catalog reindex after upgrade.
 
 - Optional BM25 ranking via VectorChord-BM25 extension. When `vchord_bm25`
   and `pg_tokenizer` extensions are detected at startup, search results are
@@ -13,13 +20,30 @@
   **Requires:** `vchord_bm25` + `pg_tokenizer` PostgreSQL extensions.
   **Note:** Full catalog reindex required after enabling.
 
+- Per-language BM25 columns: each configured language gets its own
+  `bm25vector` column with a language-specific tokenizer. Supports
+  30 Snowball stemmers (Arabic to Yiddish), jieba (Chinese), and
+  lindera (Japanese/Korean). Configure via `PGCATALOG_BM25_LANGUAGES`
+  environment variable (comma-separated codes, or `auto` to detect from
+  portal_languages). Fallback column for unconfigured languages ensures
+  BM25 ranking benefits for all content.
+  **Note:** Changing languages requires full catalog reindex.
+
 - `SearchBackend` abstraction: thin interface for swappable search/ranking
   backends. `TsvectorBackend` (always available) and `BM25Backend` (optional).
   Backend auto-detected at Zope startup.
 
-- Example setup: `create_site.py` zconsole script creates a Plone site,
-  installs plone.pgcatalog, and imports ~800 Wikipedia geography articles
-  for search testing. See `example/README.md`.
+- `LANG_TOKENIZER_MAP` in `backends.py` maps ISO 639-1 codes to pg_tokenizer
+  configurations. Regional variants (pt-br, zh-CN) are normalized to base
+  codes automatically.
+
+- Estonian (`et`) added to language-to-regconfig mapping (supported by PG 17).
+
+- Multilingual example: `create_site.py` zconsole script creates a Plone
+  site with `plone.app.multilingual` (EN, DE, ZH), installs plone.pgcatalog,
+  and imports ~800+ Wikipedia geography articles across all three languages
+  with PAM translation linking. `fetch_wikipedia.py` fetches articles from
+  en/de/zh Wikipedia with cross-language links. See `example/README.md`.
 
 ### Fixed
 
@@ -34,19 +58,23 @@
 - `CatalogSearchResults` now implements `IFiniteSequence`, enabling
   `IContentListing` adaptation in Plone's search view.
 
-- `PGCatalogBrain` now provides `getId()` and `pretty_title_or_id()`
-  methods for compatibility with Plone's Classic UI search template.
+- `PGCatalogBrain` now provides `getId` (property) and `pretty_title_or_id()`
+  for compatibility with Plone's Classic UI navigation and search templates.
+  `getId` is a property (not a method) so `brain.getId` returns a string,
+  matching standard ZCatalog brain behavior.
 
-## 1.0.0b6 (unreleased)
+- `PGCatalogBrain.__getattr__` returns `None` for missing idx keys instead
+  of raising `AttributeError`, matching ZCatalog's Missing Value behavior.
+  Fixes PAM's `get_alternate_languages()` viewlet crash on `brain.Language`.
 
-### Added
+- Unknown catalog indexes (e.g. `Language`, `TranslationGroup` from
+  plone.app.multilingual) now fall back to JSONB field queries instead of
+  being silently skipped. This enables PAM's translation registration and
+  lookup queries to work correctly.
 
-- Relevance-ranked search results: SearchableText queries now automatically
-  return results ordered by relevance when no explicit `sort_on` is specified.
-  Title matches rank highest (weight A), followed by Description (weight B),
-  then body text (weight D). Uses PostgreSQL's built-in `ts_rank_cd()` with
-  cover density ranking. No extensions required.
-  **Note:** Requires a full catalog reindex after upgrade.
+- CJK tokenizer TOML format fixed: jieba (Chinese) and lindera
+  (Japanese/Korean) now use the correct table syntax for pg_tokenizer's
+  `pre_tokenizer` configuration.
 
 ## 1.0.0b5
 

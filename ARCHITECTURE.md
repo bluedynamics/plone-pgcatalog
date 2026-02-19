@@ -11,7 +11,8 @@ plone.pgcatalog extends the `object_state` table (owned by zodb-pgjsonb) with ca
 | `path` | TEXT | Physical path for brain construction |
 | `idx` | JSONB | All index values as a single JSON object |
 | `searchable_text` | TSVECTOR | Full-text search vector |
-| `search_bm25` | BM25VECTOR | BM25 ranking vector (optional, when extensions detected) |
+| `search_bm25_{lang}` | BM25VECTOR | Per-language BM25 ranking vectors (optional, one per configured language) |
+| `search_bm25` | BM25VECTOR | Fallback BM25 ranking vector (multilingual, no stemmer) |
 
 All catalog data lives in these columns -- no BTree/Bucket objects are written to ZODB.
 
@@ -116,7 +117,7 @@ class IPGIndexTranslator(Interface):
 ### Wiring
 
 - `catalog.py`: `_extract_from_translators()` calls `extract()` for all registered translators during indexing
-- `query.py`: `_process_index()` falls back to `_lookup_translator()` when index not in registry
+- `query.py`: `_process_index()` falls back to `_lookup_translator()` then to JSONB field query when index not in registry
 - `query.py`: `_process_sort()` falls back to translator's `sort()` for ORDER BY
 
 ### Example
@@ -191,12 +192,23 @@ Always available. Uses PostgreSQL's built-in `ts_rank_cd()` with weighted tsvect
 
 ### BM25Backend (optional)
 
-Activated automatically when `vchord_bm25` + `pg_tokenizer` extensions are detected at startup via `detect_and_set_backend(dsn)`. Adds a `search_bm25` column (`bm25vector` type) alongside the existing tsvector column:
+Activated automatically when `vchord_bm25` + `pg_tokenizer` extensions are detected at startup via `detect_and_set_backend(dsn)`. Adds **per-language BM25 columns** alongside the existing tsvector column:
 
+- **Per-language columns**: Each configured language gets `search_bm25_{lang}` with a language-specific tokenizer (Snowball stemmer, or jieba/lindera for CJK)
+- **Fallback column**: `search_bm25` with multilingual tokenizer (no stemmer) for unconfigured languages and cross-language search
 - **Pre-filtering**: Same GIN-indexed `searchable_text @@ plainto_tsquery(...)` clause (fast boolean filter)
-- **Ranking**: `search_bm25 <&> to_bm25query(...)` operator (BM25 scoring with IDF, term saturation, length normalization)
+- **Ranking**: `search_bm25_{lang} <&> to_bm25query(...)` operator (BM25 scoring with IDF, term saturation, length normalization)
 - **Title boost**: Combined text repeats title 3x for field boosting (`title title title description body`)
 - **Score direction**: Lower = more relevant (ascending sort)
+- **Write path**: Each document populates its language column + the fallback column (2 tokenizations)
+- **Query path**: Search uses the language-specific column for ranking, falls back to `search_bm25` when language is unknown
+
+**Configuration** via `PGCATALOG_BM25_LANGUAGES` environment variable:
+- Comma-separated language codes: `en,de,fr,es,zh,ja`
+- `auto` to detect from portal_languages at startup
+- Default: `en` (backward compatible)
+
+**Supported languages**: 25+ Snowball stemmers (Arabic to Yiddish), jieba (Chinese), lindera (Japanese/Korean). `LANG_TOKENIZER_MAP` in `backends.py` maps ISO 639-1 codes to pg_tokenizer configs.
 
 ### Backend Interface
 
@@ -247,6 +259,8 @@ _HANDLERS = {
     IndexType.GOPIP: "_handle_field",
 }
 ```
+
+**Unregistered indexes** (e.g. `Language`, `TranslationGroup` from plone.app.multilingual) are not skipped — they fall back to a simple JSONB field query (`idx @> '{"Language": "en"}'::jsonb`). This allows catalog queries from third-party add-ons to work without explicit registry entries.
 
 ### SQL Patterns
 
@@ -309,7 +323,7 @@ Includes:
 - GIN expression indexes for Title/Description tsvector matching (`to_tsvector('simple', COALESCE(idx->>'Title', ''))`)
 - Dynamic GIN expression indexes for addon ZCTextIndex fields (created at startup by `_ensure_text_indexes()`)
 - rrule_plpgsql schema and functions (for DateRecurringIndex)
-- When BM25 backend is active: `search_bm25` column, `pg_tokenizer` + `vchord_bm25` extensions, tokenizer creation, BM25 index
+- When BM25 backend is active: per-language `search_bm25_{lang}` columns + fallback `search_bm25`, `pg_tokenizer` + `vchord_bm25` extensions, per-language tokenizer creation, per-language BM25 indexes
 
 ## Full-Text Search
 
@@ -324,14 +338,15 @@ Uses the dedicated `searchable_text` TSVECTOR column with per-object language st
 - **Index**: GIN on `searchable_text` column
 - **Stemming**: Yes, for the 30 supported languages (falls back to `'simple'` for unknown/empty)
 
-### SearchableText with BM25 (Optional)
+### SearchableText with BM25 (Optional, Per-Language)
 
-When the BM25 backend is active, ranking uses BM25 scores instead of `ts_rank_cd`:
+When the BM25 backend is active, ranking uses per-language BM25 scores instead of `ts_rank_cd`:
 
-- **Write path**: Combined text (`title * 3 + description + body`) tokenized via `tokenize(text, 'pgcatalog_default')` into `search_bm25` column
-- **Query path**: Pre-filter via tsvector GIN (same as above), rank via `search_bm25 <&> to_bm25query('idx_os_search_bm25', tokenize(%(text)s, 'pgcatalog_default'))`
-- **Index**: BM25 index on `search_bm25` column
-- **Advantages**: IDF (rare terms rank higher), term saturation, length normalization, title boosting via repetition
+- **Write path**: Combined text (`title * 3 + description + body`) tokenized into the document's language column (`search_bm25_{lang}`) AND the fallback column (`search_bm25`). Each uses the appropriate tokenizer (e.g. `pgcatalog_de` with German stemmer, `pgcatalog_default` with no stemmer).
+- **Query path**: Pre-filter via tsvector GIN (same as above), rank via `search_bm25_{lang} <&> to_bm25query('idx_os_search_bm25_{lang}', tokenize(%(text)s, 'pgcatalog_{lang}'))`. Falls back to `search_bm25` column when search language is unknown or unconfigured.
+- **Index**: Per-language BM25 indexes on each `search_bm25_{lang}` column + fallback index
+- **Advantages**: Language-specific stemming/segmentation in BM25 ranking, IDF (rare terms rank higher), term saturation, length normalization, title boosting via repetition
+- **Configuration**: `PGCATALOG_BM25_LANGUAGES=en,de,fr,zh,...` or `auto` (reads from portal_languages)
 
 ### Title / Description (Word-Level)
 

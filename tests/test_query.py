@@ -432,10 +432,11 @@ class TestEdgeCases:
         assert qr["limit"] is None
         assert qr["offset"] == 0
 
-    def test_unknown_index_skipped(self):
+    def test_unknown_index_falls_back_to_jsonb_field(self):
         qr = build_query({"nonexistent_index": "value"})
-        # Should only have the base clause
-        assert qr["where"] == "idx IS NOT NULL"
+        # Unregistered indexes fall back to JSONB field queries
+        assert "nonexistent_index" in qr["where"]
+        assert len(qr["params"]) > 0
 
     def test_combined_query(self):
         qr = build_query(
@@ -801,7 +802,6 @@ class TestIPGIndexTranslatorQuery:
     def test_translator_query_called(self, populated_registry):
         """If an index is not in the registry, query looks up IPGIndexTranslator."""
         from plone.pgcatalog.interfaces import IPGIndexTranslator
-        from unittest import mock
         from zope.component import getSiteManager
 
         translator = mock.Mock()
@@ -826,7 +826,6 @@ class TestIPGIndexTranslatorQuery:
     def test_translator_sort_called(self, populated_registry):
         """IPGIndexTranslator.sort() is used when index not in registry."""
         from plone.pgcatalog.interfaces import IPGIndexTranslator
-        from unittest import mock
         from zope.component import getSiteManager
 
         translator = mock.Mock()
@@ -841,16 +840,14 @@ class TestIPGIndexTranslatorQuery:
         finally:
             sm.unregisterUtility(provided=IPGIndexTranslator, name="custom_range")
 
-    def test_no_translator_logs_warning(self, populated_registry):
-        """Unknown index without translator logs a warning."""
-        with mock.patch("plone.pgcatalog.query.log") as mock_log:
-            build_query({"totally_unknown_index": "val"})
-            mock_log.warning.assert_called()
+    def test_no_translator_falls_back_to_field(self, populated_registry):
+        """Unknown index without translator falls back to JSONB field query."""
+        qr = build_query({"totally_unknown_index": "val"})
+        assert "totally_unknown_index" in qr["where"]
 
     def test_translator_sort_returns_none(self, populated_registry):
         """If translator.sort() returns None, no ORDER BY is added."""
         from plone.pgcatalog.interfaces import IPGIndexTranslator
-        from unittest import mock
         from zope.component import getSiteManager
 
         translator = mock.Mock()

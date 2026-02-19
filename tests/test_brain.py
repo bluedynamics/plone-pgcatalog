@@ -119,12 +119,16 @@ class TestBrainAttributeAccess:
         brain = PGCatalogBrain(_make_row(idx={"expires": None}))
         assert brain.expires is None
 
-    def test_attribute_error_for_unknown(self):
-        import pytest
+    def test_missing_attribute_returns_none(self):
+        """Missing attributes return None (like ZCatalog's MV behavior).
 
+        PGCatalogBrain returns None for any idx key not present, rather
+        than raising AttributeError.  This matches the expectation of
+        Plone code that accesses brain attributes like Language or getId
+        which may not be in the idx dict.
+        """
         brain = PGCatalogBrain(_make_row(idx={}))
-        with pytest.raises(AttributeError):
-            _ = brain.nonexistent_attribute
+        assert brain.nonexistent_attribute is None
 
     def test_private_attrs_raise_attribute_error(self):
         import pytest
@@ -325,12 +329,9 @@ class TestLazyIdxLoading:
         assert "portal_type" in results[0]
         assert results._idx_loaded
 
-    def test_attribute_error_after_lazy_load(self):
-        import pytest
-
+    def test_missing_attr_returns_none_after_lazy_load(self):
         results, conn = self._make_lazy_results(1)
-        with pytest.raises(AttributeError):
-            _ = results[0].nonexistent
+        assert results[0].nonexistent is None
 
     def test_slice_preserves_lazy_loading(self):
         results, conn = self._make_lazy_results(5)
