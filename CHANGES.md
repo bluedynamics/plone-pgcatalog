@@ -1,8 +1,15 @@
 # Changelog
 
-## 1.0.0b7 (unreleased)
+## 1.0.0b6 (unreleased)
 
 ### Added
+
+- Relevance-ranked search results: SearchableText queries now automatically
+  return results ordered by relevance when no explicit `sort_on` is specified.
+  Title matches rank highest (weight A), followed by Description (weight B),
+  then body text (weight D). Uses PostgreSQL's built-in `ts_rank_cd()` with
+  cover density ranking. No extensions required.
+  **Note:** Requires a full catalog reindex after upgrade.
 
 - Optional BM25 ranking via VectorChord-BM25 extension. When `vchord_bm25`
   and `pg_tokenizer` extensions are detected at startup, search results are
@@ -15,7 +22,7 @@
 
 - Per-language BM25 columns: each configured language gets its own
   `bm25vector` column with a language-specific tokenizer. Supports
-  25+ Snowball stemmers (Arabic to Yiddish), jieba (Chinese), and
+  30 Snowball stemmers (Arabic to Yiddish), jieba (Chinese), and
   lindera (Japanese/Korean). Configure via `PGCATALOG_BM25_LANGUAGES`
   environment variable (comma-separated codes, or `auto` to detect from
   portal_languages). Fallback column for unconfigured languages ensures
@@ -68,17 +75,6 @@
 - CJK tokenizer TOML format fixed: jieba (Chinese) and lindera
   (Japanese/Korean) now use the correct table syntax for pg_tokenizer's
   `pre_tokenizer` configuration.
-
-## 1.0.0b6 (unreleased)
-
-### Added
-
-- Relevance-ranked search results: SearchableText queries now automatically
-  return results ordered by relevance when no explicit `sort_on` is specified.
-  Title matches rank highest (weight A), followed by Description (weight B),
-  then body text (weight D). Uses PostgreSQL's built-in `ts_rank_cd()` with
-  cover density ranking. No extensions required.
-  **Note:** Requires a full catalog reindex after upgrade.
 
 ## 1.0.0b5
 
