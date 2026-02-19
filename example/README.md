@@ -78,8 +78,8 @@ zconsole run instance/etc/zope.conf scripts/create_site.py
 This single command:
 
 1. Creates a Plone Classic UI site (`/Plone`)
-2. Installs **plone.app.multilingual** with EN, DE, ZH language folders
-3. Installs **plone.pgcatalog** (catalog columns + indexes)
+2. Installs **plone.pgcatalog** (catalog columns + indexes)
+3. Installs **plone.app.multilingual** with EN, DE, ZH language folders
 4. Imports ~800+ Wikipedia geography articles across all three languages
 5. Links translations via PAM's `ITranslationManager`
 

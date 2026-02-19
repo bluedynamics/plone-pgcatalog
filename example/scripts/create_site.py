@@ -7,8 +7,8 @@ Run via zconsole::
 This single script:
 
 1. Creates a Plone Classic UI site (``/Plone``)
-2. Installs ``plone.app.multilingual`` with EN, DE, ZH language folders
-3. Installs the ``plone.pgcatalog`` add-on (catalog columns + indexes)
+2. Installs the ``plone.pgcatalog`` add-on (catalog columns + indexes)
+3. Installs ``plone.app.multilingual`` with EN, DE, ZH language folders
 4. Imports ~800+ Wikipedia geography articles as published Documents
    across all three languages, with translations linked via PAM
 
@@ -343,9 +343,15 @@ def import_seed_content(site):
 def main(app):
     create_plone_site(app)
     site = app[SITE_ID]
-    install_multilingual(site)
-    site = app[SITE_ID]
     install_pgcatalog(site)
+    site = app[SITE_ID]
+    install_multilingual(site)
+    # Re-sync IndexRegistry so Language/TranslationGroup are extracted
+    site = app[SITE_ID]
+    from plone.pgcatalog.columns import get_registry
+
+    registry = get_registry()
+    registry.sync_from_catalog(api.portal.get_tool("portal_catalog"))
     site = app[SITE_ID]
     import_seed_content(site)
     print(f"\nReady! Start Zope and browse http://localhost:8081/{SITE_ID}/")

@@ -89,10 +89,14 @@ def _build_tokenizer_toml(lang_code=None):
 
     lines = [
         'model = "bert_base_uncased"',
-        f'pre_tokenizer = "{pre_tok}"',
-        "[[character_filters]]",
-        "to_lowercase = {}",
     ]
+    # CJK segmenters (jieba, lindera) need table format: [pre_tokenizer]\njieba = {}
+    # Standard tokenizer uses string format: pre_tokenizer = "unicode_segmentation"
+    if pre_tok in ("jieba", "lindera"):
+        lines += ["[pre_tokenizer]", f"{pre_tok} = {{}}"]
+    else:
+        lines += [f'pre_tokenizer = "{pre_tok}"']
+    lines += ["[[character_filters]]", "to_lowercase = {}"]
     if pre_tok == "unicode_segmentation":
         lines += ["[[token_filters]]", "skip_non_alphanumeric = {}"]
     if stemmer:
