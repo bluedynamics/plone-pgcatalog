@@ -13,13 +13,30 @@
   **Requires:** `vchord_bm25` + `pg_tokenizer` PostgreSQL extensions.
   **Note:** Full catalog reindex required after enabling.
 
+- Per-language BM25 columns: each configured language gets its own
+  `bm25vector` column with a language-specific tokenizer. Supports
+  25+ Snowball stemmers (Arabic to Yiddish), jieba (Chinese), and
+  lindera (Japanese/Korean). Configure via `PGCATALOG_BM25_LANGUAGES`
+  environment variable (comma-separated codes, or `auto` to detect from
+  portal_languages). Fallback column for unconfigured languages ensures
+  BM25 ranking benefits for all content.
+  **Note:** Changing languages requires full catalog reindex.
+
 - `SearchBackend` abstraction: thin interface for swappable search/ranking
   backends. `TsvectorBackend` (always available) and `BM25Backend` (optional).
   Backend auto-detected at Zope startup.
 
-- Example setup: `create_site.py` zconsole script creates a Plone site,
-  installs plone.pgcatalog, and imports ~800 Wikipedia geography articles
-  for search testing. See `example/README.md`.
+- `LANG_TOKENIZER_MAP` in `backends.py` maps ISO 639-1 codes to pg_tokenizer
+  configurations. Regional variants (pt-br, zh-CN) are normalized to base
+  codes automatically.
+
+- Estonian (`et`) added to language-to-regconfig mapping (supported by PG 17).
+
+- Multilingual example: `create_site.py` zconsole script creates a Plone
+  site with `plone.app.multilingual` (EN, DE, ZH), installs plone.pgcatalog,
+  and imports ~800+ Wikipedia geography articles across all three languages
+  with PAM translation linking. `fetch_wikipedia.py` fetches articles from
+  en/de/zh Wikipedia with cross-language links. See `example/README.md`.
 
 ### Fixed
 

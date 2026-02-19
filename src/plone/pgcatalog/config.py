@@ -469,6 +469,56 @@ def _get_main_storage(db):
     return main
 
 
+def _get_bm25_languages(db):
+    """Read BM25 language configuration.
+
+    Reads from ``PGCATALOG_BM25_LANGUAGES`` env var:
+    - Comma-separated language codes (e.g. "en,de,fr,zh")
+    - ``"auto"`` to detect from portal_languages at startup
+    - Default: ``"en"`` (backward compatible with Phase 2)
+
+    Returns:
+        list of ISO 639-1 language codes, or None for default.
+    """
+    env_val = os.environ.get("PGCATALOG_BM25_LANGUAGES", "").strip()
+    if not env_val:
+        return None  # default to ["en"] in BM25Backend
+
+    if env_val.lower() == "auto":
+        return _detect_languages_from_db(db)
+
+    return [lang.strip() for lang in env_val.split(",") if lang.strip()]
+
+
+def _detect_languages_from_db(db):
+    """Read supported languages from portal_languages in the ZODB.
+
+    Opens a temporary connection, finds Plone sites, reads their
+    supported languages.  Falls back to None (default) on failure.
+    """
+    try:
+        conn = db.open()
+        try:
+            root = conn.root()
+            app = root.get("Application", root)
+            for obj in app.values():
+                lang_tool = getattr(obj, "portal_languages", None)
+                if lang_tool is not None:
+                    langs = list(lang_tool.getSupportedLanguages())
+                    if langs:
+                        log.info(
+                            "Auto-detected BM25 languages from %s: %s",
+                            getattr(obj, "getId", lambda: "?")(),
+                            langs,
+                        )
+                        return langs
+        finally:
+            conn.close()
+    except Exception:
+        log.debug("Could not auto-detect BM25 languages from ZODB", exc_info=True)
+    return None
+
+
 def register_catalog_processor(event):
     """IDatabaseOpenedWithRoot subscriber: register the processor.
 
@@ -490,7 +540,8 @@ def register_catalog_processor(event):
         from plone.pgcatalog.backends import detect_and_set_backend
 
         dsn = getattr(storage, "_dsn", None)
-        detect_and_set_backend(dsn)
+        languages = _get_bm25_languages(db)
+        detect_and_set_backend(dsn, languages=languages)
 
         processor = CatalogStateProcessor()
         storage.register_state_processor(processor)

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fetch geography articles from Wikipedia for the seed dataset.
+"""Fetch multilingual geography articles from Wikipedia for the seed dataset.
 
 One-time script -- not needed by users.  Output is committed as
 ``seed_data.json.gz`` (tracked by git-lfs).
@@ -8,8 +8,9 @@ Usage::
 
     python example/fetch_wikipedia.py
 
-Fetches ~1000 full articles from geography-related categories via the
-MediaWiki API and writes ``example/seed_data.json.gz``.
+Fetches ~300 articles per language (English, German, Chinese) from
+geography-related categories via the MediaWiki API, discovers cross-language
+translations via ``langlinks``, and writes ``example/seed_data.json.gz``.
 
 License of the fetched content: CC BY-SA 4.0
 (https://en.wikipedia.org/wiki/Wikipedia:Text_of_the_Creative_Commons_Attribution-ShareAlike_4.0_International_License)
@@ -23,11 +24,22 @@ import urllib.request
 from datetime import date
 from pathlib import Path
 
-API = "https://en.wikipedia.org/w/api.php"
-USER_AGENT = "plone-pgcatalog-seed-fetcher/1.0 (https://github.com/bluedynamics/plone-pgcatalog)"
+USER_AGENT = (
+    "plone-pgcatalog-seed-fetcher/2.0 "
+    "(https://github.com/bluedynamics/plone-pgcatalog)"
+)
 
-# Categories to fetch.  (label, category_title, max_pages)
-# max_pages=0 means: fetch pages from subcategories instead.
+# Wikipedia API endpoints per language
+WIKI_APIS = {
+    "en": "https://en.wikipedia.org/w/api.php",
+    "de": "https://de.wikipedia.org/w/api.php",
+    "zh": "https://zh.wikipedia.org/w/api.php",
+}
+
+# Languages to fetch translations for
+LANGUAGES = ["en", "de", "zh"]
+
+# Categories to fetch (English Wikipedia, we'll find translations via langlinks)
 CATEGORIES = [
     ("Countries", "Category:Member states of the United Nations", 200),
     ("Countries", "Category:Observer states of the United Nations", 10),
@@ -37,32 +49,25 @@ CATEGORIES = [
     ("Lakes", "Category:Lakes by continent", 0),
     ("Deserts", "Category:Deserts by continent", 0),
     ("World Heritage Sites", "Category:World Heritage Sites by country", 0),
-    ("National parks", "Category:National parks by country", 0),
     ("Volcanoes", "Category:Volcanoes by country", 0),
-    ("Glaciers", "Category:Glaciers by country", 0),
     ("Seas", "Category:Seas", 50),
     ("Oceans", "Category:Oceans", 10),
-    ("Peninsulas", "Category:Peninsulas by continent", 0),
-    ("Capes", "Category:Headlands by country", 0),
 ]
 
-# For parent categories with max_pages=0, fetch subcategory pages
-# up to this total per parent.
-SUBCAT_PAGE_LIMIT = 80
-
-TARGET_TOTAL = 1050  # fetch a bit more, dedup will trim
+SUBCAT_PAGE_LIMIT = 60
+TARGET_TOTAL = 400  # English articles to start from
 
 
-def _api_get(params):
+def _api_get(api_url, params):
     """Make a MediaWiki API GET request."""
     params["format"] = "json"
-    url = f"{API}?{urllib.parse.urlencode(params)}"
+    url = f"{api_url}?{urllib.parse.urlencode(params)}"
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     with urllib.request.urlopen(req, timeout=30) as resp:
         return json.loads(resp.read())
 
 
-def fetch_category_members(category, cmtype="page", limit=500):
+def fetch_category_members(api_url, category, cmtype="page", limit=500):
     """Fetch page titles from a category (with continuation)."""
     titles = []
     params = {
@@ -73,7 +78,7 @@ def fetch_category_members(category, cmtype="page", limit=500):
         "cmlimit": "500",
     }
     while True:
-        data = _api_get(params)
+        data = _api_get(api_url, params)
         for m in data.get("query", {}).get("categorymembers", []):
             titles.append(m["title"])
             if len(titles) >= limit:
@@ -85,25 +90,46 @@ def fetch_category_members(category, cmtype="page", limit=500):
     return titles
 
 
-def fetch_subcategory_pages(parent_category, limit):
+def fetch_subcategory_pages(api_url, parent_category, limit):
     """Fetch pages from subcategories of a parent category."""
-    subcats = fetch_category_members(parent_category, cmtype="subcat", limit=50)
+    subcats = fetch_category_members(
+        api_url, parent_category, cmtype="subcat", limit=50
+    )
     pages = []
     for subcat in subcats:
         if len(pages) >= limit:
             break
-        members = fetch_category_members(subcat, cmtype="page", limit=limit - len(pages))
+        members = fetch_category_members(
+            api_url, subcat, cmtype="page", limit=limit - len(pages)
+        )
         pages.extend(members)
-        time.sleep(0.1)  # be nice to the API
+        time.sleep(0.1)
     return pages[:limit]
 
 
-def fetch_extract(title):
-    """Fetch a full plain-text extract for a single title.
+def fetch_langlinks(api_url, title, target_langs):
+    """Fetch interlanguage links for a title.
 
-    Full articles can be very large; batching causes the API to
-    silently drop results that exceed its response size limit.
+    Returns dict {lang_code: title_in_that_language}.
     """
+    params = {
+        "action": "query",
+        "prop": "langlinks",
+        "titles": title,
+        "lllimit": "500",
+    }
+    result = {}
+    data = _api_get(api_url, params)
+    for page in data.get("query", {}).get("pages", {}).values():
+        for ll in page.get("langlinks", []):
+            lang = ll.get("lang", "")
+            if lang in target_langs:
+                result[lang] = ll["*"]
+    return result
+
+
+def fetch_extract(api_url, title):
+    """Fetch a full plain-text extract for a single title."""
     params = {
         "action": "query",
         "prop": "extracts|info",
@@ -112,7 +138,7 @@ def fetch_extract(title):
         "inprop": "url",
         "titles": title,
     }
-    data = _api_get(params)
+    data = _api_get(api_url, params)
     for page in data.get("query", {}).get("pages", {}).values():
         if page.get("missing") or not page.get("extract"):
             return None
@@ -136,69 +162,131 @@ def split_extract(extract):
 def main():
     out_path = Path(__file__).parent / "seed_data.json.gz"
 
-    print("Fetching geography articles from Wikipedia...")
-    print(f"Target: ~{TARGET_TOTAL} articles\n")
+    print("Fetching multilingual geography articles from Wikipedia...")
+    print(f"Languages: {', '.join(LANGUAGES)}")
+    print(f"Target: ~{TARGET_TOTAL} English articles + translations\n")
 
-    # Collect page titles by category
+    en_api = WIKI_APIS["en"]
+
+    # Step 1: Collect English page titles by category
     all_pages = {}  # title -> label
     for label, category, max_pages in CATEGORIES:
         if len(all_pages) >= TARGET_TOTAL:
             break
         print(f"  [{label}] {category} ...", end=" ", flush=True)
         if max_pages == 0:
-            titles = fetch_subcategory_pages(category, SUBCAT_PAGE_LIMIT)
+            titles = fetch_subcategory_pages(en_api, category, SUBCAT_PAGE_LIMIT)
         else:
-            titles = fetch_category_members(category, limit=max_pages)
+            titles = fetch_category_members(en_api, category, limit=max_pages)
         new = 0
         for t in titles:
             if t not in all_pages and not t.startswith("Category:"):
                 lower = t.lower()
                 if any(
                     skip in lower
-                    for skip in ("list of", "index of", "outline of", "disambiguation")
+                    for skip in (
+                        "list of", "index of", "outline of", "disambiguation",
+                    )
                 ):
                     continue
                 all_pages[t] = label
                 new += 1
                 if len(all_pages) >= TARGET_TOTAL:
                     break
-        print(f"{new} new pages (total: {len(all_pages)})")
+        print(f"{new} new (total: {len(all_pages)})")
         time.sleep(0.2)
 
-    print(f"\nFetching full extracts for {len(all_pages)} pages (one at a time)...")
+    # Step 2: For each English article, find langlinks + fetch extracts
+    print(f"\nFetching extracts + translations for {len(all_pages)} articles...")
+    target_langs = set(LANGUAGES) - {"en"}
 
-    titles_list = list(all_pages.keys())
-    articles = []
-    for i, title in enumerate(titles_list):
-        info = fetch_extract(title)
-        if info is None:
+    # translation_groups: list of dicts with articles keyed by language
+    translation_groups = []
+    articles_by_lang = {lang: [] for lang in LANGUAGES}
+    group_id = 0
+
+    for i, (en_title, label) in enumerate(all_pages.items()):
+        # Fetch English extract
+        en_info = fetch_extract(en_api, en_title)
+        if en_info is None or len(en_info["extract"]) < 100:
             continue
-        extract = info["extract"]
-        if len(extract) < 100:
-            continue  # skip stubs
-        description, body = split_extract(extract)
-        articles.append(
-            {
-                "title": info["title"],
-                "description": description,
-                "body": body,
-                "category": all_pages[title],
-                "url": info["url"],
-            }
-        )
-        if (i + 1) % 50 == 0:
-            print(f"  {len(articles)} articles fetched ({i + 1}/{len(titles_list)})...")
+
+        en_desc, en_body = split_extract(en_info["extract"])
+        group = {
+            "group_id": group_id,
+            "category": label,
+            "articles": {
+                "en": {
+                    "title": en_info["title"],
+                    "description": en_desc,
+                    "body": en_body,
+                    "url": en_info["url"],
+                },
+            },
+        }
+
+        # Fetch langlinks for de and zh
+        try:
+            langlinks = fetch_langlinks(en_api, en_title, target_langs)
+        except Exception:
+            langlinks = {}
+
+        for lang, foreign_title in langlinks.items():
+            try:
+                foreign_api = WIKI_APIS[lang]
+                info = fetch_extract(foreign_api, foreign_title)
+                if info and len(info["extract"]) >= 80:
+                    desc, body = split_extract(info["extract"])
+                    group["articles"][lang] = {
+                        "title": info["title"],
+                        "description": desc,
+                        "body": body,
+                        "url": info["url"],
+                    }
+            except Exception:
+                pass
+            time.sleep(0.05)
+
+        translation_groups.append(group)
+        for lang, art in group["articles"].items():
+            articles_by_lang[lang].append(art["title"])
+        group_id += 1
+
+        if (i + 1) % 25 == 0:
+            counts = {l: len(a) for l, a in articles_by_lang.items()}
+            print(f"  {i + 1}/{len(all_pages)} processed — {counts}")
         time.sleep(0.1)
 
-    print(f"\nTotal articles with sufficient content: {len(articles)}")
+    # Flatten to articles list with language + group_id
+    articles = []
+    for group in translation_groups:
+        for lang, art in group["articles"].items():
+            articles.append(
+                {
+                    "title": art["title"],
+                    "description": art["description"],
+                    "body": art["body"],
+                    "url": art["url"],
+                    "language": lang,
+                    "category": group["category"],
+                    "group_id": group["group_id"],
+                }
+            )
+
+    counts = {l: len(a) for l, a in articles_by_lang.items()}
+    print(f"\nArticles by language: {counts}")
+    print(f"Translation groups: {len(translation_groups)}")
+    print(f"Total articles: {len(articles)}")
 
     # Build output
     output = {
-        "source": "Wikipedia (en.wikipedia.org)",
+        "source": "Wikipedia (en/de/zh.wikipedia.org)",
         "license": "CC BY-SA 4.0",
         "license_url": "https://creativecommons.org/licenses/by-sa/4.0/",
         "fetched": date.today().isoformat(),
+        "languages": LANGUAGES,
         "article_count": len(articles),
+        "translation_groups": len(translation_groups),
         "articles": articles,
     }
 

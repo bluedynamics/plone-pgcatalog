@@ -1,11 +1,15 @@
-"""Import seed content from Wikipedia articles into a Plone site.
+"""Import seed content from Wikipedia articles into a multilingual Plone site.
 
 Run via zconsole::
 
     .venv/bin/zconsole run instance/etc/zope.conf example/seed_content.py
 
-Creates Documents in ``/plone/library/`` from ``example/seed_data.json.gz``.
-Requires an existing Plone site with the ``plone.pgcatalog`` profile installed.
+Creates Documents in language folders (``/plone/en/library/``,
+``/plone/de/library/``, ``/plone/zh/library/``) from
+``example/seed_data.json.gz``.
+
+Requires an existing multilingual Plone site with ``plone.pgcatalog`` and
+``plone.app.multilingual`` profiles installed (see ``create_site.py``).
 
 Content is CC BY-SA 4.0 licensed (Wikipedia).
 """
@@ -14,6 +18,7 @@ import gzip
 import json
 import sys
 import time
+from collections import defaultdict
 from pathlib import Path
 
 import transaction
@@ -28,9 +33,15 @@ from zope.component.hooks import setSite
 
 DATA_FILE = Path(__file__).parent / "seed_data.json.gz"
 SITE_ID = "Plone"
+LANGUAGES = ["en", "de", "zh"]
+DEFAULT_LANGUAGE = "en"
 FOLDER_ID = "library"
-FOLDER_TITLE = "Geography Library"
-BATCH_SIZE = 50  # commit every N documents
+FOLDER_TITLES = {
+    "en": "Geography Library",
+    "de": "Geographie-Bibliothek",
+    "zh": "\u5730\u7406\u56fe\u4e66\u9986",
+}
+BATCH_SIZE = 50
 
 # ── Helpers ──────────────────────────────────────────────────────────
 
@@ -45,13 +56,11 @@ def _text_to_html(text):
         p = p.strip()
         if not p:
             continue
-        # Detect section headers (lines ending with no period, short)
         lines = p.split("\n")
         for line in lines:
             line = line.strip()
             if not line:
                 continue
-            # Heuristic: standalone short line without punctuation = heading
             if (
                 len(line) < 80
                 and not line.endswith(".")
@@ -74,10 +83,8 @@ def _make_id(title, normalizer):
 
 
 def main(app):
-    # Find Plone site
     if SITE_ID not in app.objectIds():
         print(f"Error: Plone site '{SITE_ID}' not found.", file=sys.stderr)
-        print(f"Available: {list(app.objectIds())}", file=sys.stderr)
         sys.exit(1)
 
     site = app[SITE_ID]
@@ -87,7 +94,6 @@ def main(app):
     acl = site.acl_users
     admin = acl.getUserById("admin")
     if admin is None:
-        # Try root acl_users
         admin = app.acl_users.getUserById("admin")
     if admin is None:
         print("Error: 'admin' user not found.", file=sys.stderr)
@@ -106,80 +112,125 @@ def main(app):
     articles = data["articles"]
     print(f"Loaded {len(articles)} articles from {DATA_FILE.name}")
     print(f"Source: {data['source']} ({data['license']})")
-
-    # Create or reuse library folder
-    if FOLDER_ID not in site.objectIds():
-        folder = api.content.create(
-            container=site,
-            type="Folder",
-            id=FOLDER_ID,
-            title=FOLDER_TITLE,
-            description=f"Wikipedia geography articles ({data['license']}). "
-            f"Source: {data['source']}.",
-        )
-        api.content.transition(obj=folder, transition="publish")
-        transaction.commit()
-        print(f"Created /{SITE_ID}/{FOLDER_ID}/")
-    else:
-        folder = site[FOLDER_ID]
-        print(f"Using existing /{SITE_ID}/{FOLDER_ID}/")
+    print(f"Languages: {data.get('languages', ['en'])}")
 
     normalizer = getUtility(IURLNormalizer)
-    existing_ids = set(folder.objectIds())
+
+    # Group articles by translation_group
+    groups = defaultdict(dict)
+    for article in articles:
+        gid = article.get("group_id", id(article))
+        lang = article.get("language", "en")
+        groups[gid][lang] = article
+
+    # Ensure library folders exist in each language root
+    lang_folders = {}
+    for lang in LANGUAGES:
+        lang_root = site.get(lang)
+        if lang_root is None:
+            lang_root = site
+        if FOLDER_ID not in lang_root.objectIds():
+            title = FOLDER_TITLES.get(lang, "Library")
+            folder = api.content.create(
+                container=lang_root,
+                type="Folder",
+                id=FOLDER_ID,
+                title=title,
+                language=lang,
+            )
+            api.content.transition(obj=folder, transition="publish")
+            transaction.commit()
+            print(f"Created /{SITE_ID}/{lang}/{FOLDER_ID}/")
+        lang_folders[lang] = lang_root[FOLDER_ID]
+
     created = 0
     skipped = 0
+    linked = 0
     t0 = time.time()
 
-    for i, article in enumerate(articles):
-        doc_id = _make_id(article["title"], normalizer)
-        if doc_id in existing_ids:
-            skipped += 1
-            continue
+    for gid, lang_articles in groups.items():
+        created_docs = {}
 
-        body_html = _text_to_html(article["body"])
-        # Prepend source attribution
-        attribution = (
-            f'<p><em>Source: <a href="{article["url"]}">'
-            f"Wikipedia: {article['title']}</a> "
-            f"({data['license']})</em></p>"
-        )
-        full_html = attribution + "\n" + body_html
+        for lang, article in lang_articles.items():
+            folder = lang_folders.get(lang)
+            if folder is None:
+                continue
 
-        try:
-            doc = api.content.create(
-                container=folder,
-                type="Document",
-                id=doc_id,
-                title=article["title"],
-                description=article["description"][:500] if article["description"] else "",
-                subject=(article.get("category", "Geography"),),
+            doc_id = _make_id(article["title"], normalizer)
+            if doc_id in set(folder.objectIds()):
+                skipped += 1
+                continue
+
+            body_html = _text_to_html(article["body"])
+            attribution = (
+                f'<p><em>Source: <a href="{article["url"]}">'
+                f"Wikipedia: {article['title']}</a> "
+                f"({data['license']})</em></p>"
             )
-            doc.text = RichTextValue(
-                full_html, "text/html", "text/x-html-safe"
-            )
-            api.content.transition(obj=doc, transition="publish")
-            created += 1
-            existing_ids.add(doc_id)
-        except Exception as e:
-            print(f"  Error creating '{article['title']}': {e}", file=sys.stderr)
-            transaction.abort()
-            continue
+            full_html = attribution + "\n" + body_html
 
-        if created % BATCH_SIZE == 0:
+            try:
+                doc = api.content.create(
+                    container=folder,
+                    type="Document",
+                    id=doc_id,
+                    title=article["title"],
+                    description=article["description"][:500]
+                    if article["description"]
+                    else "",
+                    subject=(article.get("category", "Geography"),),
+                    language=lang,
+                )
+                doc.text = RichTextValue(
+                    full_html, "text/html", "text/x-html-safe"
+                )
+                api.content.transition(obj=doc, transition="publish")
+                created += 1
+                created_docs[lang] = doc
+            except Exception as e:
+                print(
+                    f"  Error creating '{article['title']}' ({lang}): {e}",
+                    file=sys.stderr,
+                )
+                transaction.abort()
+                continue
+
+        # Link translations
+        if len(created_docs) > 1:
+            try:
+                from plone.app.multilingual.interfaces import (
+                    ITranslationManager,
+                )
+
+                canonical_lang = (
+                    DEFAULT_LANGUAGE
+                    if DEFAULT_LANGUAGE in created_docs
+                    else next(iter(created_docs))
+                )
+                canonical = created_docs[canonical_lang]
+                manager = ITranslationManager(canonical)
+                for lang, doc in created_docs.items():
+                    if lang != canonical_lang:
+                        manager.register_translation(lang, doc)
+                        linked += 1
+            except Exception as e:
+                print(f"  Translation link error: {e}", file=sys.stderr)
+
+        if created % BATCH_SIZE == 0 and created > 0:
             transaction.commit()
             elapsed = time.time() - t0
             rate = created / elapsed if elapsed > 0 else 0
-            print(f"  {created} created ({rate:.0f}/s) ...")
+            print(f"  {created} created, {linked} linked ({rate:.0f}/s) ...")
 
-    # Final commit
     transaction.commit()
     elapsed = time.time() - t0
     print(
-        f"\nDone: {created} documents created, {skipped} skipped "
-        f"(already existed) in {elapsed:.1f}s"
+        f"\nDone: {created} documents, {linked} translation links, "
+        f"{skipped} skipped in {elapsed:.1f}s"
     )
     if created > 0:
-        print(f"Browse: http://localhost:8081/{SITE_ID}/{FOLDER_ID}")
+        for lang in LANGUAGES:
+            print(f"  Browse: http://localhost:8081/{SITE_ID}/{lang}/{FOLDER_ID}")
 
 
 # zconsole provides `app` in the global namespace

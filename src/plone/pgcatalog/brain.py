@@ -79,8 +79,17 @@ class PGCatalogBrain:
         except (KeyError, AttributeError):
             return None
 
+    @property
     def getId(self):
-        """Return the object ID (last path segment)."""
+        """Return the object ID (last path segment).
+
+        Property (not method) for compat with standard ZCatalog brains
+        where ``brain.getId`` returns the string value from metadata,
+        not a bound method.
+        """
+        idx = self._row.get("idx")
+        if idx and "getId" in idx:
+            return idx["getId"]
         path = self._row.get("path", "")
         return path.rsplit("/", 1)[-1] if path else ""
 
@@ -91,7 +100,7 @@ class PGCatalogBrain:
             title = idx.get("Title")
             if title:
                 return title
-        return self.getId()
+        return self.getId
 
     def getRID(self):
         """Return the record ID (zoid) for this object."""
@@ -129,19 +138,26 @@ class PGCatalogBrain:
         # Fast path: idx already in row (eager mode or already batch-loaded)
         idx = row.get("idx")
         if idx is not None:
-            if name in idx:
-                return idx[name]
-            raise AttributeError(name)
+            # Return value if present, None for missing keys.
+            # Unlike ZCatalog (which raises AttributeError for non-schema
+            # names), we return None for any missing key because idx
+            # stores all catalog data and brains are only used in catalog
+            # contexts.  This matches ZCatalog's MV (Missing Value)
+            # behavior for known metadata and avoids AttributeError for
+            # fields like Language that are indexes but not metadata.
+            return idx.get(name)
 
         # Lazy path: trigger batch load via result set
         result_set = object.__getattribute__(self, "_result_set")
         if result_set is not None:
             result_set._load_idx_batch()
             idx = row.get("idx")
-            if idx is not None and name in idx:
-                return idx[name]
+            if idx is not None:
+                return idx.get(name)
 
-        raise AttributeError(name)
+        # idx is None (object has no catalog data) — return None
+        # for any attribute access (brain with no catalog info)
+        return None
 
     def __repr__(self):
         return f"<PGCatalogBrain zoid={self._row.get('zoid')} path={self._row.get('path')!r}>"

@@ -283,6 +283,7 @@ _LANG_TO_REGCONFIG = {
     "da": "danish",
     "nl": "dutch",
     "en": "english",
+    "et": "estonian",
     "fi": "finnish",
     "fr": "french",
     "de": "german",
