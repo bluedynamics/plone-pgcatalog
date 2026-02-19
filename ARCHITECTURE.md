@@ -117,7 +117,7 @@ class IPGIndexTranslator(Interface):
 ### Wiring
 
 - `catalog.py`: `_extract_from_translators()` calls `extract()` for all registered translators during indexing
-- `query.py`: `_process_index()` falls back to `_lookup_translator()` when index not in registry
+- `query.py`: `_process_index()` falls back to `_lookup_translator()` then to JSONB field query when index not in registry
 - `query.py`: `_process_sort()` falls back to translator's `sort()` for ORDER BY
 
 ### Example
@@ -259,6 +259,8 @@ _HANDLERS = {
     IndexType.GOPIP: "_handle_field",
 }
 ```
+
+**Unregistered indexes** (e.g. `Language`, `TranslationGroup` from plone.app.multilingual) are not skipped — they fall back to a simple JSONB field query (`idx @> '{"Language": "en"}'::jsonb`). This allows catalog queries from third-party add-ons to work without explicit registry entries.
 
 ### SQL Patterns
 

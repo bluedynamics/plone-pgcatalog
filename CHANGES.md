@@ -51,8 +51,23 @@
 - `CatalogSearchResults` now implements `IFiniteSequence`, enabling
   `IContentListing` adaptation in Plone's search view.
 
-- `PGCatalogBrain` now provides `getId()` and `pretty_title_or_id()`
-  methods for compatibility with Plone's Classic UI search template.
+- `PGCatalogBrain` now provides `getId` (property) and `pretty_title_or_id()`
+  for compatibility with Plone's Classic UI navigation and search templates.
+  `getId` is a property (not a method) so `brain.getId` returns a string,
+  matching standard ZCatalog brain behavior.
+
+- `PGCatalogBrain.__getattr__` returns `None` for missing idx keys instead
+  of raising `AttributeError`, matching ZCatalog's Missing Value behavior.
+  Fixes PAM's `get_alternate_languages()` viewlet crash on `brain.Language`.
+
+- Unknown catalog indexes (e.g. `Language`, `TranslationGroup` from
+  plone.app.multilingual) now fall back to JSONB field queries instead of
+  being silently skipped. This enables PAM's translation registration and
+  lookup queries to work correctly.
+
+- CJK tokenizer TOML format fixed: jieba (Chinese) and lindera
+  (Japanese/Korean) now use the correct table syntax for pg_tokenizer's
+  `pre_tokenizer` configuration.
 
 ## 1.0.0b6 (unreleased)
 
