@@ -25,15 +25,28 @@ class TestInstall:
 
 
 class TestEnsureCatalogIndexes:
-    def test_skips_if_catalog_has_indexes(self):
+    def test_skips_if_catalog_has_essential_indexes(self):
+        """Skips re-apply when essential Plone indexes (UID, portal_type) exist."""
         site = mock.Mock()
-        site.portal_catalog.indexes.return_value = ["UID", "Title"]
+        site.portal_catalog.indexes.return_value = ["UID", "portal_type", "Title"]
         _ensure_catalog_indexes(site)
         # Should not try to run import steps
         assert (
             not hasattr(site, "portal_setup")
             or not site.portal_setup.runImportStepFromProfile.called
         )
+
+    def test_reapplies_if_only_addon_indexes(self):
+        """Re-applies Plone defaults when essential indexes are missing."""
+        site = mock.Mock()
+        # Addon indexes only — no UID, no portal_type
+        site.portal_catalog.indexes.return_value = ["my_custom_index", "another_index"]
+        _ensure_catalog_indexes(site)
+        # Should have called runImportStepFromProfile for Plone profiles
+        calls = site.portal_setup.runImportStepFromProfile.call_args_list
+        assert len(calls) >= 1
+        profile_ids = [c[0][0] for c in calls]
+        assert "profile-Products.CMFPlone:plone" in profile_ids
 
     def test_skips_without_catalog(self):
         site = mock.Mock(spec=[])

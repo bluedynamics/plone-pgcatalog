@@ -513,6 +513,13 @@ def _detect_languages_from_db(db):
                         )
                         return langs
         finally:
+            # Abort the implicit transaction before closing — traversal
+            # may have joined the connection to a transaction, and ZODB
+            # refuses to close joined connections.
+            try:
+                transaction.abort()
+            except Exception:
+                pass
             conn.close()
     except Exception:
         log.debug("Could not auto-detect BM25 languages from ZODB", exc_info=True)
@@ -665,4 +672,11 @@ def _sync_registry_from_db(db):
     except Exception:
         log.debug("Could not sync IndexRegistry from ZODB", exc_info=True)
     finally:
+        # Abort the implicit transaction before closing — traversal
+        # may have joined the connection to a transaction, and ZODB
+        # refuses to close joined connections.
+        try:
+            transaction.abort()
+        except Exception:
+            pass
         conn.close()

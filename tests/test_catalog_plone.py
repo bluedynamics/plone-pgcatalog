@@ -6,6 +6,7 @@ from plone.pgcatalog.catalog import PlonePGCatalogTool
 from plone.pgcatalog.columns import get_registry
 from plone.pgcatalog.columns import IndexType
 from plone.pgcatalog.interfaces import IPGCatalogTool
+from Products.CMFPlone.CatalogTool import CatalogTool
 from unittest import mock
 
 
@@ -675,33 +676,44 @@ class TestSearchResults:
 
 
 class TestMaintenanceMethods:
-    def test_refreshCatalog(self):
+    def test_refreshCatalog_no_clear(self):
+        """refreshCatalog(clear=0) queries PG for cataloged paths and re-catalogs."""
         tool = PlonePGCatalogTool.__new__(PlonePGCatalogTool)
         mock_conn = mock.Mock()
+        # Simulate PG returning two rows
+        mock_cursor = mock.Mock()
+        mock_cursor.fetchall.return_value = [
+            {"path": "/plone/doc1"},
+            {"path": "/plone/doc2"},
+        ]
+        mock_conn.cursor.return_value.__enter__ = mock.Mock(return_value=mock_cursor)
+        mock_conn.cursor.return_value.__exit__ = mock.Mock(return_value=False)
         with (
             mock.patch.object(
-                PlonePGCatalogTool, "_pg_connection", _mock_pg_connection(mock_conn)
+                PlonePGCatalogTool, "_get_pg_read_connection", return_value=mock_conn
             ),
-            mock.patch(
-                "plone.pgcatalog.catalog.refresh_catalog", return_value=5
-            ) as refresh_mock,
+            mock.patch.object(
+                PlonePGCatalogTool, "unrestrictedTraverse", return_value=mock.Mock()
+            ),
+            mock.patch.object(PlonePGCatalogTool, "catalog_object") as cat_mock,
         ):
             result = tool.refreshCatalog()
-            assert result == 5
-            refresh_mock.assert_called_once_with(mock_conn)
+            assert result == 2
+            assert cat_mock.call_count == 2
 
     def test_refreshCatalog_with_clear(self):
+        """refreshCatalog(clear=1) delegates to clearFindAndRebuild."""
         tool = PlonePGCatalogTool.__new__(PlonePGCatalogTool)
-        mock_conn = mock.Mock()
-        with (
-            mock.patch.object(
-                PlonePGCatalogTool, "_pg_connection", _mock_pg_connection(mock_conn)
-            ),
-            mock.patch("plone.pgcatalog.catalog.clear_catalog_data") as clear_mock,
-            mock.patch("plone.pgcatalog.catalog.refresh_catalog", return_value=0),
-        ):
+        with mock.patch.object(PlonePGCatalogTool, "clearFindAndRebuild") as cfr_mock:
             tool.refreshCatalog(clear=1)
-            clear_mock.assert_called_once_with(mock_conn)
+            cfr_mock.assert_called_once()
+
+    def test_refreshCatalog_accepts_pghandler(self):
+        """refreshCatalog accepts pghandler for ZCatalog API compat."""
+        tool = PlonePGCatalogTool.__new__(PlonePGCatalogTool)
+        with mock.patch.object(PlonePGCatalogTool, "clearFindAndRebuild"):
+            # Should not raise TypeError
+            tool.refreshCatalog(clear=1, pghandler=mock.Mock())
 
     def test_reindexIndex(self):
         tool = PlonePGCatalogTool.__new__(PlonePGCatalogTool)
@@ -718,7 +730,35 @@ class TestMaintenanceMethods:
             assert result == 3
             reindex_mock.assert_called_once_with(mock_conn, "portal_type")
 
+    def test_reindexIndex_accepts_pghandler(self):
+        """reindexIndex accepts pghandler kwarg (ZCatalog compat)."""
+        tool = PlonePGCatalogTool.__new__(PlonePGCatalogTool)
+        mock_conn = mock.Mock()
+        with (
+            mock.patch.object(
+                PlonePGCatalogTool, "_pg_connection", _mock_pg_connection(mock_conn)
+            ),
+            mock.patch("plone.pgcatalog.catalog.reindex_index", return_value=0),
+        ):
+            # Should not raise TypeError
+            tool.reindexIndex("portal_type", None, pghandler=mock.Mock())
+
+    def test_reindexIndex_three_positional_args(self):
+        """reindexIndex accepts 3 positional args (manage_reindexIndex compat)."""
+        tool = PlonePGCatalogTool.__new__(PlonePGCatalogTool)
+        mock_conn = mock.Mock()
+        handler = mock.Mock()
+        with (
+            mock.patch.object(
+                PlonePGCatalogTool, "_pg_connection", _mock_pg_connection(mock_conn)
+            ),
+            mock.patch("plone.pgcatalog.catalog.reindex_index", return_value=0),
+        ):
+            # Should not raise TypeError — ZMI calls with 3 positional args
+            tool.reindexIndex("portal_type", None, handler)
+
     def test_clearFindAndRebuild(self):
+        """clearFindAndRebuild clears PG data then delegates to parent."""
         tool = PlonePGCatalogTool.__new__(PlonePGCatalogTool)
         mock_conn = mock.Mock()
         with (
@@ -728,10 +768,11 @@ class TestMaintenanceMethods:
             mock.patch(
                 "plone.pgcatalog.catalog.clear_catalog_data", return_value=10
             ) as clear_mock,
+            mock.patch.object(CatalogTool, "clearFindAndRebuild") as super_mock,
         ):
-            result = tool.clearFindAndRebuild()
-            assert result == 10
+            tool.clearFindAndRebuild()
             clear_mock.assert_called_once_with(mock_conn)
+            super_mock.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

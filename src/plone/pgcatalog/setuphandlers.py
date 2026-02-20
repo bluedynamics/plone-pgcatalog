@@ -39,10 +39,14 @@ def _ensure_catalog_indexes(site):
     if catalog is None:
         return
 
-    # Only re-apply if catalog is fresh (no indexes configured yet)
+    # Only re-apply if essential Plone indexes are missing.
+    # Check for core indexes rather than "any indexes exist" — an addon
+    # may have added custom indexes before our step runs, but the Plone
+    # defaults (UID, portal_type, etc.) still need to be applied.
     try:
-        if list(catalog.indexes()):
-            log.debug("Catalog already has indexes, skipping re-apply")
+        existing = set(catalog.indexes())
+        if "UID" in existing and "portal_type" in existing:
+            log.debug("Catalog has essential indexes, skipping re-apply")
             return
     except Exception:
         pass
