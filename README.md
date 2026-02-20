@@ -63,11 +63,30 @@ results = catalog(start={
 })
 ```
 
+## Using with plone.distribution
+
+An example distribution package is included in `example/pgcatalog-example-distribution/`.
+It registers a **"Plone Site (PG Catalog)"** distribution that appears in the site creation UI
+and automatically applies the `plone.pgcatalog:default` profile.
+
+To use plone.pgcatalog in your own distribution, add it to `profiles.json`:
+
+```json
+{
+  "base": [
+    "plone.app.contenttypes:default",
+    "plonetheme.barceloneta:default",
+    "plone.pgcatalog:default"
+  ]
+}
+```
+
 ## Documentation
 
 - [ARCHITECTURE.md](ARCHITECTURE.md) -- internal design, index registry, query translation, custom index types
 - [BENCHMARKS.md](BENCHMARKS.md) -- performance comparison vs RelStorage+ZCatalog
 - [CHANGES.md](CHANGES.md) -- changelog
+- [example/](example/) -- runnable example with multilingual content and an example distribution
 
 ## Source Code and Contributions
 

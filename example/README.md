@@ -221,6 +221,34 @@ WHERE idx->'allowedRolesAndUsers' ?| ARRAY['Anonymous']
 ORDER BY path;
 ```
 
+## Example Distribution
+
+The `pgcatalog-example-distribution/` directory contains a minimal
+[plone.distribution](https://github.com/plone/plone.distribution) package
+that registers a **"Plone Site (PG Catalog)"** distribution.
+
+It is included in `requirements.txt` and auto-discovered by Plone at startup.
+
+You can create a site via the REST API:
+
+```bash
+curl -u admin:admin -X POST http://localhost:8081/@sites \
+  -H "Accept: application/json" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "distribution": "pgcatalog_demo",
+    "site_id": "demo",
+    "title": "PG Catalog Demo",
+    "default_language": "en",
+    "portal_timezone": "Europe/Berlin",
+    "setup_content": true
+  }'
+```
+
+Use this as a template for your own addon/distribution that depends on
+plone.pgcatalog -- the key is adding `plone.pgcatalog:default` to
+`profiles.json`.
+
 ## Cleanup
 
 ```bash
