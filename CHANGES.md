@@ -1,5 +1,31 @@
 # Changelog
 
+## 1.0.0b8
+
+### Changed
+
+- **Module split**: `config.py` has been split into four focused modules:
+  `pending.py` (thread-local pending store + savepoint support),
+  `pool.py` (connection pool discovery + request-scoped connections),
+  `processor.py` (`CatalogStateProcessor`),
+  `startup.py` (`IDatabaseOpenedWithRoot` subscriber + registry sync).
+  `config.py` is now a deprecation stub.
+
+- **Shared `ensure_date_param()`**: Deduplicated date coercion utility from
+  `query.py` and `dri.py` into `columns.ensure_date_param()`.
+
+- **`__all__` exports**: Added explicit `__all__` to `pending.py`, `pool.py`,
+  `processor.py`, `startup.py`, `columns.py`, `backends.py`, `interfaces.py`.
+
+- **Top-level imports**: Removed unnecessary deferred imports across
+  `catalog.py`, `processor.py`, `startup.py`.
+
+### Added
+
+- `verifyClass`/`verifyObject` tests for `IPGIndexTranslator` implementations.
+
+- Shared `query_zoids()` test helper in `conftest.py`.
+
 ## 1.0.0b7
 
 ### Fixed
@@ -170,7 +196,7 @@
   within the same request.
 
   New internal API:
-  - `config.get_storage_connection(context)` — retrieves the PG connection
+  - `pool.get_storage_connection(context)` — retrieves the PG connection
     from `context._p_jar._storage.pg_connection`.
   - `PlonePGCatalogTool._get_pg_read_connection()` — prefers storage
     connection, falls back to pool for non-ZODB contexts (tests, scripts).

@@ -5,8 +5,8 @@ navtree, breadcrumbs, navtree_start, multiple paths.
 """
 
 from plone.pgcatalog.indexing import catalog_object
-from plone.pgcatalog.query import _execute_query as execute_query
 from tests.conftest import insert_object
+from tests.conftest import query_zoids as _query_zoids
 
 
 # ---------------------------------------------------------------------------
@@ -39,11 +39,6 @@ def _setup_tree(conn):
         insert_object(conn, zoid=zoid)
         catalog_object(conn, zoid=zoid, path=path, idx={"Title": title})
     conn.commit()
-
-
-def _query_zoids(conn, query_dict):
-    rows = execute_query(conn, query_dict, columns="zoid")
-    return sorted(row["zoid"] for row in rows)
 
 
 # ---------------------------------------------------------------------------

@@ -6,11 +6,7 @@ Tests multilingual text search, ranking, and edge cases.
 from plone.pgcatalog.indexing import catalog_object
 from plone.pgcatalog.query import _execute_query as execute_query
 from tests.conftest import insert_object
-
-
-def _query_zoids(conn, query_dict):
-    rows = execute_query(conn, query_dict, columns="zoid")
-    return sorted(row["zoid"] for row in rows)
+from tests.conftest import query_zoids as _query_zoids
 
 
 # ---------------------------------------------------------------------------

@@ -14,6 +14,7 @@ Query strategy:
 """
 
 from plone.pgcatalog.columns import convert_value
+from plone.pgcatalog.columns import ensure_date_param as _ensure_date_param
 from plone.pgcatalog.interfaces import IPGIndexTranslator
 from zope.interface import implementer
 
@@ -34,23 +35,6 @@ def _safe_getattr(obj, name):
         except Exception:
             return None
     return val
-
-
-def _ensure_date_param(value):
-    """Convert a date-like value to something psycopg can bind as timestamptz."""
-    from datetime import date
-    from datetime import datetime
-
-    if isinstance(value, datetime):
-        return value
-    if isinstance(value, date):
-        return datetime(value.year, value.month, value.day)
-    # Zope DateTime
-    if hasattr(value, "asdatetime"):
-        return value.asdatetime()
-    if hasattr(value, "ISO8601"):
-        return value.ISO8601()
-    return str(value)
 
 
 @implementer(IPGIndexTranslator)

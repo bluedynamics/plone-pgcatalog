@@ -18,6 +18,18 @@ import logging
 import re
 
 
+__all__ = [
+    "IndexRegistry",
+    "IndexType",
+    "compute_path_info",
+    "convert_value",
+    "ensure_date_param",
+    "get_registry",
+    "language_to_regconfig",
+    "validate_identifier",
+]
+
+
 log = logging.getLogger(__name__)
 
 # Safe SQL identifier pattern: letters, digits, underscores only.
@@ -267,6 +279,24 @@ def _is_zope_datetime(value):
 def _convert_zope_datetime(dt):
     """Convert a Zope DateTime to ISO 8601 string."""
     return dt.ISO8601()
+
+
+def ensure_date_param(value):
+    """Convert a date-like value to something psycopg can bind as timestamptz.
+
+    Handles Python datetime, date, Zope DateTime (duck-typed via
+    asdatetime/ISO8601), and falls back to str().
+    """
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, date):
+        return datetime(value.year, value.month, value.day)
+    # Zope DateTime (duck-typed)
+    if hasattr(value, "asdatetime"):
+        return value.asdatetime()
+    if hasattr(value, "ISO8601"):
+        return value.ISO8601()
+    return str(value)
 
 
 # --------------------------------------------------------------------------

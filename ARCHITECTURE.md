@@ -22,9 +22,12 @@ All catalog data lives in these columns -- no BTree/Bucket objects are written t
 |---|---|
 | `catalog.py` | `PlonePGCatalogTool` -- Plone's `portal_catalog` replacement |
 | `query.py` | Query translation: ZCatalog dict -> SQL WHERE + ORDER BY |
-| `columns.py` | `IndexRegistry`, `IndexType` enum, `convert_value()` |
+| `columns.py` | `IndexRegistry`, `IndexType` enum, `convert_value()`, `ensure_date_param()` |
 | `indexing.py` | SQL write operations (`catalog_object`, `uncatalog_object`, `reindex_object`) |
-| `config.py` | `CatalogStateProcessor`, pool discovery, DRI translator registration |
+| `pending.py` | Thread-local pending store + `PendingDataManager` (savepoint support) |
+| `pool.py` | Connection pool discovery + request-scoped connection reuse |
+| `processor.py` | `CatalogStateProcessor` for zodb-pgjsonb integration |
+| `startup.py` | `IDatabaseOpenedWithRoot` subscriber, registry sync, DRI translator registration |
 | `schema.py` | DDL for catalog columns, functions, and indexes |
 | `brain.py` | `PGCatalogBrain` + lazy `CatalogSearchResults` |
 | `pgindex.py` | `PGIndex`, `PGCatalogIndexes` -- ZCatalog internal API wrappers |
@@ -226,7 +229,7 @@ class SearchBackend(abc.ABC):
     def detect(cls, dsn) -> bool: ...
 ```
 
-The active backend is a module-level singleton. `config.py` calls `detect_and_set_backend()` during startup; `query.py` delegates SearchableText WHERE/ranking to `get_backend().build_search_clause()`.
+The active backend is a module-level singleton. `startup.py` calls `detect_and_set_backend()` during startup; `query.py` delegates SearchableText WHERE/ranking to `get_backend().build_search_clause()`.
 
 ## Pending-Store Lookup
 

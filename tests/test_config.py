@@ -1,15 +1,16 @@
-"""Tests for plone.pgcatalog.config — pool discovery, DSN fallback, connection reuse."""
+"""Tests for plone.pgcatalog — pool discovery, pending store, processor, startup."""
 
-from plone.pgcatalog.config import _pool_from_storage
-from plone.pgcatalog.config import get_dsn
-from plone.pgcatalog.config import get_pool
-from plone.pgcatalog.config import get_request_connection
-from plone.pgcatalog.config import get_storage_connection
-from plone.pgcatalog.config import release_request_connection
+from plone.pgcatalog.pool import _pool_from_storage
+from plone.pgcatalog.pool import get_dsn
+from plone.pgcatalog.pool import get_pool
+from plone.pgcatalog.pool import get_request_connection
+from plone.pgcatalog.pool import get_storage_connection
+from plone.pgcatalog.pool import release_request_connection
 from unittest import mock
 
 import os
-import plone.pgcatalog.config as config_mod
+import plone.pgcatalog.pending as pending_mod
+import plone.pgcatalog.pool as pool_mod
 import pytest
 import transaction
 
@@ -48,12 +49,12 @@ class TestGetPool:
             mock.patch.dict(os.environ, {"PGCATALOG_DSN": "host=test dbname=test"}),
             mock.patch("psycopg_pool.ConnectionPool", return_value=mock_pool),
         ):
-            config_mod._fallback_pool = None
+            pool_mod._fallback_pool = None
             try:
                 pool = get_pool()
                 assert pool is mock_pool
             finally:
-                config_mod._fallback_pool = None
+                pool_mod._fallback_pool = None
 
     def test_storage_takes_priority_over_env(self):
         mock_pool = mock.Mock()
@@ -65,7 +66,7 @@ class TestGetPool:
     def test_raises_without_any_source(self):
         with mock.patch.dict(os.environ, {}, clear=True):
             os.environ.pop("PGCATALOG_DSN", None)
-            config_mod._fallback_pool = None
+            pool_mod._fallback_pool = None
             with pytest.raises(RuntimeError, match="Cannot find PG connection pool"):
                 get_pool()
 
@@ -73,7 +74,7 @@ class TestGetPool:
         site = mock.Mock(spec=[])  # no _p_jar
         with mock.patch.dict(os.environ, {}, clear=True):
             os.environ.pop("PGCATALOG_DSN", None)
-            config_mod._fallback_pool = None
+            pool_mod._fallback_pool = None
             with pytest.raises(RuntimeError, match="Cannot find PG connection pool"):
                 get_pool(site)
 
@@ -126,13 +127,13 @@ class TestRequestConnection:
 
     def setup_method(self):
         """Clean thread-local state before each test."""
-        config_mod._local.pgcat_conn = None
-        config_mod._local.pgcat_pool = None
+        pending_mod._local.pgcat_conn = None
+        pending_mod._local.pgcat_pool = None
 
     def teardown_method(self):
         """Clean thread-local state after each test."""
-        config_mod._local.pgcat_conn = None
-        config_mod._local.pgcat_pool = None
+        pending_mod._local.pgcat_conn = None
+        pending_mod._local.pgcat_pool = None
 
     def test_creates_conn_on_first_call(self):
         pool = mock.Mock()
@@ -175,8 +176,8 @@ class TestRequestConnection:
         get_request_connection(pool)
         release_request_connection()
 
-        assert getattr(config_mod._local, "pgcat_conn", None) is None
-        assert getattr(config_mod._local, "pgcat_pool", None) is None
+        assert getattr(pending_mod._local, "pgcat_conn", None) is None
+        assert getattr(pending_mod._local, "pgcat_pool", None) is None
 
     def test_release_is_noop_when_no_conn(self):
         # Should not raise
@@ -223,14 +224,14 @@ class TestRequestConnection:
         # Should not raise
         release_request_connection()
         # Thread-local still cleaned
-        assert getattr(config_mod._local, "pgcat_conn", None) is None
+        assert getattr(pending_mod._local, "pgcat_conn", None) is None
 
 
 def _clean_pending():
     """Clear thread-local pending state and abort current transaction."""
     for attr in ("pending", "partial_pending", "_pending_dm"):
         try:
-            delattr(config_mod._local, attr)
+            delattr(pending_mod._local, attr)
         except AttributeError:
             pass
     transaction.abort()
@@ -246,30 +247,30 @@ class TestPending:
         _clean_pending()
 
     def test_set_and_pop_pending(self):
-        from plone.pgcatalog.config import pop_pending
-        from plone.pgcatalog.config import set_pending
+        from plone.pgcatalog.pending import pop_pending
+        from plone.pgcatalog.pending import set_pending
 
         set_pending(42, {"path": "/plone/doc"})
         result = pop_pending(42)
         assert result == {"path": "/plone/doc"}
 
     def test_pop_missing_returns_sentinel(self):
-        from plone.pgcatalog.config import _MISSING
-        from plone.pgcatalog.config import pop_pending
+        from plone.pgcatalog.pending import _MISSING
+        from plone.pgcatalog.pending import pop_pending
 
         result = pop_pending(999)
         assert result is _MISSING
 
     def test_set_pending_uncatalog_sentinel(self):
-        from plone.pgcatalog.config import pop_pending
-        from plone.pgcatalog.config import set_pending
+        from plone.pgcatalog.pending import pop_pending
+        from plone.pgcatalog.pending import set_pending
 
         set_pending(42, None)
         result = pop_pending(42)
         assert result is None
 
     def test_get_pending_creates_dict_on_fresh_thread_local(self):
-        from plone.pgcatalog.config import _get_pending
+        from plone.pgcatalog.pending import _get_pending
 
         result = _get_pending()
         assert isinstance(result, dict)
@@ -285,16 +286,16 @@ class TestPendingSavepoint:
         _clean_pending()
 
     def test_set_pending_joins_transaction(self):
-        from plone.pgcatalog.config import PendingDataManager
-        from plone.pgcatalog.config import set_pending
+        from plone.pgcatalog.pending import PendingDataManager
+        from plone.pgcatalog.pending import set_pending
 
         txn = transaction.get()
         set_pending(1, {"path": "/doc1"})
         assert any(isinstance(r, PendingDataManager) for r in txn._resources)
 
     def test_set_pending_joins_only_once(self):
-        from plone.pgcatalog.config import PendingDataManager
-        from plone.pgcatalog.config import set_pending
+        from plone.pgcatalog.pending import PendingDataManager
+        from plone.pgcatalog.pending import set_pending
 
         txn = transaction.get()
         set_pending(1, {"path": "/doc1"})
@@ -303,16 +304,16 @@ class TestPendingSavepoint:
         assert dm_count == 1
 
     def test_abort_clears_pending(self):
-        from plone.pgcatalog.config import _get_pending
-        from plone.pgcatalog.config import set_pending
+        from plone.pgcatalog.pending import _get_pending
+        from plone.pgcatalog.pending import set_pending
 
         set_pending(1, {"path": "/doc1"})
         transaction.abort()
         assert _get_pending() == {}
 
     def test_savepoint_rollback_restores_state(self):
-        from plone.pgcatalog.config import _get_pending
-        from plone.pgcatalog.config import set_pending
+        from plone.pgcatalog.pending import _get_pending
+        from plone.pgcatalog.pending import set_pending
 
         set_pending(1, {"path": "/doc1"})
         sp = transaction.savepoint()
@@ -325,8 +326,8 @@ class TestPendingSavepoint:
         assert 2 not in pending
 
     def test_savepoint_rollback_to_empty(self):
-        from plone.pgcatalog.config import _get_pending
-        from plone.pgcatalog.config import set_pending
+        from plone.pgcatalog.pending import _get_pending
+        from plone.pgcatalog.pending import set_pending
 
         sp = transaction.savepoint()
         set_pending(1, {"path": "/doc1"})
@@ -335,8 +336,8 @@ class TestPendingSavepoint:
         assert _get_pending() == {}
 
     def test_multiple_savepoints(self):
-        from plone.pgcatalog.config import _get_pending
-        from plone.pgcatalog.config import set_pending
+        from plone.pgcatalog.pending import _get_pending
+        from plone.pgcatalog.pending import set_pending
 
         set_pending(1, {"path": "/doc1"})
         sp1 = transaction.savepoint()
@@ -349,18 +350,18 @@ class TestPendingSavepoint:
         assert set(_get_pending().keys()) == {1}
 
     def test_new_transaction_gets_new_dm(self):
-        from plone.pgcatalog.config import set_pending
+        from plone.pgcatalog.pending import set_pending
 
         set_pending(1, {"path": "/doc1"})
-        dm1 = config_mod._local._pending_dm
+        dm1 = pending_mod._local._pending_dm
         transaction.abort()
         set_pending(2, {"path": "/doc2"})
-        dm2 = config_mod._local._pending_dm
+        dm2 = pending_mod._local._pending_dm
         assert dm1 is not dm2
 
     def test_uncatalog_sentinel_survives_savepoint(self):
-        from plone.pgcatalog.config import _get_pending
-        from plone.pgcatalog.config import set_pending
+        from plone.pgcatalog.pending import _get_pending
+        from plone.pgcatalog.pending import set_pending
 
         set_pending(1, None)
         sp = transaction.savepoint()
@@ -369,9 +370,9 @@ class TestPendingSavepoint:
         assert _get_pending() == {1: None}
 
     def test_rejoin_after_abort_savepoint(self):
-        from plone.pgcatalog.config import _get_pending
-        from plone.pgcatalog.config import PendingDataManager
-        from plone.pgcatalog.config import set_pending
+        from plone.pgcatalog.pending import _get_pending
+        from plone.pgcatalog.pending import PendingDataManager
+        from plone.pgcatalog.pending import set_pending
 
         sp = transaction.savepoint()
         set_pending(1, {"path": "/doc1"})
@@ -384,16 +385,16 @@ class TestPendingSavepoint:
         assert _get_pending() == {2: {"path": "/doc2"}}
 
     def test_tpc_finish_clears_pending(self):
-        from plone.pgcatalog.config import _get_pending
-        from plone.pgcatalog.config import set_pending
+        from plone.pgcatalog.pending import _get_pending
+        from plone.pgcatalog.pending import set_pending
 
         set_pending(1, {"path": "/doc1"})
-        dm = config_mod._local._pending_dm
+        dm = pending_mod._local._pending_dm
         dm.tpc_finish(transaction.get())
         assert _get_pending() == {}
 
     def test_sort_key(self):
-        from plone.pgcatalog.config import PendingDataManager
+        from plone.pgcatalog.pending import PendingDataManager
 
         dm = PendingDataManager(transaction.get())
         key = dm.sortKey()
@@ -401,8 +402,8 @@ class TestPendingSavepoint:
         assert key > "z"  # sorts after all alphanumeric
 
     def test_interface_compliance(self):
-        from plone.pgcatalog.config import PendingDataManager
-        from plone.pgcatalog.config import PendingSavepoint
+        from plone.pgcatalog.pending import PendingDataManager
+        from plone.pgcatalog.pending import PendingSavepoint
         from transaction.interfaces import IDataManagerSavepoint
         from transaction.interfaces import ISavepointDataManager
         from zope.interface.verify import verifyObject
@@ -416,14 +417,14 @@ class TestPendingSavepoint:
 class TestPoolFromEnvCached:
     def test_returns_cached_pool(self):
         mock_pool = mock.Mock()
-        config_mod._fallback_pool = mock_pool
+        pool_mod._fallback_pool = mock_pool
         try:
-            from plone.pgcatalog.config import _pool_from_env
+            from plone.pgcatalog.pool import _pool_from_env
 
             result = _pool_from_env()
             assert result is mock_pool
         finally:
-            config_mod._fallback_pool = None
+            pool_mod._fallback_pool = None
 
 
 class TestCatalogStateProcessor:
@@ -436,7 +437,7 @@ class TestCatalogStateProcessor:
         _clean_pending()
 
     def test_get_extra_columns(self):
-        from plone.pgcatalog.config import CatalogStateProcessor
+        from plone.pgcatalog.processor import CatalogStateProcessor
 
         processor = CatalogStateProcessor()
         columns = processor.get_extra_columns()
@@ -447,7 +448,7 @@ class TestCatalogStateProcessor:
         assert "searchable_text" in names
 
     def test_get_schema_sql(self):
-        from plone.pgcatalog.config import CatalogStateProcessor
+        from plone.pgcatalog.processor import CatalogStateProcessor
 
         processor = CatalogStateProcessor()
         sql = processor.get_schema_sql()
@@ -455,15 +456,15 @@ class TestCatalogStateProcessor:
         assert len(sql) > 0
 
     def test_process_returns_none_when_no_pending(self):
-        from plone.pgcatalog.config import CatalogStateProcessor
+        from plone.pgcatalog.processor import CatalogStateProcessor
 
         processor = CatalogStateProcessor()
         result = processor.process(999, "some.module", "SomeClass", {"key": "value"})
         assert result is None
 
     def test_process_with_pending_from_thread_local(self):
-        from plone.pgcatalog.config import CatalogStateProcessor
-        from plone.pgcatalog.config import set_pending
+        from plone.pgcatalog.pending import set_pending
+        from plone.pgcatalog.processor import CatalogStateProcessor
 
         set_pending(
             42,
@@ -480,8 +481,8 @@ class TestCatalogStateProcessor:
         assert result["idx"] is not None
 
     def test_process_uncatalog_sentinel(self):
-        from plone.pgcatalog.config import CatalogStateProcessor
-        from plone.pgcatalog.config import set_pending
+        from plone.pgcatalog.pending import set_pending
+        from plone.pgcatalog.processor import CatalogStateProcessor
 
         set_pending(42, None)
         processor = CatalogStateProcessor()
@@ -489,8 +490,8 @@ class TestCatalogStateProcessor:
         assert result == {"path": None, "idx": None, "searchable_text": None}
 
     def test_process_from_state_dict_fallback(self):
-        from plone.pgcatalog.config import ANNOTATION_KEY
-        from plone.pgcatalog.config import CatalogStateProcessor
+        from plone.pgcatalog.processor import ANNOTATION_KEY
+        from plone.pgcatalog.processor import CatalogStateProcessor
 
         state = {
             ANNOTATION_KEY: {
@@ -508,8 +509,8 @@ class TestCatalogStateProcessor:
         assert state["other_key"] == "other_value"
 
     def test_process_with_empty_idx(self):
-        from plone.pgcatalog.config import CatalogStateProcessor
-        from plone.pgcatalog.config import set_pending
+        from plone.pgcatalog.pending import set_pending
+        from plone.pgcatalog.processor import CatalogStateProcessor
 
         set_pending(42, {"path": "/plone/doc", "idx": {}, "searchable_text": None})
         processor = CatalogStateProcessor()
@@ -521,7 +522,7 @@ class TestCatalogStateProcessor:
 
 class TestGetMainStorage:
     def test_returns_storage_directly(self):
-        from plone.pgcatalog.config import _get_main_storage
+        from plone.pgcatalog.startup import _get_main_storage
 
         db = mock.Mock()
         storage = mock.Mock(spec=[])  # no _main attr
@@ -530,7 +531,7 @@ class TestGetMainStorage:
         assert result is storage
 
     def test_unwraps_main_storage(self):
-        from plone.pgcatalog.config import _get_main_storage
+        from plone.pgcatalog.startup import _get_main_storage
 
         db = mock.Mock()
         main_storage = mock.Mock()
@@ -541,7 +542,7 @@ class TestGetMainStorage:
 
 class TestRegisterCatalogProcessor:
     def test_registers_on_pgjsonb_storage(self):
-        from plone.pgcatalog.config import register_catalog_processor
+        from plone.pgcatalog.startup import register_catalog_processor
 
         event = mock.Mock()
         storage = mock.Mock()
@@ -549,13 +550,13 @@ class TestRegisterCatalogProcessor:
         event.database.storage = storage
         del storage._main  # no wrapper
 
-        with mock.patch("plone.pgcatalog.config._sync_registry_from_db"):
+        with mock.patch("plone.pgcatalog.startup._sync_registry_from_db"):
             register_catalog_processor(event)
 
         storage.register_state_processor.assert_called_once()
 
     def test_skips_non_pgjsonb_storage(self):
-        from plone.pgcatalog.config import register_catalog_processor
+        from plone.pgcatalog.startup import register_catalog_processor
 
         event = mock.Mock()
         storage = mock.Mock(spec=[])  # no register_state_processor
@@ -567,7 +568,7 @@ class TestRegisterCatalogProcessor:
 
 class TestSyncRegistryFromDb:
     def test_syncs_from_plone_site(self):
-        from plone.pgcatalog.config import _sync_registry_from_db
+        from plone.pgcatalog.startup import _sync_registry_from_db
 
         db = mock.Mock()
         conn = mock.Mock()
@@ -584,7 +585,7 @@ class TestSyncRegistryFromDb:
         root.values.return_value = [site]
         conn.root.return_value = root
 
-        with mock.patch("plone.pgcatalog.columns.get_registry") as get_reg:
+        with mock.patch("plone.pgcatalog.startup.get_registry") as get_reg:
             registry = mock.Mock()
             get_reg.return_value = registry
             _sync_registry_from_db(db)
@@ -593,7 +594,7 @@ class TestSyncRegistryFromDb:
         conn.close.assert_called_once()
 
     def test_handles_sync_exception(self):
-        from plone.pgcatalog.config import _sync_registry_from_db
+        from plone.pgcatalog.startup import _sync_registry_from_db
 
         db = mock.Mock()
         conn = mock.Mock()
@@ -609,7 +610,7 @@ class TestSyncRegistryFromDb:
         root.values.return_value = [site]
         conn.root.return_value = root
 
-        with mock.patch("plone.pgcatalog.columns.get_registry") as get_reg:
+        with mock.patch("plone.pgcatalog.startup.get_registry") as get_reg:
             registry = mock.Mock()
             registry.sync_from_catalog.side_effect = RuntimeError("sync failed")
             get_reg.return_value = registry
@@ -619,14 +620,14 @@ class TestSyncRegistryFromDb:
         conn.close.assert_called_once()
 
     def test_handles_root_traversal_exception(self):
-        from plone.pgcatalog.config import _sync_registry_from_db
+        from plone.pgcatalog.startup import _sync_registry_from_db
 
         db = mock.Mock()
         conn = mock.Mock()
         db.open.return_value = conn
         conn.root.side_effect = RuntimeError("db error")
 
-        with mock.patch("plone.pgcatalog.columns.get_registry"):
+        with mock.patch("plone.pgcatalog.startup.get_registry"):
             # Should not raise
             _sync_registry_from_db(db)
 
@@ -654,25 +655,25 @@ class TestPartialPending:
         _clean_pending()
 
     def test_set_and_pop_partial_pending(self):
-        from plone.pgcatalog.config import pop_all_partial_pending
-        from plone.pgcatalog.config import set_partial_pending
+        from plone.pgcatalog.pending import pop_all_partial_pending
+        from plone.pgcatalog.pending import set_partial_pending
 
         set_partial_pending(42, {"allowedRolesAndUsers": ["Manager"]})
         result = pop_all_partial_pending()
         assert result == {42: {"allowedRolesAndUsers": ["Manager"]}}
 
     def test_pop_all_clears_store(self):
-        from plone.pgcatalog.config import _get_partial_pending
-        from plone.pgcatalog.config import pop_all_partial_pending
-        from plone.pgcatalog.config import set_partial_pending
+        from plone.pgcatalog.pending import _get_partial_pending
+        from plone.pgcatalog.pending import pop_all_partial_pending
+        from plone.pgcatalog.pending import set_partial_pending
 
         set_partial_pending(42, {"allowedRolesAndUsers": ["Manager"]})
         pop_all_partial_pending()
         assert _get_partial_pending() == {}
 
     def test_multiple_partials_same_zoid_merge(self):
-        from plone.pgcatalog.config import pop_all_partial_pending
-        from plone.pgcatalog.config import set_partial_pending
+        from plone.pgcatalog.pending import pop_all_partial_pending
+        from plone.pgcatalog.pending import set_partial_pending
 
         set_partial_pending(42, {"allowedRolesAndUsers": ["Manager"]})
         set_partial_pending(42, {"Subject": ["test"]})
@@ -684,9 +685,9 @@ class TestPartialPending:
 
     def test_set_pending_removes_partial(self):
         """Full pending supersedes partial pending for same zoid."""
-        from plone.pgcatalog.config import _get_partial_pending
-        from plone.pgcatalog.config import set_partial_pending
-        from plone.pgcatalog.config import set_pending
+        from plone.pgcatalog.pending import _get_partial_pending
+        from plone.pgcatalog.pending import set_partial_pending
+        from plone.pgcatalog.pending import set_pending
 
         set_partial_pending(42, {"allowedRolesAndUsers": ["Manager"]})
         set_pending(
@@ -696,9 +697,9 @@ class TestPartialPending:
 
     def test_partial_merges_into_full_pending(self):
         """If full pending exists, partial merges into its idx."""
-        from plone.pgcatalog.config import _get_pending
-        from plone.pgcatalog.config import set_partial_pending
-        from plone.pgcatalog.config import set_pending
+        from plone.pgcatalog.pending import _get_pending
+        from plone.pgcatalog.pending import set_partial_pending
+        from plone.pgcatalog.pending import set_pending
 
         set_pending(
             42, {"path": "/doc", "idx": {"portal_type": "Doc"}, "searchable_text": None}
@@ -710,33 +711,33 @@ class TestPartialPending:
 
     def test_partial_does_not_merge_into_uncatalog_sentinel(self):
         """If full pending is None (uncatalog), partial goes to partial store."""
-        from plone.pgcatalog.config import _get_partial_pending
-        from plone.pgcatalog.config import set_partial_pending
-        from plone.pgcatalog.config import set_pending
+        from plone.pgcatalog.pending import _get_partial_pending
+        from plone.pgcatalog.pending import set_partial_pending
+        from plone.pgcatalog.pending import set_pending
 
         set_pending(42, None)  # uncatalog sentinel
         set_partial_pending(42, {"allowedRolesAndUsers": ["Manager"]})
         assert 42 in _get_partial_pending()
 
     def test_partial_joins_transaction(self):
-        from plone.pgcatalog.config import PendingDataManager
-        from plone.pgcatalog.config import set_partial_pending
+        from plone.pgcatalog.pending import PendingDataManager
+        from plone.pgcatalog.pending import set_partial_pending
 
         txn = transaction.get()
         set_partial_pending(42, {"allowedRolesAndUsers": ["Manager"]})
         assert any(isinstance(r, PendingDataManager) for r in txn._resources)
 
     def test_abort_clears_partial_pending(self):
-        from plone.pgcatalog.config import _get_partial_pending
-        from plone.pgcatalog.config import set_partial_pending
+        from plone.pgcatalog.pending import _get_partial_pending
+        from plone.pgcatalog.pending import set_partial_pending
 
         set_partial_pending(42, {"allowedRolesAndUsers": ["Manager"]})
         transaction.abort()
         assert _get_partial_pending() == {}
 
     def test_savepoint_rollback_restores_partial(self):
-        from plone.pgcatalog.config import _get_partial_pending
-        from plone.pgcatalog.config import set_partial_pending
+        from plone.pgcatalog.pending import _get_partial_pending
+        from plone.pgcatalog.pending import set_partial_pending
 
         set_partial_pending(42, {"allowedRolesAndUsers": ["Manager"]})
         sp = transaction.savepoint()
@@ -746,8 +747,8 @@ class TestPartialPending:
         assert pp[42] == {"allowedRolesAndUsers": ["Manager"]}
 
     def test_nested_savepoints_partial(self):
-        from plone.pgcatalog.config import _get_partial_pending
-        from plone.pgcatalog.config import set_partial_pending
+        from plone.pgcatalog.pending import _get_partial_pending
+        from plone.pgcatalog.pending import set_partial_pending
 
         set_partial_pending(1, {"a": 1})
         sp1 = transaction.savepoint()
@@ -766,8 +767,8 @@ class TestPartialPending:
         create NEW dicts, not mutate existing ones, because PendingSavepoint
         uses shallow copies.
         """
-        from plone.pgcatalog.config import _get_partial_pending
-        from plone.pgcatalog.config import set_partial_pending
+        from plone.pgcatalog.pending import _get_partial_pending
+        from plone.pgcatalog.pending import set_partial_pending
 
         set_partial_pending(42, {"allowedRolesAndUsers": ["Manager"]})
         sp = transaction.savepoint()
@@ -785,9 +786,9 @@ class TestPartialPending:
 
     def test_savepoint_full_pending_merge_integrity(self):
         """Merging partial into full pending preserves savepoint integrity."""
-        from plone.pgcatalog.config import _get_pending
-        from plone.pgcatalog.config import set_partial_pending
-        from plone.pgcatalog.config import set_pending
+        from plone.pgcatalog.pending import _get_pending
+        from plone.pgcatalog.pending import set_partial_pending
+        from plone.pgcatalog.pending import set_pending
 
         set_pending(
             42, {"path": "/doc", "idx": {"portal_type": "Doc"}, "searchable_text": None}
@@ -800,19 +801,19 @@ class TestPartialPending:
         assert pending[42]["idx"]["portal_type"] == "Doc"
 
     def test_tpc_finish_clears_partial(self):
-        from plone.pgcatalog.config import _get_partial_pending
-        from plone.pgcatalog.config import set_partial_pending
+        from plone.pgcatalog.pending import _get_partial_pending
+        from plone.pgcatalog.pending import set_partial_pending
 
         set_partial_pending(42, {"allowedRolesAndUsers": ["Manager"]})
-        dm = config_mod._local._pending_dm
+        dm = pending_mod._local._pending_dm
         dm.tpc_finish(transaction.get())
         assert _get_partial_pending() == {}
 
     def test_tpc_abort_clears_partial(self):
-        from plone.pgcatalog.config import _get_partial_pending
-        from plone.pgcatalog.config import set_partial_pending
+        from plone.pgcatalog.pending import _get_partial_pending
+        from plone.pgcatalog.pending import set_partial_pending
 
         set_partial_pending(42, {"allowedRolesAndUsers": ["Manager"]})
-        dm = config_mod._local._pending_dm
+        dm = pending_mod._local._pending_dm
         dm.tpc_abort(transaction.get())
         assert _get_partial_pending() == {}

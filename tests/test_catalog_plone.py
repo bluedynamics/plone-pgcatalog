@@ -198,7 +198,7 @@ class TestCatalogObjectWritePath:
             mock.patch.object(
                 PlonePGCatalogTool, "_extract_searchable_text", return_value=None
             ),
-            mock.patch("plone.pgcatalog.config.set_pending") as pending_mock,
+            mock.patch("plone.pgcatalog.catalog.set_pending") as pending_mock,
             mock.patch.object(
                 PlonePGCatalogTool.__bases__[0], "catalog_object"
             ) as parent_mock,
@@ -214,7 +214,7 @@ class TestCatalogObjectWritePath:
         tool = PlonePGCatalogTool.__new__(PlonePGCatalogTool)
         obj = mock.Mock(spec=[])  # no getPhysicalPath
         with (
-            mock.patch("plone.pgcatalog.config.set_pending") as pending_mock,
+            mock.patch("plone.pgcatalog.catalog.set_pending") as pending_mock,
             mock.patch.object(
                 PlonePGCatalogTool.__bases__[0], "catalog_object"
             ) as parent_mock,
@@ -483,40 +483,40 @@ class TestPathValueToString:
 class TestPgConnection:
     def test_reuses_request_scoped_connection(self):
         """_pg_connection reuses an existing request-scoped connection."""
-        import plone.pgcatalog.config as config_mod
+        import plone.pgcatalog.pending as pending_mod
 
         tool = PlonePGCatalogTool.__new__(PlonePGCatalogTool)
         mock_conn = mock.Mock()
         mock_conn.closed = False
 
-        config_mod._local.pgcat_conn = mock_conn
+        pending_mod._local.pgcat_conn = mock_conn
         try:
             with tool._pg_connection() as conn:
                 assert conn is mock_conn
         finally:
-            config_mod._local.pgcat_conn = None
-            config_mod._local.pgcat_pool = None
+            pending_mod._local.pgcat_conn = None
+            pending_mod._local.pgcat_pool = None
 
     def test_borrows_from_pool_when_no_request_conn(self):
         """_pg_connection borrows from pool when no request-scoped conn."""
-        import plone.pgcatalog.config as config_mod
+        import plone.pgcatalog.pending as pending_mod
 
         tool = PlonePGCatalogTool.__new__(PlonePGCatalogTool)
         mock_pool = mock.Mock()
         mock_conn = mock.Mock()
         mock_pool.getconn.return_value = mock_conn
 
-        config_mod._local.pgcat_conn = None
+        pending_mod._local.pgcat_conn = None
         try:
             with (
-                mock.patch("plone.pgcatalog.config.get_pool", return_value=mock_pool),
+                mock.patch("plone.pgcatalog.catalog.get_pool", return_value=mock_pool),
             ):
                 with tool._pg_connection() as conn:
                     assert conn is mock_conn
                 mock_pool.putconn.assert_called_once_with(mock_conn)
         finally:
-            config_mod._local.pgcat_conn = None
-            config_mod._local.pgcat_pool = None
+            pending_mod._local.pgcat_conn = None
+            pending_mod._local.pgcat_pool = None
 
 
 # ---------------------------------------------------------------------------
@@ -556,7 +556,7 @@ class TestUncatalogObjectPersistent:
             mock.patch.object(
                 PlonePGCatalogTool, "unrestrictedTraverse", return_value=obj
             ),
-            mock.patch("plone.pgcatalog.config.set_pending") as pending_mock,
+            mock.patch("plone.pgcatalog.catalog.set_pending") as pending_mock,
         ):
             tool.uncatalog_object("/plone/doc")
             pending_mock.assert_called_once_with(5, None)
@@ -598,7 +598,7 @@ class TestSearchResults:
                 tool, "_listAllowedRolesAndUsers", return_value=["Anonymous"]
             ),
             mock.patch(
-                "plone.pgcatalog.config.get_storage_connection",
+                "plone.pgcatalog.catalog.get_storage_connection",
                 return_value=mock_conn,
             ),
             mock.patch(
@@ -630,11 +630,11 @@ class TestSearchResults:
                 tool, "_listAllowedRolesAndUsers", return_value=["Anonymous"]
             ),
             mock.patch(
-                "plone.pgcatalog.config.get_storage_connection", return_value=None
+                "plone.pgcatalog.catalog.get_storage_connection", return_value=None
             ),
-            mock.patch("plone.pgcatalog.config.get_pool", return_value=mock_pool),
+            mock.patch("plone.pgcatalog.catalog.get_pool", return_value=mock_pool),
             mock.patch(
-                "plone.pgcatalog.config.get_request_connection", return_value=mock_conn
+                "plone.pgcatalog.catalog.get_request_connection", return_value=mock_conn
             ),
             mock.patch(
                 "plone.pgcatalog.catalog._run_search", return_value=mock_results
@@ -657,7 +657,7 @@ class TestSearchResults:
 
         with (
             mock.patch(
-                "plone.pgcatalog.config.get_storage_connection",
+                "plone.pgcatalog.catalog.get_storage_connection",
                 return_value=mock_conn,
             ),
             mock.patch(

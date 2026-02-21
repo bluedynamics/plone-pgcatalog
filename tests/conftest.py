@@ -131,6 +131,14 @@ def pg_conn_with_catalog(pg_conn):
     return pg_conn
 
 
+def query_zoids(conn, query_dict):
+    """Execute a catalog query and return sorted list of zoids."""
+    from plone.pgcatalog.query import _execute_query as execute_query
+
+    rows = execute_query(conn, query_dict, columns="zoid")
+    return sorted(row["zoid"] for row in rows)
+
+
 def insert_object(conn, zoid, tid=1, class_mod="myapp", class_name="Doc", state=None):
     """Insert a bare object_state row for testing.
 

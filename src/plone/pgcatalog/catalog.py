@@ -15,16 +15,26 @@ clear_catalog_data) are testable without Plone.
 
 from AccessControl import ClassSecurityInfo
 from contextlib import contextmanager
+from plone.pgcatalog.backends import get_backend
 from plone.pgcatalog.brain import CatalogSearchResults
 from plone.pgcatalog.brain import PGCatalogBrain
 from plone.pgcatalog.columns import compute_path_info
 from plone.pgcatalog.columns import convert_value
 from plone.pgcatalog.columns import get_registry
+from plone.pgcatalog.columns import IndexType
 from plone.pgcatalog.indexing import catalog_object as _sql_catalog
 from plone.pgcatalog.indexing import reindex_object as _sql_reindex
 from plone.pgcatalog.indexing import uncatalog_object as _sql_uncatalog
 from plone.pgcatalog.interfaces import IPGCatalogTool
+from plone.pgcatalog.interfaces import IPGIndexTranslator
+from plone.pgcatalog.pending import _get_pending
+from plone.pgcatalog.pending import _local
+from plone.pgcatalog.pending import set_partial_pending
+from plone.pgcatalog.pending import set_pending
 from plone.pgcatalog.pgindex import PGCatalogIndexes
+from plone.pgcatalog.pool import get_pool
+from plone.pgcatalog.pool import get_request_connection
+from plone.pgcatalog.pool import get_storage_connection
 from plone.pgcatalog.query import apply_security_filters
 from plone.pgcatalog.query import build_query
 from Products.CMFPlone.CatalogTool import CatalogTool
@@ -215,8 +225,6 @@ def clear_catalog_data(conn):
 
     The base object_state rows are preserved.
     """
-    from plone.pgcatalog.backends import get_backend
-
     extra_nulls = get_backend().uncatalog_extra()
     extra_sql = "".join(f", {col} = NULL" for col in extra_nulls)
 
@@ -273,9 +281,6 @@ class PlonePGCatalogTool(CatalogTool):
         establish the thread-local conn; subsequent ``_pg_connection()``
         calls within the same request find and reuse it.
         """
-        from plone.pgcatalog.config import _local
-        from plone.pgcatalog.config import get_pool
-
         # Check for request-scoped connection (set by searchResults)
         existing = getattr(_local, "pgcat_conn", None)
         if existing is not None and not existing.closed:
@@ -297,16 +302,11 @@ class PlonePGCatalogTool(CatalogTool):
         share the same REPEATABLE READ snapshot as object loads.
         Falls back to a pool connection for tests/scripts without ZODB.
         """
-        from plone.pgcatalog.config import get_storage_connection
-
         conn = get_storage_connection(self)
         if conn is not None:
             return conn
 
         # Fallback: pool connection (tests, scripts, non-ZODB contexts)
-        from plone.pgcatalog.config import get_pool
-        from plone.pgcatalog.config import get_request_connection
-
         pool = get_pool(self)
         return get_request_connection(pool)
 
@@ -325,8 +325,6 @@ class PlonePGCatalogTool(CatalogTool):
 
         Returns True if data was registered, False otherwise.
         """
-        from plone.pgcatalog.config import set_pending
-
         if uid is None:
             try:
                 uid = "/".join(obj.getPhysicalPath())
@@ -386,8 +384,6 @@ class PlonePGCatalogTool(CatalogTool):
             True if partial reindex was registered, False otherwise
             (caller should fall through to full reindex).
         """
-        from plone.pgcatalog.config import set_partial_pending
-
         zoid = self._obj_to_zoid(obj)
         if zoid is None:
             return False
@@ -460,8 +456,6 @@ class PlonePGCatalogTool(CatalogTool):
 
         Does NOT delegate to ZCatalog — BTree writes are skipped.
         """
-        from plone.pgcatalog.config import set_pending
-
         try:
             obj = self.unrestrictedTraverse(uid, None)
         except Exception:
@@ -556,7 +550,6 @@ class PlonePGCatalogTool(CatalogTool):
         matches ``path_query`` and that are not already in ``found_paths``.
         Loads objects from the ZODB connection cache by OID.
         """
-        from plone.pgcatalog.config import _get_pending
         from ZODB.utils import p64
 
         pending = _get_pending()
@@ -731,8 +724,6 @@ class PlonePGCatalogTool(CatalogTool):
         like ``tgpath``) store the path value plus derived ``_parent``
         and ``_depth`` keys in the idx JSONB.
         """
-        from plone.pgcatalog.columns import IndexType
-
         registry = get_registry()
         idx = {}
 
@@ -789,7 +780,6 @@ class PlonePGCatalogTool(CatalogTool):
         is in the filter list.
         """
         try:
-            from plone.pgcatalog.interfaces import IPGIndexTranslator
             from zope.component import getUtilitiesFor
 
             for name, translator in getUtilitiesFor(IPGIndexTranslator):

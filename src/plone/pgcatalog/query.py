@@ -8,9 +8,8 @@ string-formatted into SQL.  Index names are resolved dynamically via the
 ``IndexRegistry`` populated from ZCatalog's registered indexes.
 """
 
-from datetime import date
-from datetime import datetime
 from datetime import UTC
+from plone.pgcatalog.columns import ensure_date_param as _ensure_date_param
 from plone.pgcatalog.columns import get_registry
 from plone.pgcatalog.columns import IndexType
 from psycopg.types.json import Json
@@ -627,20 +626,6 @@ def _normalize_query(raw):
     if isinstance(raw, dict):
         return raw
     return {"query": raw}
-
-
-def _ensure_date_param(value):
-    """Convert a date-like value to something psycopg can bind as timestamptz."""
-    if isinstance(value, datetime):
-        return value
-    if isinstance(value, date):
-        return datetime(value.year, value.month, value.day)
-    # Zope DateTime (duck-typed)
-    if hasattr(value, "asdatetime"):
-        return value.asdatetime()
-    if hasattr(value, "ISO8601"):
-        return value.ISO8601()
-    return str(value)
 
 
 def _validate_path(path):

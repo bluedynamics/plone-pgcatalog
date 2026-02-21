@@ -32,13 +32,13 @@
   <!-- Register CatalogStateProcessor on the ZODB storage at startup -->
   <subscriber
       for="zope.processlifetime.IDatabaseOpenedWithRoot"
-      handler=".config.register_catalog_processor"
+      handler=".startup.register_catalog_processor"
       />
 
   <!-- Release request-scoped PG connection at end of each request -->
   <subscriber
       for="ZPublisher.interfaces.IPubEnd"
-      handler=".config.release_request_connection"
+      handler=".pool.release_request_connection"
       />
 
 

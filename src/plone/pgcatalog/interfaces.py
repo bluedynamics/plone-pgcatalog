@@ -4,6 +4,9 @@ from Products.CMFCore.interfaces import ICatalogTool
 from zope.interface import Interface
 
 
+__all__ = ["IPGCatalogTool", "IPGIndexTranslator"]
+
+
 class IPGCatalogTool(ICatalogTool):
     """Interface for the PostgreSQL-backed catalog tool."""
 

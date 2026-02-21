@@ -14,6 +14,16 @@ import abc
 import logging
 
 
+__all__ = [
+    "BM25Backend",
+    "SearchBackend",
+    "TsvectorBackend",
+    "detect_and_set_backend",
+    "get_backend",
+    "set_backend",
+]
+
+
 log = logging.getLogger(__name__)
 
 

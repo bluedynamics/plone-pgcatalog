@@ -9,6 +9,7 @@ from datetime import UTC
 from plone.pgcatalog.indexing import catalog_object
 from plone.pgcatalog.query import _execute_query as execute_query
 from tests.conftest import insert_object
+from tests.conftest import query_zoids as _query_zoids
 
 
 # ---------------------------------------------------------------------------
@@ -130,12 +131,6 @@ def _setup_test_data(conn):
         )
     conn.commit()
     return objects
-
-
-def _query_zoids(conn, query_dict):
-    """Execute query and return sorted list of zoids."""
-    rows = execute_query(conn, query_dict, columns="zoid")
-    return sorted(row["zoid"] for row in rows)
 
 
 # ---------------------------------------------------------------------------
