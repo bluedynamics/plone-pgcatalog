@@ -24,6 +24,7 @@ from plone.pgcatalog.indexing import catalog_object as _sql_catalog
 from plone.pgcatalog.indexing import reindex_object as _sql_reindex
 from plone.pgcatalog.indexing import uncatalog_object as _sql_uncatalog
 from plone.pgcatalog.interfaces import IPGCatalogTool
+from plone.pgcatalog.pgindex import PGCatalogIndexes
 from plone.pgcatalog.query import apply_security_filters
 from plone.pgcatalog.query import build_query
 from Products.CMFPlone.CatalogTool import CatalogTool
@@ -250,6 +251,10 @@ class PlonePGCatalogTool(CatalogTool):
 
     meta_type = "PG Catalog Tool"
     security = ClassSecurityInfo()
+
+    # Override ZCatalog's Indexes container to wrap each index with
+    # PGIndex — provides PG-backed _index and uniqueValues().
+    Indexes = PGCatalogIndexes()
 
     security.declarePrivate("unrestrictedSearchResults")
     security.declareProtected("Manage ZCatalog Entries", "refreshCatalog")
@@ -659,6 +664,42 @@ class PlonePGCatalogTool(CatalogTool):
             clear_catalog_data(conn)
         # Traverse portal tree and re-index all content objects
         super().clearFindAndRebuild()
+
+    # -- ZCatalog internal API (PG-backed) ----------------------------------
+
+    def getpath(self, rid):
+        """Return the path for a record ID (ZOID).
+
+        Replaces ZCatalog's ``_catalog.paths[rid]`` BTree lookup.
+        Used by ``plone.app.uuid.uuidToPhysicalPath()`` and others.
+        Raises ``KeyError`` if the rid is not found (matching ZCatalog).
+        """
+        conn = self._get_pg_read_connection()
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT path FROM object_state WHERE zoid = %(zoid)s",
+                {"zoid": int(rid)},
+            )
+            row = cur.fetchone()
+        if row is None or row["path"] is None:
+            raise KeyError(rid)
+        return row["path"]
+
+    def getrid(self, path, default=None):
+        """Return the record ID (ZOID) for a path.
+
+        Replaces ZCatalog's ``_catalog.uids.get(path)`` BTree lookup.
+        Used by ``plone.app.vocabularies`` for content validation.
+        Returns ``default`` if the path is not found.
+        """
+        conn = self._get_pg_read_connection()
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT zoid FROM object_state WHERE path = %(path)s",
+                {"path": path},
+            )
+            row = cur.fetchone()
+        return row["zoid"] if row else default
 
     # -- Helpers -------------------------------------------------------------
 

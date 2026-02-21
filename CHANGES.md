@@ -98,6 +98,12 @@
   portal_type) instead of any indexes, preventing addon indexes from
   blocking re-application of Plone defaults.
 
+- ZCatalog internal API compatibility: `getpath(rid)`, `getrid(path)`,
+  `Indexes["UID"]._index.get(uuid)`, and `uniqueValues(withLengths=True)`
+  now work with PG-backed data. Uses ZOID as the record ID. This fixes
+  `plone.api.content.get(UID=...)`, `plone.app.vocabularies` content
+  validation, and dexterity type counting in the control panel.
+
 ## 1.0.0b5
 
 ### Added
