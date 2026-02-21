@@ -1,5 +1,45 @@
 # Changelog
 
+## 1.0.0b7
+
+### Fixed
+
+- `PGCatalogBrain.__getattr__` now distinguishes known catalog fields from
+  unknown attributes. Known indexes and metadata columns return `None` when
+  absent from idx (matching ZCatalog's Missing Value behavior), while unknown
+  attributes raise `AttributeError`. This enables
+  `CatalogContentListingObject.__getattr__` to fall back to `getObject()`
+  for non-catalog attributes (e.g. `content_type`), and fixes PAM's
+  `get_alternate_languages()` viewlet crash on `brain.Language`.
+
+- `reindexIndex` now accepts `pghandler` keyword argument for compatibility
+  with ZCatalog's `manage_reindexIndex` and plone.distribution. The argument
+  is accepted but ignored (PG-based reindexing doesn't need progress
+  reporting). [#9]
+
+- `clearFindAndRebuild` now properly rebuilds the catalog by traversing all
+  content objects after clearing PG data. Previously only cleared without
+  rebuilding.
+
+- `refreshCatalog` now properly re-catalogs objects by resolving them from
+  ZODB and re-extracting index values. Added missing `pghandler` parameter
+  for ZCatalog API compatibility.
+
+- Fixed `ConnectionStateError` on Zope restart when a Plone site already
+  exists in the database. `_sync_registry_from_db` and
+  `_detect_languages_from_db` now abort the transaction before closing
+  their temporary ZODB connections.
+
+- `_ensure_catalog_indexes` now checks for essential Plone indexes (UID,
+  portal_type) instead of any indexes, preventing addon indexes from
+  blocking re-application of Plone defaults.
+
+- ZCatalog internal API compatibility: `getpath(rid)`, `getrid(path)`,
+  `Indexes["UID"]._index.get(uuid)`, and `uniqueValues(withLengths=True)`
+  now work with PG-backed data. Uses ZOID as the record ID. This fixes
+  `plone.api.content.get(UID=...)`, `plone.app.vocabularies` content
+  validation, and dexterity type counting in the control panel.
+
 ## 1.0.0b6
 
 ### Added
@@ -75,34 +115,6 @@
 - CJK tokenizer TOML format fixed: jieba (Chinese) and lindera
   (Japanese/Korean) now use the correct table syntax for pg_tokenizer's
   `pre_tokenizer` configuration.
-
-- `reindexIndex` now accepts `pghandler` keyword argument for compatibility
-  with ZCatalog's `manage_reindexIndex` and plone.distribution. The argument
-  is accepted but ignored (PG-based reindexing doesn't need progress
-  reporting). [#9]
-
-- `clearFindAndRebuild` now properly rebuilds the catalog by traversing all
-  content objects after clearing PG data. Previously only cleared without
-  rebuilding.
-
-- `refreshCatalog` now properly re-catalogs objects by resolving them from
-  ZODB and re-extracting index values. Added missing `pghandler` parameter
-  for ZCatalog API compatibility.
-
-- Fixed `ConnectionStateError` on Zope restart when a Plone site already
-  exists in the database. `_sync_registry_from_db` and
-  `_detect_languages_from_db` now abort the transaction before closing
-  their temporary ZODB connections.
-
-- `_ensure_catalog_indexes` now checks for essential Plone indexes (UID,
-  portal_type) instead of any indexes, preventing addon indexes from
-  blocking re-application of Plone defaults.
-
-- ZCatalog internal API compatibility: `getpath(rid)`, `getrid(path)`,
-  `Indexes["UID"]._index.get(uuid)`, and `uniqueValues(withLengths=True)`
-  now work with PG-backed data. Uses ZOID as the record ID. This fixes
-  `plone.api.content.get(UID=...)`, `plone.app.vocabularies` content
-  validation, and dexterity type counting in the control panel.
 
 ## 1.0.0b5
 
