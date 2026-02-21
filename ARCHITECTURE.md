@@ -27,6 +27,7 @@ All catalog data lives in these columns -- no BTree/Bucket objects are written t
 | `config.py` | `CatalogStateProcessor`, pool discovery, DRI translator registration |
 | `schema.py` | DDL for catalog columns, functions, and indexes |
 | `brain.py` | `PGCatalogBrain` + lazy `CatalogSearchResults` |
+| `pgindex.py` | `PGIndex`, `PGCatalogIndexes` -- ZCatalog internal API wrappers |
 | `backends.py` | `SearchBackend` ABC, `TsvectorBackend`, `BM25Backend` |
 | `dri.py` | `DateRecurringIndexTranslator` for recurring events |
 | `interfaces.py` | `IPGCatalogTool`, `IPGIndexTranslator` |
@@ -232,6 +233,36 @@ The active backend is a module-level singleton. `config.py` calls `detect_and_se
 `unrestrictedSearchResults` extends PG results with objects from the thread-local pending store for path queries. This is needed because `CMFCatalogAware.reindexObjectSecurity` searches `catalog.unrestrictedSearchResults(path=path)` to find objects in a subtree, but newly created objects only exist in the pending store (not yet committed to PG). Without this, security indexes are never updated for new objects during workflow transitions.
 
 `_pending_brains_for_path()` scans the pending store, matches paths, and returns `_PendingBrain` instances with just enough interface (`getPath()`, `_unrestrictedGetObject()`) for `reindexObjectSecurity` to work.
+
+## ZCatalog Internal API Compatibility
+
+Plone code accesses ZCatalog internal data structures directly. Since PlonePGCatalogTool never populates ZCatalog's BTrees, these are replaced with PG-backed implementations.
+
+### PGIndex Wrappers (`pgindex.py`)
+
+`PGCatalogIndexes` (class attribute `Indexes` on `PlonePGCatalogTool`) overrides `ZCatalogIndexes._getOb()` to wrap each returned index with `PGIndex`. Special indexes with `idx_key=None` are returned unwrapped.
+
+`PGIndex` proxies a real ZCatalog index object, delegating all standard methods via `__getattr__`. It overrides:
+
+- **`_index`** (property): Returns a `_PGIndexMapping` that translates `_index.get(value)` into a PG query on `idx` JSONB, returning ZOID as the record ID. Used by `plone.app.uuid.uuidToPhysicalPath()`.
+- **`uniqueValues()`**: PG `SELECT DISTINCT` / `GROUP BY` on idx JSONB. Used by `plone.app.dexterity` and `plone.restapi`.
+
+### getpath / getrid (`catalog.py`)
+
+- **`getpath(rid)`**: `SELECT path FROM object_state WHERE zoid = %(rid)s`. Raises `KeyError` if not found (matching ZCatalog). Used by `plone.app.uuid`.
+- **`getrid(path)`**: `SELECT zoid FROM object_state WHERE path = %(path)s`. Returns `default` if not found. Used by `plone.app.vocabularies`.
+
+ZOID serves as the record ID (RID), matching the integer PK in PostgreSQL.
+
+### Brain Attribute Resolution (`brain.py`)
+
+`PGCatalogBrain.__getattr__` uses `_resolve_from_idx()` to distinguish known catalog fields from unknown attributes:
+
+- **In idx**: Return the value
+- **Known field** (in `IndexRegistry` indexes or metadata) but absent from idx: Return `None` (Missing Value behavior, matching ZCatalog)
+- **Unknown field**: Raise `AttributeError`
+
+This enables `CatalogContentListingObject.__getattr__` to fall back to `getObject()` for non-catalog attributes (e.g. `content_type`), matching the behavior of ZCatalog's `AbstractCatalogBrain` (which inherits from `Record` and only knows schema-defined attributes).
 
 ## Query Translation
 

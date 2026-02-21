@@ -1,0 +1,9 @@
+{
+  "base": [
+    "plone.app.contenttypes:default",
+    "plonetheme.barceloneta:default",
+    "plone.pgcatalog:default"
+  ],
+  "content": [
+  ]
+}

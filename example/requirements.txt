@@ -4,3 +4,4 @@ waitress
 Paste
 zodb-pgjsonb
 plone-pgcatalog
+pgcatalog-example

@@ -221,6 +221,88 @@ WHERE idx->'allowedRolesAndUsers' ?| ARRAY['Anonymous']
 ORDER BY path;
 ```
 
+## Example Distribution
+
+The `pgcatalog-example-distribution/` directory contains a minimal
+[plone.distribution](https://github.com/plone/plone.distribution) package
+that registers a **"Plone Site (PG Catalog)"** distribution.
+
+It is included in `requirements.txt` and auto-discovered by Plone at startup.
+
+You can create a site via the REST API:
+
+```bash
+curl -u admin:admin -X POST http://localhost:8081/@sites \
+  -H "Accept: application/json" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "distribution": "pgcatalog_demo",
+    "site_id": "demo",
+    "title": "PG Catalog Demo",
+    "default_language": "en",
+    "portal_timezone": "Europe/Berlin",
+    "setup_content": true
+  }'
+```
+
+Use this as a template for your own addon/distribution that depends on
+plone.pgcatalog -- the key is adding `plone.pgcatalog:default` to
+`profiles.json`.
+
+## Migration Test
+
+Test migrating an existing Plone site (standard ZCatalog) to plone.pgcatalog.
+
+### 1. Create a plain site without pgcatalog
+
+```bash
+# Remove plone-pgcatalog from the venv (if installed)
+uv pip uninstall plone-pgcatalog pgcatalog-example
+
+# Create a Plone site with Wikipedia content, using standard ZCatalog
+.venv/bin/zconsole run instance/etc/zope.conf scripts/create_plain_site.py
+```
+
+This creates `/Plone` with ~1000 multilingual Documents using the standard
+`CatalogTool` (ZCatalog BTrees). No pgcatalog involved.
+
+### 2. Install pgcatalog and migrate
+
+```bash
+# Install plone-pgcatalog back
+uv pip install -e ../..   # or: uv pip install plone-pgcatalog
+
+# Run the migration script
+.venv/bin/zconsole run instance/etc/zope.conf scripts/migrate_to_pgcatalog.py
+```
+
+The migration script:
+1. Installs the `plone.pgcatalog:default` GenericSetup profile (replaces
+   `portal_catalog` with `PlonePGCatalogTool`)
+2. Runs `clearFindAndRebuild` to populate PostgreSQL from existing content
+3. Verifies all content is indexed and searchable
+
+Expected output:
+```
+Before: catalog class = CatalogTool
+Before: 1072 objects indexed
+
+Installing plone.pgcatalog:default profile ...
+After:  catalog class = PlonePGCatalogTool
+After:  30 ZCatalog indexes registered
+
+Rebuilding catalog (clearFindAndRebuild) ...
+  Rebuild completed in 15.4s
+
+Verification:
+  Total indexed: 1072
+  Documents: 1062
+  SearchableText='volcano': 63 hits
+  path=/Plone/en/library depth=1: 393 hits
+
+Migration successful! All content is indexed and searchable.
+```
+
 ## Cleanup
 
 ```bash

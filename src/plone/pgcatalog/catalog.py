@@ -24,6 +24,7 @@ from plone.pgcatalog.indexing import catalog_object as _sql_catalog
 from plone.pgcatalog.indexing import reindex_object as _sql_reindex
 from plone.pgcatalog.indexing import uncatalog_object as _sql_uncatalog
 from plone.pgcatalog.interfaces import IPGCatalogTool
+from plone.pgcatalog.pgindex import PGCatalogIndexes
 from plone.pgcatalog.query import apply_security_filters
 from plone.pgcatalog.query import build_query
 from Products.CMFPlone.CatalogTool import CatalogTool
@@ -250,6 +251,10 @@ class PlonePGCatalogTool(CatalogTool):
 
     meta_type = "PG Catalog Tool"
     security = ClassSecurityInfo()
+
+    # Override ZCatalog's Indexes container to wrap each index with
+    # PGIndex — provides PG-backed _index and uniqueValues().
+    Indexes = PGCatalogIndexes()
 
     security.declarePrivate("unrestrictedSearchResults")
     security.declareProtected("Manage ZCatalog Entries", "refreshCatalog")
@@ -594,22 +599,107 @@ class PlonePGCatalogTool(CatalogTool):
 
     # -- Maintenance ---------------------------------------------------------
 
-    def refreshCatalog(self, clear=0):
-        """Re-catalog all objects from their stored idx data."""
-        with self._pg_connection() as conn:
-            if clear:
-                clear_catalog_data(conn)
-            return refresh_catalog(conn)
+    def refreshCatalog(self, clear=0, pghandler=None):
+        """Re-catalog objects from ZODB, optionally clearing first.
 
-    def reindexIndex(self, name, REQUEST=None):
-        """Re-apply a specific idx key across all cataloged objects."""
+        With ``clear=1``: equivalent to ``clearFindAndRebuild()``
+        (traverses the entire portal tree).
+
+        With ``clear=0``: re-catalogs only objects already known
+        to the PG catalog by resolving each path from ZODB and
+        re-extracting index values.
+
+        ``pghandler`` is accepted for ZCatalog API compatibility
+        but ignored.
+        """
+        if clear:
+            return self.clearFindAndRebuild()
+
+        # Re-index objects already in the PG catalog
+        conn = self._get_pg_read_connection()
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT path FROM object_state "
+                "WHERE path IS NOT NULL AND idx IS NOT NULL"
+            )
+            rows = cur.fetchall()
+
+        count = 0
+        for row in rows:
+            path = row["path"]
+            try:
+                obj = self.unrestrictedTraverse(path, None)
+                if obj is not None:
+                    self.catalog_object(obj, path)
+                    count += 1
+            except Exception:
+                log.warning("Failed to recatalog %s", path, exc_info=True)
+
+        log.info("refreshCatalog: re-indexed %d objects", count)
+        return count
+
+    def reindexIndex(self, name, REQUEST=None, pghandler=None):
+        """Re-apply a specific idx key across all cataloged objects.
+
+        ``pghandler`` is accepted for ZCatalog API compatibility
+        (used by ``manage_reindexIndex`` and plone.distribution)
+        but ignored — PG-based reindexing is fast enough without
+        progress reporting.
+        """
         with self._pg_connection() as conn:
             return reindex_index(conn, name)
 
     def clearFindAndRebuild(self):
-        """Clear all catalog data."""
+        """Clear all catalog data and rebuild from content objects.
+
+        1. Clears PG catalog columns (path, idx, searchable_text, etc.)
+        2. Delegates to CMFPlone's ``clearFindAndRebuild()`` which
+           traverses the entire portal tree and calls
+           ``reindexObject()`` on each content object.  Our override
+           sets the PG annotation → CatalogStateProcessor writes
+           catalog data during the transaction commit.
+        """
+        # Clear PG catalog data (NULLs all catalog columns)
         with self._pg_connection() as conn:
-            return clear_catalog_data(conn)
+            clear_catalog_data(conn)
+        # Traverse portal tree and re-index all content objects
+        super().clearFindAndRebuild()
+
+    # -- ZCatalog internal API (PG-backed) ----------------------------------
+
+    def getpath(self, rid):
+        """Return the path for a record ID (ZOID).
+
+        Replaces ZCatalog's ``_catalog.paths[rid]`` BTree lookup.
+        Used by ``plone.app.uuid.uuidToPhysicalPath()`` and others.
+        Raises ``KeyError`` if the rid is not found (matching ZCatalog).
+        """
+        conn = self._get_pg_read_connection()
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT path FROM object_state WHERE zoid = %(zoid)s",
+                {"zoid": int(rid)},
+            )
+            row = cur.fetchone()
+        if row is None or row["path"] is None:
+            raise KeyError(rid)
+        return row["path"]
+
+    def getrid(self, path, default=None):
+        """Return the record ID (ZOID) for a path.
+
+        Replaces ZCatalog's ``_catalog.uids.get(path)`` BTree lookup.
+        Used by ``plone.app.vocabularies`` for content validation.
+        Returns ``default`` if the path is not found.
+        """
+        conn = self._get_pg_read_connection()
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT zoid FROM object_state WHERE path = %(path)s",
+                {"path": path},
+            )
+            row = cur.fetchone()
+        return row["zoid"] if row else default
 
     # -- Helpers -------------------------------------------------------------
 

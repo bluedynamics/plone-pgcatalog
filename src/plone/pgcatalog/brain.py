@@ -8,6 +8,7 @@ CatalogSearchResults wraps a list of brains with actual_result_count for
 batched queries where LIMIT < total matching rows.
 """
 
+from plone.pgcatalog.columns import get_registry
 from Products.ZCatalog.interfaces import ICatalogBrain
 from zope.interface import implementer
 from zope.interface.common.sequence import IFiniteSequence
@@ -129,6 +130,21 @@ class PGCatalogBrain:
 
     # -- attribute access from idx JSONB --------------------------------------
 
+    def _resolve_from_idx(self, name, idx):
+        """Return value from idx for known fields, raise AttributeError for unknown.
+
+        Known catalog fields (registered indexes or metadata) return None when
+        absent from idx (Missing Value behavior, matching ZCatalog).  Unknown
+        fields raise AttributeError so that callers like
+        CatalogContentListingObject.__getattr__ can fall back to getObject().
+        """
+        if idx is not None and name in idx:
+            return idx[name]
+        registry = get_registry()
+        if name in registry or name in registry.metadata:
+            return None
+        raise AttributeError(name)
+
     def __getattr__(self, name):
         if name.startswith("_"):
             raise AttributeError(name)
@@ -138,14 +154,7 @@ class PGCatalogBrain:
         # Fast path: idx already in row (eager mode or already batch-loaded)
         idx = row.get("idx")
         if idx is not None:
-            # Return value if present, None for missing keys.
-            # Unlike ZCatalog (which raises AttributeError for non-schema
-            # names), we return None for any missing key because idx
-            # stores all catalog data and brains are only used in catalog
-            # contexts.  This matches ZCatalog's MV (Missing Value)
-            # behavior for known metadata and avoids AttributeError for
-            # fields like Language that are indexes but not metadata.
-            return idx.get(name)
+            return self._resolve_from_idx(name, idx)
 
         # Lazy path: trigger batch load via result set
         result_set = object.__getattribute__(self, "_result_set")
@@ -153,11 +162,10 @@ class PGCatalogBrain:
             result_set._load_idx_batch()
             idx = row.get("idx")
             if idx is not None:
-                return idx.get(name)
+                return self._resolve_from_idx(name, idx)
 
-        # idx is None (object has no catalog data) — return None
-        # for any attribute access (brain with no catalog info)
-        return None
+        # No idx at all — still distinguish known vs unknown fields
+        return self._resolve_from_idx(name, None)
 
     def __repr__(self):
         return f"<PGCatalogBrain zoid={self._row.get('zoid')} path={self._row.get('path')!r}>"

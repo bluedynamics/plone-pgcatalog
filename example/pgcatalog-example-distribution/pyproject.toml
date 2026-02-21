@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68.2"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pgcatalog-example"
+version = "1.0.0a1"
+description = "Example Plone distribution using plone-pgcatalog"
+requires-python = ">=3.12"
+dependencies = [
+    "Products.CMFPlone",
+    "plone.distribution",
+    "plone-pgcatalog",
+]
+classifiers = [
+    "Framework :: Plone",
+    "Framework :: Plone :: 6.1",
+    "Framework :: Plone :: Distribution",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+pgcatalog_example = ["*.zcml", "distributions/**/*.json"]
+
+[project.entry-points."z3c.autoinclude.plugin"]
+target = "plone"

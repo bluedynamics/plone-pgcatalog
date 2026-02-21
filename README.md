@@ -63,11 +63,69 @@ results = catalog(start={
 })
 ```
 
+## Migrating an Existing Site
+
+If you have a running Plone site and want to switch from ZCatalog to plone.pgcatalog:
+
+**Prerequisites:** Your site must already be running on
+[zodb-pgjsonb](https://github.com/bluedynamics/zodb-pgjsonb).
+If you're migrating from FileStorage or RelStorage, use [zodb-convert](https://pypi.org/project/zodb-convert/) first.
+
+**Steps:**
+
+1. Install plone-pgcatalog into your Python environment:
+
+   ```bash
+   pip install plone-pgcatalog
+   ```
+
+2. Restart Zope (plone.pgcatalog is auto-discovered via `z3c.autoinclude`).
+
+3. Install the `plone.pgcatalog:default` GenericSetup profile -- either through the Plone Add-on control panel or programmatically:
+
+   ```python
+   setup = portal.portal_setup
+   setup.runAllImportStepsFromProfile("profile-plone.pgcatalog:default")
+   ```
+
+   This replaces `portal_catalog` with `PlonePGCatalogTool` via `toolset.xml`.
+
+4. Rebuild the catalog to populate PostgreSQL with all existing content:
+
+   ```python
+   catalog = portal.portal_catalog
+   catalog.clearFindAndRebuild()
+   ```
+
+   For a site with ~1000 documents, this takes about 15 seconds.
+
+An automated migration script is included in `example/scripts/migrate_to_pgcatalog.py`
+that performs all steps and verifies the result.
+
+## Using with plone.distribution
+
+An example distribution package is included in `example/pgcatalog-example-distribution/`.
+It registers a **"Plone Site (PG Catalog)"** distribution that appears in the site creation UI
+and automatically applies the `plone.pgcatalog:default` profile.
+
+To use plone.pgcatalog in your own distribution, add it to `profiles.json`:
+
+```json
+{
+  "base": [
+    "plone.app.contenttypes:default",
+    "plonetheme.barceloneta:default",
+    "plone.pgcatalog:default"
+  ]
+}
+```
+
 ## Documentation
 
 - [ARCHITECTURE.md](ARCHITECTURE.md) -- internal design, index registry, query translation, custom index types
 - [BENCHMARKS.md](BENCHMARKS.md) -- performance comparison vs RelStorage+ZCatalog
 - [CHANGES.md](CHANGES.md) -- changelog
+- [example/](example/) -- runnable example with multilingual content and an example distribution
 
 ## Source Code and Contributions
 

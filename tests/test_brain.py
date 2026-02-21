@@ -119,16 +119,40 @@ class TestBrainAttributeAccess:
         brain = PGCatalogBrain(_make_row(idx={"expires": None}))
         assert brain.expires is None
 
-    def test_missing_attribute_returns_none(self):
-        """Missing attributes return None (like ZCatalog's MV behavior).
+    def test_known_field_missing_from_idx_returns_none(self):
+        """Known catalog fields absent from idx return None (MV behavior).
 
-        PGCatalogBrain returns None for any idx key not present, rather
-        than raising AttributeError.  This matches the expectation of
-        Plone code that accesses brain attributes like Language or getId
-        which may not be in the idx dict.
+        Matches ZCatalog's Missing Value behavior: known indexes and metadata
+        columns return None when not stored in idx for this object.
         """
         brain = PGCatalogBrain(_make_row(idx={}))
-        assert brain.nonexistent_attribute is None
+        # Language is a registered index (via conftest populated_registry)
+        assert brain.Language is None
+        # mime_type is registered metadata (not an index)
+        assert brain.mime_type is None
+
+    def test_unknown_field_raises_attribute_error(self):
+        """Unknown fields raise AttributeError for fallback to getObject().
+
+        This enables CatalogContentListingObject.__getattr__ to fall through
+        to getObject() for attributes not in the catalog schema (e.g.
+        content_type).
+        """
+        import pytest
+
+        brain = PGCatalogBrain(_make_row(idx={"portal_type": "Document"}))
+        with pytest.raises(AttributeError):
+            _ = brain.content_type
+
+    def test_unknown_field_with_getattr_default(self):
+        """getattr(brain, unknown, default) returns the default sentinel.
+
+        This is the exact pattern used by CatalogContentListingObject:
+            brain_name = getattr(aq_base(self._brain), name, missing)
+        """
+        sentinel = object()
+        brain = PGCatalogBrain(_make_row(idx={"portal_type": "Document"}))
+        assert getattr(brain, "content_type", sentinel) is sentinel
 
     def test_private_attrs_raise_attribute_error(self):
         import pytest
@@ -329,9 +353,19 @@ class TestLazyIdxLoading:
         assert "portal_type" in results[0]
         assert results._idx_loaded
 
-    def test_missing_attr_returns_none_after_lazy_load(self):
+    def test_known_field_returns_none_after_lazy_load(self):
+        """Known catalog field absent from idx returns None after lazy load."""
         results, conn = self._make_lazy_results(1)
-        assert results[0].nonexistent is None
+        # Language is registered but not in the idx_data
+        assert results[0].Language is None
+
+    def test_unknown_field_raises_after_lazy_load(self):
+        """Unknown field raises AttributeError after lazy load."""
+        import pytest
+
+        results, conn = self._make_lazy_results(1)
+        with pytest.raises(AttributeError):
+            _ = results[0].content_type
 
     def test_slice_preserves_lazy_loading(self):
         results, conn = self._make_lazy_results(5)

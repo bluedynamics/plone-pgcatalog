@@ -1,0 +1,14 @@
+<configure
+    xmlns="http://namespaces.zope.org/zope"
+    xmlns:plone="http://namespaces.plone.org/plone"
+    >
+
+  <plone:distribution
+      name="pgcatalog_demo"
+      title="Plone Site (PG Catalog)"
+      description="A Plone Site using plone-pgcatalog for PostgreSQL-backed catalog."
+      headless="false"
+      post_handler="plone.distribution.handler.post_handler"
+      />
+
+</configure>
