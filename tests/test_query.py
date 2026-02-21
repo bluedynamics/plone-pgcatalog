@@ -396,6 +396,70 @@ class TestSort:
 
 
 # ---------------------------------------------------------------------------
+# Multi-column sort (sort_on as list)
+# ---------------------------------------------------------------------------
+
+
+class TestMultiSort:
+    def test_sort_on_list_two_fields(self):
+        qr = build_query(
+            {
+                "portal_type": "Document",
+                "sort_on": ["portal_type", "sortable_title"],
+            }
+        )
+        assert qr["order_by"] == "idx->>'portal_type' ASC, idx->>'sortable_title' ASC"
+
+    def test_sort_on_list_with_mixed_orders(self):
+        qr = build_query(
+            {
+                "portal_type": "Document",
+                "sort_on": ["sortable_title", "modified"],
+                "sort_order": ["ascending", "descending"],
+            }
+        )
+        assert qr["order_by"] is not None
+        parts = qr["order_by"].split(", ")
+        assert len(parts) == 2
+        assert parts[0] == "idx->>'sortable_title' ASC"
+        assert "pgcatalog_to_timestamptz" in parts[1]
+        assert "DESC" in parts[1]
+
+    def test_sort_on_list_single_order_applies_to_all(self):
+        qr = build_query(
+            {
+                "portal_type": "Document",
+                "sort_on": ["portal_type", "sortable_title"],
+                "sort_order": "descending",
+            }
+        )
+        assert qr["order_by"] == "idx->>'portal_type' DESC, idx->>'sortable_title' DESC"
+
+    def test_sort_on_list_with_unknown_index_skipped(self):
+        qr = build_query(
+            {
+                "portal_type": "Document",
+                "sort_on": ["nonexistent", "sortable_title"],
+            }
+        )
+        assert qr["order_by"] == "idx->>'sortable_title' ASC"
+
+    def test_sort_on_list_all_unknown(self):
+        qr = build_query(
+            {
+                "portal_type": "Document",
+                "sort_on": ["nonexistent", "also_nonexistent"],
+            }
+        )
+        assert qr["order_by"] is None
+
+    def test_sort_on_single_string_still_works(self):
+        """Backward compat: single string sort_on unchanged."""
+        qr = build_query({"portal_type": "Document", "sort_on": "sortable_title"})
+        assert qr["order_by"] == "idx->>'sortable_title' ASC"
+
+
+# ---------------------------------------------------------------------------
 # Batch / Pagination
 # ---------------------------------------------------------------------------
 

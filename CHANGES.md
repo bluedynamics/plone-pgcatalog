@@ -4,6 +4,10 @@
 
 ### Fixed
 
+- `sort_on` now accepts a list of index names for multi-column sorting,
+  matching ZCatalog's API. `sort_order` can also be a list (one direction
+  per sort key) or a single string applied to all keys.
+
 - `PGCatalogBrain.__getattr__` now distinguishes known catalog fields from
   unknown attributes. Known indexes and metadata columns return `None` when
   absent from idx (matching ZCatalog's Missing Value behavior), while unknown

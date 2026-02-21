@@ -183,10 +183,14 @@ class _QueryBuilder:
                 continue
             self._process_index(key, value)
 
-        # Sort
+        # Sort — normalize to lists (ZCatalog/Plone can pass either)
         sort_on = query_dict.get("sort_on")
         if sort_on:
             sort_order = query_dict.get("sort_order", "ascending")
+            if isinstance(sort_on, str):
+                sort_on = [sort_on]
+            if isinstance(sort_order, str):
+                sort_order = [sort_order]
             self._process_sort(sort_on, sort_order)
 
         # Auto-rank by relevance when SearchableText is queried without
@@ -561,43 +565,53 @@ class _QueryBuilder:
 
     # -- sort ---------------------------------------------------------------
 
-    def _process_sort(self, sort_on, sort_order):
+    def _process_sort(self, sort_on_list, sort_order_list):
+        """Build ORDER BY from one or more sort keys.
+
+        Args:
+            sort_on_list: list of index names
+            sort_order_list: list of order strings ("ascending"/"descending"/
+                "reverse").  If shorter than sort_on_list, the last value
+                is reused for remaining keys.
+        """
         registry = get_registry()
-        entry = registry.get(sort_on)
-        if entry is None:
-            # Fallback: look for an IPGIndexTranslator utility
-            translator = _lookup_translator(sort_on)
-            if translator is not None:
-                expr = translator.sort(sort_on)
-                if expr is not None:
-                    direction = (
-                        "DESC" if sort_order in ("descending", "reverse") else "ASC"
-                    )
-                    self.order_by = f"{expr} {direction}"
-                return
-            log.warning("Unknown sort index %r — ignoring", sort_on)
-            return
+        parts = []
 
-        idx_type, idx_key, _source_attrs = entry
-        if idx_key is None:
-            if idx_type == IndexType.PATH:
-                # PATH with idx_key=None → normalize to use idx JSONB
-                idx_key = sort_on
+        for i, sort_on in enumerate(sort_on_list):
+            order_str = sort_order_list[min(i, len(sort_order_list) - 1)]
+            direction = "DESC" if order_str in ("descending", "reverse") else "ASC"
+
+            entry = registry.get(sort_on)
+            if entry is None:
+                translator = _lookup_translator(sort_on)
+                if translator is not None:
+                    expr = translator.sort(sort_on)
+                    if expr is not None:
+                        parts.append(f"{expr} {direction}")
+                else:
+                    log.warning("Unknown sort index %r — ignoring", sort_on)
+                continue
+
+            idx_type, idx_key, _source_attrs = entry
+            if idx_key is None:
+                if idx_type == IndexType.PATH:
+                    idx_key = sort_on
+                else:
+                    continue
+
+            if idx_type == IndexType.DATE:
+                expr = f"pgcatalog_to_timestamptz(idx->>'{idx_key}')"
+            elif idx_type == IndexType.GOPIP:
+                expr = f"(idx->>'{idx_key}')::integer"
+            elif idx_type == IndexType.BOOLEAN:
+                expr = f"(idx->>'{idx_key}')::boolean"
             else:
-                return  # Can't sort on other composite/special indexes
+                expr = f"idx->>'{idx_key}'"
 
-        direction = "DESC" if sort_order in ("descending", "reverse") else "ASC"
+            parts.append(f"{expr} {direction}")
 
-        if idx_type == IndexType.DATE:
-            expr = f"pgcatalog_to_timestamptz(idx->>'{idx_key}')"
-        elif idx_type == IndexType.GOPIP:
-            expr = f"(idx->>'{idx_key}')::integer"
-        elif idx_type == IndexType.BOOLEAN:
-            expr = f"(idx->>'{idx_key}')::boolean"
-        else:
-            expr = f"idx->>'{idx_key}'"
-
-        self.order_by = f"{expr} {direction}"
+        if parts:
+            self.order_by = ", ".join(parts)
 
 
 # ---------------------------------------------------------------------------
