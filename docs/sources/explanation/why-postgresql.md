@@ -47,13 +47,37 @@ limited resource.
 When a ZCatalog query spans multiple indexes (e.g., `portal_type="Document"` AND
 `review_state="published"` AND `path="/plone/news"`), each index returns a set of
 record IDs. ZCatalog intersects these sets in Python using `IITreeSet.intersection()`.
-There is no query planner -- the intersection order is determined by the order indexes
-appear in the query dict, not by selectivity.
+Since Plone 4, `Products.ZCatalog.plan` provides a query plan optimizer that learns
+index selectivity over time and reorders intersections accordingly. This helps, but the
+fundamental cost remains: every index involved must materialize its full result set as
+a Python `IITreeSet` before intersection can begin.
 
-For a query that matches 10,000 documents by type but only 50 by path, ZCatalog
-materializes the 10,000-element set first, then intersects it with the 50-element set.
-A SQL query planner would evaluate the path condition first and never touch the other
-9,950 records.
+PostgreSQL's query planner, by contrast, can short-circuit at the storage level --
+using bitmap index scans that combine conditions before reading any heap pages.
+
+### Write conflicts under concurrent load
+
+Every catalog write (indexing a new or modified object) mutates multiple BTree
+objects -- the forward index, the reverse index, and the Length counter, for each
+affected index. When a BTree bucket grows beyond its maximum size it splits into two
+new buckets. ZODB's BTree conflict resolution can merge concurrent updates to
+*different keys within the same bucket*, but it cannot resolve structural changes
+like bucket splits or deletions that empty a bucket.
+
+On a horizontally scaled ZODB deployment (multiple ZEO clients or RelStorage
+app servers), concurrent content edits frequently trigger `ConflictError` on catalog
+BTree buckets. ZODB retries the transaction (up to three times by default), but under
+sustained write load the retry rate can become significant. The community has
+developed workarounds -- `Products.QueueCatalog` serializes indexing through a
+single ZEO client, `collective.indexing` defers catalog updates -- but these add
+complexity and latency.
+
+With plone.pgcatalog, catalog writes are SQL `INSERT ... ON CONFLICT UPDATE`
+statements inside the same PostgreSQL transaction that stores the object pickle.
+PostgreSQL's row-level locking means two concurrent writes to different objects never
+conflict, regardless of how many app servers are running. Bucket splits, BTree
+restructuring, and Python-level conflict resolution are simply not part of the
+picture.
 
 ## What PostgreSQL gives us
 
