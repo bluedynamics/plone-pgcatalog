@@ -1,0 +1,133 @@
+# plone.pgcatalog
+
+> PostgreSQL-backed catalog for Plone, replacing ZCatalog BTrees with SQL queries on JSONB.
+
+plone.pgcatalog is a drop-in replacement for Plone's portal_catalog that stores all
+catalog data in PostgreSQL instead of ZODB BTrees. It uses the zodb-pgjsonb storage
+backend which transcodes ZODB pickles to JSONB via zodb-json-codec (Rust).
+
+## Key Facts
+
+- Package: plone.pgcatalog
+- License: GPL-2.0
+- Python: 3.12+
+- PostgreSQL: 14+ (tested with 17)
+- Plone: 6.x
+- Repository: https://github.com/bluedynamics/plone-pgcatalog
+
+## Architecture
+
+All catalog data lives in one PostgreSQL table (`object_state`) with columns:
+- `zoid` (BIGINT PK) — ZODB object ID as integer
+- `path` (TEXT) — Plone content path
+- `parent_path` (TEXT) — parent container path
+- `path_depth` (INT) — depth in path hierarchy
+- `idx` (JSONB) — all index values as a JSON document
+- `searchable_text` (TSVECTOR) — language-aware full-text search column
+
+### Write Path
+
+1. `catalog_object()` sets a `_pgcatalog_pending` annotation on the content object
+2. On ZODB commit, `CatalogStateProcessor` (a zodb-pgjsonb state processor plugin) extracts the annotation
+3. The processor returns `ExtraColumn` values for path, idx, searchable_text
+4. zodb-pgjsonb writes these columns atomically alongside the ZODB object state
+
+### Read Path
+
+1. `PlonePGCatalogTool.searchResults()` calls `build_query()` in query.py
+2. `build_query()` translates ZCatalog query dicts to SQL WHERE clauses on idx JSONB
+3. Results are `PGCatalogBrain` objects (lazy-loading from idx JSONB)
+4. With connection pooling, idx columns load in batch on first attribute access
+
+## Index Types
+
+All standard ZCatalog index types are supported:
+
+| ZCatalog Type | IndexType Enum | JSONB Storage |
+|---|---|---|
+| FieldIndex | FIELD | `idx->>'name'` |
+| KeywordIndex | KEYWORD | `idx->'name'` (JSON array) |
+| BooleanIndex | BOOLEAN | `idx->>'name'` (true/false) |
+| DateIndex | DATE | `idx->>'name'` (ISO 8601) |
+| DateRangeIndex | DATERANGE | `idx->'name'` ({since, until}) |
+| UUIDIndex | UUID | `idx->>'name'` |
+| ZCTextIndex | TEXT | tsvector column |
+| ExtendedPathIndex | PATH | `path` column |
+| GoPipIndex | GOPIP | `idx->>'name'` |
+| DateRecurringIndex | Custom | IPGIndexTranslator utility |
+
+## Full-Text Search
+
+Four tiers of full-text capability:
+
+1. **Tier 0**: No FTS (pg_catalog only stores idx JSONB)
+2. **Tier 1**: PostgreSQL tsvector with language-aware stemming (30 languages)
+3. **Tier 2**: Weighted ranking with Title/Description boosting via GIN expression indexes
+4. **Tier 3**: BM25 ranking via VectorChord-BM25 extension (optional)
+
+Language detection uses the `Language` index value per object, mapped to PostgreSQL
+regconfig via the `pgcatalog_lang_to_regconfig()` SQL function.
+
+## Query API
+
+Standard ZCatalog query dict syntax:
+
+```python
+results = catalog.searchResults(
+    portal_type="Document",
+    review_state="published",
+    SearchableText="postgresql catalog",
+    sort_on="modified",
+    sort_order="descending",
+    b_size=20,
+    b_start=0,
+)
+```
+
+Operators: exact match, `{"query": [...], "operator": "or"}`, range queries with
+`{"query": value, "range": "min"}`, `not` queries, path queries with depth.
+
+## Custom Index Types
+
+Implement `IPGIndexTranslator` (named utility) for custom index types:
+
+```python
+@implementer(IPGIndexTranslator)
+class MyTranslator:
+    def extract(self, obj, index_name):
+        return {"key": "value"}
+
+    def query(self, index_name, query_value):
+        return sql_expression, params
+
+    def schema_ddl(self, index_name):
+        return "CREATE INDEX ..."
+```
+
+Register as: `provideUtility(translator, IPGIndexTranslator, name="MyIndexMetaType")`
+
+## Configuration
+
+In `zope.conf`:
+
+```xml
+%import zodb_pgjsonb
+
+<zodb_db main>
+  <pgjsonb>
+    dsn postgresql://user:pass@localhost:5432/plone
+    blob-dir /var/plone/blobs
+  </pgjsonb>
+  mount-point /
+</zodb_db>
+```
+
+GenericSetup profile `plone.pgcatalog:default` replaces portal_catalog class and
+creates the DDL schema.
+
+## Documentation Sections
+
+- [Tutorials](tutorials/index.md): Step-by-step lessons (quickstart, migration, multilingual)
+- [How-To Guides](how-to/index.md): Task-focused solutions (install, deploy, BM25, custom translators)
+- [Reference](reference/index.md): API specs (query syntax, index types, schema, configuration)
+- [Explanation](explanation/index.md): Architecture, design decisions, performance, security
