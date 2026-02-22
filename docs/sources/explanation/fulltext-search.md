@@ -40,25 +40,16 @@ matches exact word forms only.
 plone.pgcatalog implements a layered search architecture. Each tier adds
 capabilities without removing the previous tier's functionality.
 
-```{mermaid}
-flowchart TB
-    subgraph "Tier 4: Addon ZCTextIndex"
-        T4[GIN expression index<br/>simple config<br/>auto-discovered at startup]
-    end
-    subgraph "Tier 3: Title/Description"
-        T3[GIN expression index<br/>simple config<br/>word-level matching]
-    end
-    subgraph "Tier 2: SearchableText + BM25"
-        T2[BM25 ranking via VectorChord-BM25<br/>per-language columns<br/>probabilistic scoring]
-    end
-    subgraph "Tier 1: SearchableText"
-        T1[Dedicated tsvector column<br/>language-aware stemming<br/>weighted A/B/D ranking]
-    end
+| Tier | Scope | Mechanism | Requires |
+|---|---|---|---|
+| **1** | SearchableText | Dedicated `tsvector` column, language-aware stemming, weighted A/B/D ranking | PostgreSQL (built-in) |
+| **2** | SearchableText | BM25 probabilistic scoring via per-language columns | VectorChord-BM25 extension |
+| **3** | Title / Description | GIN expression indexes on `idx` JSONB, `simple` config, word-level matching | PostgreSQL (built-in) |
+| **4** | Addon ZCTextIndex | GIN expression indexes, `simple` config, auto-discovered at startup | PostgreSQL (built-in) |
 
-    T1 --> T2
-    T3 ~~~ T1
-    T4 ~~~ T3
-```
+Tiers 1 and 2 are alternatives for SearchableText -- tier 2 upgrades tier 1 when the
+BM25 extension is available. Tiers 3 and 4 are independent and always active alongside
+whichever SearchableText tier is in use.
 
 ### Tier 1: SearchableText (language-aware)
 

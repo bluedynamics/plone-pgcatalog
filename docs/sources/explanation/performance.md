@@ -31,9 +31,12 @@ All measurements were taken under the following conditions:
 The write speedup comes from eliminating BTree writes. When ZCatalog indexes an
 object, it updates every index's forward and reverse BTrees. For a document with 30
 indexes, this triggers roughly 193 ZODB `store()` calls per document -- one for each
-BTree node that changes. plone.pgcatalog triggers roughly 40 `store()` calls (the
-object itself plus its container chain). Fewer ZODB stores means fewer pickle
-serializations, fewer PostgreSQL `INSERT`/`UPDATE` statements, and a faster commit.
+BTree node that changes. plone.pgcatalog reduces this to roughly 40 `store()` calls
+-- the content object itself, its annotations, and other Plone-internal persistent
+objects dirtied during the edit cycle (workflow history, modification timestamps,
+etc.). The catalog index data is written as extra SQL columns in the same transaction,
+not as separate ZODB objects. Fewer ZODB stores means fewer pickle serializations,
+fewer PostgreSQL `INSERT`/`UPDATE` statements, and a faster commit.
 
 Content modification shows a larger speedup (1.39x vs 1.13x) because creation
 includes one-time costs (container updates, UID assignment) that are independent of
