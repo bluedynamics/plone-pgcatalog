@@ -1,5 +1,29 @@
 # Changelog
 
+## 1.0.0b9
+
+Security review fixes (addresses #11):
+
+- **CAT-C1:** Replace f-string DDL in `BM25Backend.install_schema()` with
+  `psycopg.sql.SQL`/`Identifier`/`Literal` composition. Validate language
+  codes against `LANG_TOKENIZER_MAP` allowlist + `validate_identifier()` on
+  all generated column/index/tokenizer names.
+- **CAT-H1:** Clamp `sort_limit`/`b_size` to `_MAX_LIMIT` (10,000) and
+  `b_start` to `_MAX_OFFSET` (1,000,000) to prevent resource exhaustion.
+- **CAT-H2:** Validate RRULE strings in `DateRecurringIndexTranslator.extract()`
+  against RFC 5545 pattern and `_MAX_RRULE_LENGTH` (1,000) before storing.
+- **CAT-H3:** Truncate full-text search queries to `_MAX_SEARCH_LENGTH` (1,000)
+  to prevent excessive tsvector parsing.
+- **CAT-M1:** Replace f-string SQL in `clear_catalog_data()` with
+  `psycopg.sql.Identifier` for extra column names.
+- **CAT-M2:** Add `conn.closed` guard in `release_request_connection()` to
+  handle already-closed connections; document pool leak recovery in docstring.
+- **CAT-M3:** Add defensive `validate_identifier(index_name)` in
+  `DateRecurringIndexTranslator.query()`.
+- **CAT-L1:** Simplify error messages to not expose internal limit values.
+- **CAT-L2:** Add rate limiting guidance note in `searchResults()` docstring.
+- **CAT-L3:** Normalize double slashes in `_validate_path()`.
+
 ## 1.0.0b8
 
 ### Changed

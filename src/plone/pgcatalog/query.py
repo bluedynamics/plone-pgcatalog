@@ -39,6 +39,14 @@ _PATH_RE = re.compile(r"^/[a-zA-Z0-9._/@+\-]*$")
 # Maximum number of paths in a single path query (DoS prevention)
 _MAX_PATHS = 100
 
+# Maximum LIMIT/OFFSET for catalog queries (DoS prevention).
+# Web users can influence these via b_size/b_start query parameters.
+_MAX_LIMIT = 10000
+_MAX_OFFSET = 1000000
+
+# Maximum search text length (characters) to prevent resource exhaustion.
+_MAX_SEARCH_LENGTH = 1000
+
 
 def _lookup_translator(name):
     """Look up an IPGIndexTranslator utility for a given index name.
@@ -206,11 +214,11 @@ class _QueryBuilder:
         b_size = query_dict.get("b_size")
 
         if sort_limit:
-            self.limit = int(sort_limit)
+            self.limit = min(int(sort_limit), _MAX_LIMIT)
         elif b_size:
-            self.limit = int(b_size)
+            self.limit = min(int(b_size), _MAX_LIMIT)
         if b_start:
-            self.offset = int(b_start)
+            self.offset = min(int(b_start), _MAX_OFFSET)
 
     # -- dispatch -----------------------------------------------------------
 
@@ -404,6 +412,10 @@ class _QueryBuilder:
         if not query_val:
             return
 
+        # Truncate long search queries to prevent resource exhaustion
+        if isinstance(query_val, str) and len(query_val) > _MAX_SEARCH_LENGTH:
+            query_val = query_val[:_MAX_SEARCH_LENGTH]
+
         if idx_key is None:
             # SearchableText → delegate to active search backend.
             from plone.pgcatalog.backends import get_backend
@@ -447,12 +459,9 @@ class _QueryBuilder:
         paths = [query_val] if isinstance(query_val, str) else list(query_val)
 
         if len(paths) > _MAX_PATHS:
-            raise ValueError(
-                f"Too many paths in query ({len(paths)}), maximum is {_MAX_PATHS}"
-            )
+            raise ValueError("Too many paths in query")
 
-        for path in paths:
-            _validate_path(path)
+        paths = [_validate_path(p) for p in paths]  # validates AND normalizes
 
         # All path indexes (built-in "path" and additional like "tgpath")
         # store their data in idx JSONB and query via expression indexes.
@@ -629,8 +638,15 @@ def _normalize_query(raw):
 
 
 def _validate_path(path):
-    """Validate a path string.  Raises ValueError on invalid input."""
+    """Validate a path string.  Raises ValueError on invalid input.
+
+    Returns the normalized path (consecutive slashes collapsed).
+    """
     if not isinstance(path, str):
         raise ValueError(f"Path must be a string, got {type(path).__name__}")
+    # Collapse consecutive slashes (e.g. "//foo//bar" -> "/foo/bar")
+    while "//" in path:
+        path = path.replace("//", "/")
     if not _PATH_RE.match(path):
         raise ValueError(f"Invalid path: {path!r}")
+    return path

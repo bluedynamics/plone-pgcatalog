@@ -15,10 +15,24 @@ Query strategy:
 
 from plone.pgcatalog.columns import convert_value
 from plone.pgcatalog.columns import ensure_date_param as _ensure_date_param
+from plone.pgcatalog.columns import validate_identifier
 from plone.pgcatalog.interfaces import IPGIndexTranslator
 from zope.interface import implementer
 
 import logging
+import re
+
+
+# RFC 5545 RRULE validation pattern: must start with a valid FREQ value.
+# Accepts both full "RRULE:FREQ=..." and bare "FREQ=..." formats (Plone
+# commonly stores bare format via plone.formwidget.recurrence).
+_RRULE_PATTERN = re.compile(
+    r"^(RRULE:)?FREQ=(YEARLY|MONTHLY|WEEKLY|DAILY|HOURLY|MINUTELY|SECONDLY)",
+    re.IGNORECASE,
+)
+
+# Maximum allowed RRULE string length (prevent excessive PL/pgSQL parsing)
+_MAX_RRULE_LENGTH = 1000
 
 
 log = logging.getLogger(__name__)
@@ -51,8 +65,6 @@ class DateRecurringIndexTranslator:
     """
 
     def __init__(self, date_attr, recurdef_attr, until_attr=""):
-        from plone.pgcatalog.columns import validate_identifier
-
         validate_identifier(date_attr)
         self.date_attr = date_attr
         self.recurdef_attr = recurdef_attr
@@ -68,12 +80,32 @@ class DateRecurringIndexTranslator:
 
         recurdef = _safe_getattr(obj, self.recurdef_attr)
         if recurdef:
-            result[f"{index_name}_recurrence"] = str(recurdef)
+            recurdef = str(recurdef)
+            if len(recurdef) > _MAX_RRULE_LENGTH:
+                log.warning(
+                    "RRULE too long (%d chars), ignoring recurrence for %s",
+                    len(recurdef),
+                    index_name,
+                )
+            elif not _RRULE_PATTERN.match(recurdef):
+                log.warning(
+                    "Invalid RRULE format %r, ignoring recurrence for %s",
+                    recurdef[:50],
+                    index_name,
+                )
+            else:
+                result[f"{index_name}_recurrence"] = recurdef
 
         return result
 
     def query(self, index_name, raw, spec):
         """Translate a ZCatalog range query to SQL using rrule functions."""
+        # Defensive validation: index_name comes from the component
+        # architecture (ZCatalog registered name) and goes through
+        # IndexRegistry validation at startup.  Belt-and-suspenders
+        # check to prevent SQL injection via JSONB path expressions.
+        validate_identifier(index_name)
+
         query_val = spec.get("query")
         range_spec = spec.get("range")
 
@@ -145,5 +177,9 @@ class DateRecurringIndexTranslator:
             return (sql, {p: val})
 
     def sort(self, index_name):
-        """Sort by base date."""
+        """Sort by base date.
+
+        Note: index_name is validated in query() which is always
+        called before sort() in the query pipeline.
+        """
         return f"pgcatalog_to_timestamptz(idx->>'{index_name}')"

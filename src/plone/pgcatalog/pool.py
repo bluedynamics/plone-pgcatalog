@@ -54,6 +54,13 @@ def get_request_connection(pool):
 
     Falls back to normal pool getconn/putconn when no request-scoped
     connection is active (e.g. in tests or background tasks).
+
+    Note:
+        If IPubEnd does not fire (e.g. SIGTERM, middleware crash), the
+        thread-local connection is never returned to the pool.  psycopg_pool
+        reclaims idle connections after ``max_idle`` seconds (default: 10 min),
+        so leaked connections are eventually recovered.  For stricter cleanup,
+        configure ``max_lifetime`` on the connection pool.
     """
     conn = getattr(_local, "pgcat_conn", None)
     if conn is not None and not conn.closed:
@@ -74,7 +81,8 @@ def release_request_connection(event=None):
     pool = getattr(_local, "pgcat_pool", None)
     if conn is not None and pool is not None:
         try:
-            pool.putconn(conn)
+            if not conn.closed:
+                pool.putconn(conn)
         except Exception:
             log.warning("Failed to return connection to pool", exc_info=True)
     _local.pgcat_conn = None

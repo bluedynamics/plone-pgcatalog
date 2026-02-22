@@ -8,8 +8,15 @@ from datetime import datetime
 from datetime import UTC
 from plone.pgcatalog.indexing import catalog_object
 from plone.pgcatalog.query import _execute_query
+from plone.pgcatalog.query import _MAX_LIMIT
+from plone.pgcatalog.query import _MAX_OFFSET
+from plone.pgcatalog.query import _MAX_SEARCH_LENGTH
+from plone.pgcatalog.query import _validate_path
 from plone.pgcatalog.query import apply_security_filters
+from plone.pgcatalog.query import build_query
 from tests.conftest import insert_object
+
+import pytest
 
 
 # ---------------------------------------------------------------------------
@@ -271,3 +278,384 @@ class TestEffectiveRangeIntegration:
         # Date: 403 future→out, 404 expired→out
         # Result: 400, 402, 405
         assert set(zoids) == {400, 402, 405}
+
+
+# ---------------------------------------------------------------------------
+# Unit tests: hardening fixes (CAT-H1, CAT-H3, CAT-L1, CAT-L3)
+# ---------------------------------------------------------------------------
+
+
+class TestLimitOffsetBounds:
+    """CAT-H1: LIMIT/OFFSET clamped to safe maximums."""
+
+    def test_sort_limit_clamped(self):
+        qr = build_query({"sort_limit": 999999})
+        assert qr["limit"] == _MAX_LIMIT
+
+    def test_b_size_clamped(self):
+        qr = build_query({"b_size": 999999})
+        assert qr["limit"] == _MAX_LIMIT
+
+    def test_b_start_clamped(self):
+        qr = build_query({"b_start": 99999999})
+        assert qr["offset"] == _MAX_OFFSET
+
+    def test_within_bounds_unchanged(self):
+        qr = build_query({"sort_limit": 50, "b_start": 100})
+        assert qr["limit"] == 50
+        assert qr["offset"] == 100
+
+    def test_exact_max_limit(self):
+        qr = build_query({"b_size": _MAX_LIMIT})
+        assert qr["limit"] == _MAX_LIMIT
+
+    def test_exact_max_offset(self):
+        qr = build_query({"b_start": _MAX_OFFSET})
+        assert qr["offset"] == _MAX_OFFSET
+
+
+class TestSearchLengthTruncation:
+    """CAT-H3: Full-text search queries truncated to _MAX_SEARCH_LENGTH."""
+
+    def test_long_search_text_truncated(self):
+        long_query = "a" * (_MAX_SEARCH_LENGTH + 500)
+        qr = build_query({"SearchableText": long_query})
+        # The param value should be truncated to _MAX_SEARCH_LENGTH
+        # Find the search param (it will be in qr["params"])
+        text_params = [
+            v
+            for v in qr["params"].values()
+            if isinstance(v, str) and len(v) >= _MAX_SEARCH_LENGTH
+        ]
+        # All text params should be at most _MAX_SEARCH_LENGTH
+        for val in text_params:
+            assert len(val) <= _MAX_SEARCH_LENGTH
+
+    def test_short_search_text_unchanged(self):
+        short_query = "hello world"
+        qr = build_query({"SearchableText": short_query})
+        text_params = [
+            v for v in qr["params"].values() if isinstance(v, str) and "hello" in v
+        ]
+        assert any("hello world" in v for v in text_params)
+
+
+class TestPathValidationNormalization:
+    """CAT-L3: _validate_path normalizes double slashes."""
+
+    def test_double_slash_normalized(self):
+        result = _validate_path("//plone//documents")
+        assert result == "/plone/documents"
+
+    def test_triple_slash_normalized(self):
+        result = _validate_path("///plone///docs")
+        assert result == "/plone/docs"
+
+    def test_normal_path_unchanged(self):
+        result = _validate_path("/plone/documents")
+        assert result == "/plone/documents"
+
+    def test_single_slash_unchanged(self):
+        result = _validate_path("/")
+        assert result == "/"
+
+    def test_invalid_chars_still_rejected(self):
+        with pytest.raises(ValueError, match="Invalid path"):
+            _validate_path("/plone/<script>")
+
+    def test_non_string_rejected(self):
+        with pytest.raises(ValueError, match="Path must be a string"):
+            _validate_path(123)
+
+
+class TestErrorMessageOpacity:
+    """CAT-L1: Error messages do not expose internal limit values."""
+
+    def test_too_many_paths_no_limit_in_message(self):
+        many_paths = [f"/plone/doc{i}" for i in range(200)]
+        with pytest.raises(ValueError, match="Too many paths in query") as exc_info:
+            build_query({"path": {"query": many_paths}})
+        # Verify the error message does NOT contain the actual limit number
+        msg = str(exc_info.value)
+        assert "100" not in msg
+        assert "200" not in msg
+        assert "maximum" not in msg.lower()
+
+
+# ---------------------------------------------------------------------------
+# CAT-H2: RRULE validation tests
+# ---------------------------------------------------------------------------
+
+
+class TestRRULEValidation:
+    """Tests for RRULE string validation in DateRecurringIndexTranslator."""
+
+    def test_rejects_string_not_starting_with_rrule_freq(self):
+        """RRULE strings not starting with RRULE:FREQ= are rejected."""
+        from plone.pgcatalog.dri import DateRecurringIndexTranslator
+
+        translator = DateRecurringIndexTranslator(
+            date_attr="start", recurdef_attr="recurrence"
+        )
+
+        class FakeObj:
+            start = "2025-01-01T00:00:00+00:00"
+            recurrence = "DTSTART:20250101T000000Z"
+
+        result = translator.extract(FakeObj(), "start")
+        assert "start" in result
+        assert "start_recurrence" not in result
+
+    def test_rejects_sql_injection_attempt(self):
+        """SQL injection attempts in RRULE strings are rejected."""
+        from plone.pgcatalog.dri import DateRecurringIndexTranslator
+
+        translator = DateRecurringIndexTranslator(
+            date_attr="start", recurdef_attr="recurrence"
+        )
+
+        class FakeObj:
+            start = "2025-01-01T00:00:00+00:00"
+            recurrence = "'; DROP TABLE object_state; --"
+
+        result = translator.extract(FakeObj(), "start")
+        assert "start_recurrence" not in result
+
+    def test_rejects_string_exceeding_max_length(self):
+        """RRULE strings exceeding _MAX_RRULE_LENGTH are rejected."""
+        from plone.pgcatalog.dri import _MAX_RRULE_LENGTH
+        from plone.pgcatalog.dri import DateRecurringIndexTranslator
+
+        translator = DateRecurringIndexTranslator(
+            date_attr="start", recurdef_attr="recurrence"
+        )
+
+        class FakeObj:
+            start = "2025-01-01T00:00:00+00:00"
+            recurrence = "RRULE:FREQ=DAILY;COUNT=1" + "x" * _MAX_RRULE_LENGTH
+
+        result = translator.extract(FakeObj(), "start")
+        assert "start_recurrence" not in result
+
+    def test_accepts_valid_rrule_daily(self):
+        """Valid daily RRULE string is accepted."""
+        from plone.pgcatalog.dri import DateRecurringIndexTranslator
+
+        translator = DateRecurringIndexTranslator(
+            date_attr="start", recurdef_attr="recurrence"
+        )
+
+        class FakeObj:
+            start = "2025-01-01T00:00:00+00:00"
+            recurrence = "RRULE:FREQ=DAILY;COUNT=10"
+
+        result = translator.extract(FakeObj(), "start")
+        assert result["start_recurrence"] == "RRULE:FREQ=DAILY;COUNT=10"
+
+    def test_accepts_valid_rrule_weekly(self):
+        """Valid weekly RRULE string is accepted."""
+        from plone.pgcatalog.dri import DateRecurringIndexTranslator
+
+        translator = DateRecurringIndexTranslator(
+            date_attr="start", recurdef_attr="recurrence"
+        )
+
+        class FakeObj:
+            start = "2025-01-01T00:00:00+00:00"
+            recurrence = "RRULE:FREQ=WEEKLY;BYDAY=MO,WE,FR"
+
+        result = translator.extract(FakeObj(), "start")
+        assert result["start_recurrence"] == "RRULE:FREQ=WEEKLY;BYDAY=MO,WE,FR"
+
+    def test_accepts_valid_rrule_monthly(self):
+        """Valid monthly RRULE string is accepted."""
+        from plone.pgcatalog.dri import DateRecurringIndexTranslator
+
+        translator = DateRecurringIndexTranslator(
+            date_attr="start", recurdef_attr="recurrence"
+        )
+
+        class FakeObj:
+            start = "2025-01-01T00:00:00+00:00"
+            recurrence = "RRULE:FREQ=MONTHLY;BYMONTHDAY=15"
+
+        result = translator.extract(FakeObj(), "start")
+        assert result["start_recurrence"] == "RRULE:FREQ=MONTHLY;BYMONTHDAY=15"
+
+    def test_accepts_valid_rrule_yearly(self):
+        """Valid yearly RRULE string is accepted."""
+        from plone.pgcatalog.dri import DateRecurringIndexTranslator
+
+        translator = DateRecurringIndexTranslator(
+            date_attr="start", recurdef_attr="recurrence"
+        )
+
+        class FakeObj:
+            start = "2025-01-01T00:00:00+00:00"
+            recurrence = "RRULE:FREQ=YEARLY;BYMONTH=12;BYMONTHDAY=25"
+
+        result = translator.extract(FakeObj(), "start")
+        assert (
+            result["start_recurrence"] == "RRULE:FREQ=YEARLY;BYMONTH=12;BYMONTHDAY=25"
+        )
+
+    def test_accepts_valid_rrule_case_insensitive(self):
+        """RRULE validation is case-insensitive per RFC 5545."""
+        from plone.pgcatalog.dri import DateRecurringIndexTranslator
+
+        translator = DateRecurringIndexTranslator(
+            date_attr="start", recurdef_attr="recurrence"
+        )
+
+        class FakeObj:
+            start = "2025-01-01T00:00:00+00:00"
+            recurrence = "rrule:freq=daily;count=5"
+
+        result = translator.extract(FakeObj(), "start")
+        assert result["start_recurrence"] == "rrule:freq=daily;count=5"
+
+    def test_rejects_empty_rrule_string(self):
+        """Empty RRULE string is treated as no recurrence (falsy)."""
+        from plone.pgcatalog.dri import DateRecurringIndexTranslator
+
+        translator = DateRecurringIndexTranslator(
+            date_attr="start", recurdef_attr="recurrence"
+        )
+
+        class FakeObj:
+            start = "2025-01-01T00:00:00+00:00"
+            recurrence = ""
+
+        result = translator.extract(FakeObj(), "start")
+        assert "start_recurrence" not in result
+
+    def test_accepts_bare_freq_format(self):
+        """Bare 'FREQ=...' format (without 'RRULE:' prefix) is accepted.
+
+        Plone's plone.formwidget.recurrence commonly stores bare format,
+        and the PL/pgSQL rrule parser accepts it.
+        """
+        from plone.pgcatalog.dri import DateRecurringIndexTranslator
+
+        translator = DateRecurringIndexTranslator(
+            date_attr="start", recurdef_attr="recurrence"
+        )
+
+        class FakeObj:
+            start = "2025-01-01T00:00:00+00:00"
+            recurrence = "FREQ=DAILY;COUNT=10"
+
+        result = translator.extract(FakeObj(), "start")
+        assert result["start_recurrence"] == "FREQ=DAILY;COUNT=10"
+
+    def test_max_rrule_length_constant(self):
+        """_MAX_RRULE_LENGTH is set to 1000."""
+        from plone.pgcatalog.dri import _MAX_RRULE_LENGTH
+
+        assert _MAX_RRULE_LENGTH == 1000
+
+    def test_at_exact_max_length_accepted(self):
+        """RRULE string at exactly _MAX_RRULE_LENGTH is accepted."""
+        from plone.pgcatalog.dri import _MAX_RRULE_LENGTH
+        from plone.pgcatalog.dri import DateRecurringIndexTranslator
+
+        translator = DateRecurringIndexTranslator(
+            date_attr="start", recurdef_attr="recurrence"
+        )
+        # Build a valid RRULE string padded to exactly _MAX_RRULE_LENGTH
+        base = "RRULE:FREQ=DAILY;COUNT=1"
+        # Pad with a valid-looking comment section (semicolon + chars)
+        padding = ";X-PAD=" + "A" * (_MAX_RRULE_LENGTH - len(base) - len(";X-PAD="))
+        rrule = base + padding
+        assert len(rrule) == _MAX_RRULE_LENGTH
+
+        class FakeObj:
+            start = "2025-01-01T00:00:00+00:00"
+            recurrence = rrule
+
+        result = translator.extract(FakeObj(), "start")
+        assert "start_recurrence" in result
+
+
+# ---------------------------------------------------------------------------
+# CAT-M2: Connection pool leak resilience tests
+# ---------------------------------------------------------------------------
+
+
+class TestReleaseRequestConnectionRobustness:
+    """Tests that release_request_connection handles edge cases gracefully."""
+
+    def test_handles_closed_connection(self):
+        """release_request_connection skips putconn for closed connections."""
+        from plone.pgcatalog.pending import _local
+        from plone.pgcatalog.pool import release_request_connection
+        from unittest.mock import MagicMock
+
+        mock_conn = MagicMock()
+        mock_conn.closed = True
+        mock_pool = MagicMock()
+
+        _local.pgcat_conn = mock_conn
+        _local.pgcat_pool = mock_pool
+
+        release_request_connection()
+
+        # putconn should NOT be called for closed connections
+        mock_pool.putconn.assert_not_called()
+        # Thread-locals should be cleaned up
+        assert _local.pgcat_conn is None
+        assert _local.pgcat_pool is None
+
+    def test_handles_open_connection(self):
+        """release_request_connection returns open connections to pool."""
+        from plone.pgcatalog.pending import _local
+        from plone.pgcatalog.pool import release_request_connection
+        from unittest.mock import MagicMock
+
+        mock_conn = MagicMock()
+        mock_conn.closed = False
+        mock_pool = MagicMock()
+
+        _local.pgcat_conn = mock_conn
+        _local.pgcat_pool = mock_pool
+
+        release_request_connection()
+
+        mock_pool.putconn.assert_called_once_with(mock_conn)
+        assert _local.pgcat_conn is None
+        assert _local.pgcat_pool is None
+
+    def test_handles_no_connection(self):
+        """release_request_connection is a no-op when no connection exists."""
+        from plone.pgcatalog.pending import _local
+        from plone.pgcatalog.pool import release_request_connection
+
+        _local.pgcat_conn = None
+        _local.pgcat_pool = None
+
+        # Should not raise
+        release_request_connection()
+
+        assert _local.pgcat_conn is None
+        assert _local.pgcat_pool is None
+
+    def test_handles_putconn_exception(self):
+        """release_request_connection handles exceptions from putconn gracefully."""
+        from plone.pgcatalog.pending import _local
+        from plone.pgcatalog.pool import release_request_connection
+        from unittest.mock import MagicMock
+
+        mock_conn = MagicMock()
+        mock_conn.closed = False
+        mock_pool = MagicMock()
+        mock_pool.putconn.side_effect = Exception("pool error")
+
+        _local.pgcat_conn = mock_conn
+        _local.pgcat_pool = mock_pool
+
+        # Should not raise despite putconn failure
+        release_request_connection()
+
+        # Thread-locals should still be cleaned up
+        assert _local.pgcat_conn is None
+        assert _local.pgcat_pool is None

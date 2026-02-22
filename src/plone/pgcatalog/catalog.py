@@ -38,6 +38,7 @@ from plone.pgcatalog.pool import get_storage_connection
 from plone.pgcatalog.query import apply_security_filters
 from plone.pgcatalog.query import build_query
 from Products.CMFPlone.CatalogTool import CatalogTool
+from psycopg import sql as pgsql
 from zope.interface import implementer
 
 import logging
@@ -226,15 +227,23 @@ def clear_catalog_data(conn):
     The base object_state rows are preserved.
     """
     extra_nulls = get_backend().uncatalog_extra()
-    extra_sql = "".join(f", {col} = NULL" for col in extra_nulls)
+    # Use psycopg.sql.Identifier for safe column name quoting
+    extra_parts = [
+        pgsql.SQL(", {} = NULL").format(pgsql.Identifier(col)) for col in extra_nulls
+    ]
+    extra_sql = pgsql.SQL("").join(extra_parts)
+
+    base_sql = pgsql.SQL(
+        "UPDATE object_state SET "
+        "path = NULL, parent_path = NULL, path_depth = NULL, "
+        "idx = NULL, searchable_text = NULL"
+    )
+    query = pgsql.SQL("{base}{extra} WHERE idx IS NOT NULL").format(
+        base=base_sql, extra=extra_sql
+    )
 
     with conn.cursor() as cur:
-        cur.execute(
-            "UPDATE object_state SET "
-            "path = NULL, parent_path = NULL, path_depth = NULL, "
-            f"idx = NULL, searchable_text = NULL{extra_sql} "
-            "WHERE idx IS NOT NULL"
-        )
+        cur.execute(query)
         count = cur.rowcount
 
     log.info("clear_catalog_data: cleared %d objects", count)
@@ -484,6 +493,9 @@ class PlonePGCatalogTool(CatalogTool):
 
     def searchResults(self, query=None, **kw):
         """Search using PG instead of ZCatalog BTrees."""
+        # NOTE: No application-level rate limiting is applied to search queries.
+        # Deploy a reverse proxy (e.g. nginx, HAProxy) with rate limiting on
+        # search endpoints (@@search, @@search-results) for production use.
         from AccessControl import getSecurityManager
 
         if query is None:
