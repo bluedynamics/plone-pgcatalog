@@ -6,6 +6,7 @@ IDatabaseOpenedWithRoot subscriber that:
 3. Syncs the IndexRegistry from each Plone site's portal_catalog
 4. Creates GIN expression indexes for dynamically discovered TEXT indexes
 5. Registers IPGIndexTranslator utilities for DateRecurringIndex instances
+6. Registers IPGIndexTranslator utilities for DateRangeInRangeIndex instances
 """
 
 from plone.pgcatalog.backends import detect_and_set_backend
@@ -13,6 +14,7 @@ from plone.pgcatalog.columns import get_registry
 from plone.pgcatalog.columns import IndexType
 from plone.pgcatalog.columns import validate_identifier
 from plone.pgcatalog.dri import DateRecurringIndexTranslator
+from plone.pgcatalog.driri import DateRangeInRangeIndexTranslator
 from plone.pgcatalog.interfaces import IPGIndexTranslator
 from plone.pgcatalog.processor import CatalogStateProcessor
 from zope.component import provideUtility
@@ -191,6 +193,42 @@ def _register_dri_translators(catalog):
         )
 
 
+def _register_driri_translators(catalog):
+    """Discover DateRangeInRangeIndex instances and register IPGIndexTranslator utilities.
+
+    Called during startup after sync_from_catalog.  Reads startindex/endindex
+    config from the ZCatalog index objects and registers a
+    DateRangeInRangeIndexTranslator utility for each.
+    """
+    try:
+        indexes = catalog._catalog.indexes
+    except AttributeError:
+        return
+
+    for name, index_obj in indexes.items():
+        if getattr(index_obj, "meta_type", None) != "DateRangeInRangeIndex":
+            continue
+        startindex = getattr(index_obj, "startindex", None)
+        endindex = getattr(index_obj, "endindex", None)
+        if not startindex or not endindex:
+            log.warning(
+                "DateRangeInRangeIndex %r missing startindex/endindex config",
+                name,
+            )
+            continue
+        translator = DateRangeInRangeIndexTranslator(
+            startindex=startindex,
+            endindex=endindex,
+        )
+        provideUtility(translator, IPGIndexTranslator, name=name)
+        log.info(
+            "Registered DRIRI translator for index %r (start=%r, end=%r)",
+            name,
+            startindex,
+            endindex,
+        )
+
+
 def _sync_registry_from_db(db):
     """Populate the IndexRegistry from portal_catalog at startup.
 
@@ -209,6 +247,7 @@ def _sync_registry_from_db(db):
                 try:
                     registry.sync_from_catalog(catalog)
                     _register_dri_translators(catalog)
+                    _register_driri_translators(catalog)
                     log.info(
                         "IndexRegistry synced from %s/portal_catalog (%d indexes, %d metadata)",
                         getattr(obj, "getId", lambda: "?")(),

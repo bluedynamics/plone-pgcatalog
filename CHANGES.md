@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.0.0b10
+
+### Added
+
+- **DateRangeInRangeIndex support**: Native `IPGIndexTranslator` for
+  `Products.DateRangeInRangeIndex` overlap queries. Translates
+  `catalog({'my_idx': {'start': dt1, 'end': dt2}})` into a single SQL
+  overlap clause (`obj_start <= q_end AND obj_end >= q_start`).
+  Supports recurring events: when the underlying start index is a
+  DateRecurringIndex with RRULE, uses `rrule."between"()` with duration
+  offset for occurrence-level overlap detection.  Auto-discovered at
+  startup — no configuration needed.  Allows dropping the
+  `Products.DateRangeInRangeIndex` addon while keeping the same query API.
+
 ## 1.0.0b9
 
 ### Changed
