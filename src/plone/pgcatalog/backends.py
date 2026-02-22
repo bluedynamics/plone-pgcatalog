@@ -10,6 +10,9 @@ own ``bm25vector`` column with a language-specific tokenizer (stemmer /
 segmenter).  A fallback column handles unconfigured languages.
 """
 
+from plone.pgcatalog.columns import validate_identifier
+from psycopg import sql as pgsql
+
 import abc
 import logging
 
@@ -268,6 +271,27 @@ class BM25Backend(SearchBackend):
         raw = languages or ["en"]
         self.languages = list(dict.fromkeys(_normalize_lang(lang) for lang in raw))
 
+        # Security: validate each language code against the LANG_TOKENIZER_MAP
+        # allowlist. Only known language codes are permitted to prevent
+        # injection via crafted language strings in DDL identifiers.
+        for lang in self.languages:
+            if lang not in LANG_TOKENIZER_MAP:
+                raise ValueError(
+                    f"Unknown language code {lang!r}: "
+                    f"must be one of {sorted(LANG_TOKENIZER_MAP.keys())}"
+                )
+
+        # Secondary validation: ensure all generated identifiers are safe
+        # SQL identifiers (letters, digits, underscores only).
+        for lang in self.languages:
+            validate_identifier(self._col_name(lang))
+            validate_identifier(self._idx_name(lang))
+            validate_identifier(self._tok_name(lang))
+        # Validate fallback identifiers too
+        validate_identifier(self._col_name())
+        validate_identifier(self._idx_name())
+        validate_identifier(self._tok_name())
+
     def _tok_name(self, lang=None):
         """Tokenizer name for a language (or fallback)."""
         if lang:
@@ -317,6 +341,11 @@ class BM25Backend(SearchBackend):
         return cols
 
     def get_schema_sql(self):
+        # Security note: all language codes are validated in __init__()
+        # against LANG_TOKENIZER_MAP (allowlist) and all generated
+        # identifiers (col/idx/tok names) are validated via
+        # validate_identifier(). The f-string interpolation below is
+        # safe because only validated identifiers are used.
         parts = [
             "CREATE EXTENSION IF NOT EXISTS pg_tokenizer CASCADE;\n",
             "CREATE EXTENSION IF NOT EXISTS vchord_bm25 CASCADE;\n",
@@ -364,6 +393,9 @@ class BM25Backend(SearchBackend):
 
         CREATE EXTENSION + DO $$ blocks require per-statement execution;
         multi-statement strings fail silently in transactional connections.
+
+        Uses psycopg.sql for proper identifier quoting in DDL statements.
+        Tokenizer names use sql.Literal() since they are function arguments.
         """
         conn.execute("CREATE EXTENSION IF NOT EXISTS pg_tokenizer CASCADE")
         conn.execute("CREATE EXTENSION IF NOT EXISTS vchord_bm25 CASCADE")
@@ -374,17 +406,24 @@ class BM25Backend(SearchBackend):
             tok = self._tok_name(lang)
             idx = self._idx_name(lang)
             toml = _build_tokenizer_toml(lang)
+
             conn.execute(
-                f"ALTER TABLE object_state ADD COLUMN IF NOT EXISTS {col} bm25vector"
+                pgsql.SQL(
+                    "ALTER TABLE object_state ADD COLUMN IF NOT EXISTS {} bm25vector"
+                ).format(pgsql.Identifier(col))
             )
             conn.execute(
-                f"DO $$ BEGIN "
-                f"PERFORM create_tokenizer('{tok}', $cfg$\n{toml}$cfg$);\n"
-                f"EXCEPTION WHEN OTHERS THEN NULL; END $$"
+                pgsql.SQL(
+                    "DO $$ BEGIN "
+                    "PERFORM create_tokenizer({tok}, $cfg$\n{toml}$cfg$);\n"
+                    "EXCEPTION WHEN OTHERS THEN NULL; END $$"
+                ).format(tok=pgsql.Literal(tok), toml=pgsql.SQL(toml))
             )
             conn.execute(
-                f"CREATE INDEX IF NOT EXISTS {idx} "
-                f"ON object_state USING bm25 ({col} bm25_ops)"
+                pgsql.SQL(
+                    "CREATE INDEX IF NOT EXISTS {} "
+                    "ON object_state USING bm25 ({} bm25_ops)"
+                ).format(pgsql.Identifier(idx), pgsql.Identifier(col))
             )
 
         # Fallback column + tokenizer + index
@@ -393,10 +432,14 @@ class BM25Backend(SearchBackend):
             "ALTER TABLE object_state ADD COLUMN IF NOT EXISTS search_bm25 bm25vector"
         )
         conn.execute(
-            f"DO $$ BEGIN "
-            f"PERFORM create_tokenizer('{self._tok_name()}', $cfg$\n"
-            f"{fallback_toml}$cfg$);\n"
-            f"EXCEPTION WHEN OTHERS THEN NULL; END $$"
+            pgsql.SQL(
+                "DO $$ BEGIN "
+                "PERFORM create_tokenizer({tok}, $cfg$\n{toml}$cfg$);\n"
+                "EXCEPTION WHEN OTHERS THEN NULL; END $$"
+            ).format(
+                tok=pgsql.Literal(self._tok_name()),
+                toml=pgsql.SQL(fallback_toml),
+            )
         )
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_os_search_bm25 "
@@ -448,6 +491,9 @@ class BM25Backend(SearchBackend):
             idx = "idx_os_search_bm25"
             tok = self._tok_name()
 
+        # Security note: col, idx, and tok are derived from self.languages
+        # which are validated in __init__() against LANG_TOKENIZER_MAP
+        # (allowlist) and via validate_identifier(). Safe for interpolation.
         # BM25 ranking via <&> operator
         rank = f"{col} <&> to_bm25query('{idx}', tokenize(%({p_bm25q})s, '{tok}'))"
 
