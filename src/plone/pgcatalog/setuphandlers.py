@@ -26,6 +26,7 @@ def install(context):
 
     site = context.getSite()
     _ensure_catalog_indexes(site)
+    _remove_lexicons(site)
 
 
 def _ensure_catalog_indexes(site):
@@ -74,3 +75,20 @@ def _ensure_catalog_indexes(site):
             log.info("Re-applied catalog config from %s", profile_id)
         except Exception:
             log.debug("Could not apply catalog from %s", profile_id, exc_info=True)
+
+
+def _remove_lexicons(site):
+    """Remove ZCTextIndex lexicons — unused with PG-backed text search.
+
+    Plone's catalog.xml creates htmltext_lexicon, plaintext_lexicon, and
+    plone_lexicon for ZCTextIndex stemming/splitting.  With pgcatalog,
+    full-text search uses PostgreSQL tsvector/BM25, so these are orphaned.
+    """
+    catalog = getattr(site, "portal_catalog", None)
+    if catalog is None:
+        return
+
+    for name in ("htmltext_lexicon", "plaintext_lexicon", "plone_lexicon"):
+        if name in catalog.objectIds():
+            catalog._delObject(name)
+            log.info("Removed orphaned lexicon: %s", name)

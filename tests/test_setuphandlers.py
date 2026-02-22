@@ -17,9 +17,12 @@ class TestInstall:
         context.readDataFile.return_value = "sentinel"
         site = mock.Mock()
         context.getSite.return_value = site
-        with mock.patch(
-            "plone.pgcatalog.setuphandlers._ensure_catalog_indexes"
-        ) as ensure_mock:
+        with (
+            mock.patch(
+                "plone.pgcatalog.setuphandlers._ensure_catalog_indexes"
+            ) as ensure_mock,
+            mock.patch("plone.pgcatalog.setuphandlers._remove_lexicons"),
+        ):
             install(context)
             ensure_mock.assert_called_once_with(site)
 

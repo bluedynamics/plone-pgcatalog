@@ -14,7 +14,9 @@ clear_catalog_data) are testable without Plone.
 """
 
 from AccessControl import ClassSecurityInfo
+from App.special_dtml import DTMLFile
 from contextlib import contextmanager
+from plone.pgcatalog.backends import BM25Backend
 from plone.pgcatalog.backends import get_backend
 from plone.pgcatalog.brain import CatalogSearchResults
 from plone.pgcatalog.brain import PGCatalogBrain
@@ -269,6 +271,37 @@ class PlonePGCatalogTool(CatalogTool):
     meta_type = "PG Catalog Tool"
     security = ClassSecurityInfo()
 
+    # Replace irrelevant ZCatalog tabs with PG-aware versions:
+    # - Remove: Query Report, Query Plan (BTree timing), Indexes, Metadata
+    # - Replace Indexes + Metadata with merged "Indexes & Metadata" tab
+    manage_options = (
+        *(
+            tab
+            for tab in CatalogTool.manage_options
+            if tab["action"]
+            not in (
+                "manage_catalogReport",
+                "manage_catalogPlan",
+                "manage_catalogIndexes",
+                "manage_catalogSchema",
+            )
+        ),
+        {"action": "manage_catalogIndexesAndMetadata", "label": "Indexes & Metadata"},
+    )
+
+    # Simplified Advanced tab: only Update Catalog and Clear and Rebuild.
+    # ZCatalog's subtransactions and progress logging don't apply to PG.
+    manage_catalogAdvanced = DTMLFile("www/catalogAdvanced", globals())
+
+    # PG-backed Catalog tab and object detail view.
+    manage_catalogView = DTMLFile("www/catalogView", globals())
+    manage_objectInformation = DTMLFile("www/catalogObjectInformation", globals())
+
+    # Merged Indexes & Metadata tab.
+    manage_catalogIndexesAndMetadata = DTMLFile(
+        "www/catalogIndexesAndMetadata", globals()
+    )
+
     # Override ZCatalog's Indexes container to wrap each index with
     # PGIndex — provides PG-backed _index and uniqueValues().
     Indexes = PGCatalogIndexes()
@@ -277,6 +310,15 @@ class PlonePGCatalogTool(CatalogTool):
     security.declareProtected("Manage ZCatalog Entries", "refreshCatalog")
     security.declareProtected("Manage ZCatalog Entries", "reindexIndex")
     security.declareProtected("Manage ZCatalog Entries", "clearFindAndRebuild")
+    security.declareProtected("Manage ZCatalog Entries", "manage_get_catalog_summary")
+    security.declareProtected("Manage ZCatalog Entries", "manage_get_catalog_objects")
+    security.declareProtected("Manage ZCatalog Entries", "manage_get_object_detail")
+    security.declareProtected(
+        "Manage ZCatalog Entries", "manage_get_indexes_and_metadata"
+    )
+    security.declareProtected(
+        "Manage ZCatalog Entries", "manage_catalogIndexesAndMetadata"
+    )
 
     @contextmanager
     def _pg_connection(self):
@@ -705,6 +747,139 @@ class PlonePGCatalogTool(CatalogTool):
             )
             row = cur.fetchone()
         return row["zoid"] if row else default
+
+    # -- ZMI helpers ---------------------------------------------------------
+
+    _ZMI_PAGE_SIZE = 20
+
+    def manage_get_catalog_summary(self):
+        """Return summary dict for the Catalog tab header."""
+        conn = self._get_pg_read_connection()
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT COUNT(*) AS cnt FROM object_state WHERE idx IS NOT NULL"
+            )
+            row = cur.fetchone()
+        object_count = row["cnt"] if row else 0
+
+        registry = get_registry()
+        backend = get_backend()
+        has_bm25 = isinstance(backend, BM25Backend)
+        return {
+            "object_count": object_count,
+            "index_count": len(registry),
+            "metadata_count": len(registry.metadata),
+            "backend_name": "BM25" if has_bm25 else "Tsvector",
+            "has_bm25": has_bm25,
+            "bm25_languages": list(getattr(backend, "languages", [])),
+        }
+
+    def manage_get_catalog_objects(self, batch_start=0, filterpath=""):
+        """Return paginated list of cataloged objects for the Catalog tab."""
+        batch_start = int(batch_start)
+        conn = self._get_pg_read_connection()
+
+        params = {}
+        where = "idx IS NOT NULL"
+        if filterpath:
+            where += " AND path LIKE %(prefix)s"
+            # Escape LIKE wildcards in user input, then add trailing %
+            safe = (
+                filterpath.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            )
+            params["prefix"] = safe + "%"
+
+        sql = (
+            "SELECT zoid, path, idx->>'portal_type' AS portal_type, "
+            "COUNT(*) OVER() AS _total "
+            f"FROM object_state WHERE {where} "
+            "ORDER BY path "
+            f"LIMIT {self._ZMI_PAGE_SIZE} OFFSET %(offset)s"
+        )
+        params["offset"] = batch_start
+
+        with conn.cursor() as cur:
+            cur.execute(sql, params)
+            rows = cur.fetchall()
+
+        total = rows[0]["_total"] if rows else 0
+        objects = [
+            {
+                "zoid": r["zoid"],
+                "path": r["path"],
+                "portal_type": r["portal_type"] or "",
+            }
+            for r in rows
+        ]
+        return {"objects": objects, "total": total, "batch_start": batch_start}
+
+    def manage_get_object_detail(self, zoid):
+        """Return detail dict for a single cataloged object.
+
+        Returns idx_items as a pre-sorted list of {"key", "value"} dicts
+        so the DTML template doesn't need isinstance/sorted (restricted).
+        """
+        zoid = int(zoid)
+        conn = self._get_pg_read_connection()
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT path, idx, "
+                "searchable_text IS NOT NULL AS has_searchable_text, "
+                "left(searchable_text::text, 200) AS searchable_text_preview "
+                "FROM object_state WHERE zoid = %(zoid)s",
+                {"zoid": zoid},
+            )
+            row = cur.fetchone()
+        if row is None:
+            return None
+        idx = row["idx"] or {}
+        idx_items = []
+        for k in sorted(idx):
+            v = idx[k]
+            if isinstance(v, list):
+                display = ", ".join(str(i) for i in v)
+            elif v is None:
+                display = ""
+            elif isinstance(v, bool):
+                display = "True" if v else "False"
+            else:
+                display = str(v)
+            idx_items.append({"key": k, "value": display, "is_none": v is None})
+        return {
+            "path": row["path"],
+            "idx_items": idx_items,
+            "has_searchable_text": row["has_searchable_text"],
+            "searchable_text_preview": row["searchable_text_preview"] or "",
+        }
+
+    def manage_get_indexes_and_metadata(self):
+        """Return indexes and metadata from the IndexRegistry for ZMI display.
+
+        Returns a dict with:
+        - indexes: sorted list of dicts with name, index_type, storage info
+        - metadata: sorted list of metadata column names
+        - index_count / metadata_count: totals
+        """
+        registry = get_registry()
+        indexes = []
+        for name, (idx_type, idx_key, source_attrs) in sorted(registry.items()):
+            indexes.append(
+                {
+                    "name": name,
+                    "index_type": idx_type.value,
+                    "idx_key": idx_key or "",
+                    "is_special": idx_key is None,
+                    "storage": "dedicated column" if idx_key is None else "idx JSONB",
+                    "source_attrs": ", ".join(source_attrs),
+                }
+            )
+        metadata = sorted(registry.metadata)
+        return {
+            "indexes": indexes,
+            "metadata": metadata,
+            "index_count": len(indexes),
+            "metadata_count": len(metadata),
+        }
 
     # -- Helpers -------------------------------------------------------------
 

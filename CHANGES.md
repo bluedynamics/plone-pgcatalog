@@ -1,5 +1,39 @@
 # Changelog
 
+## 1.0.0b9
+
+### Changed
+
+- **ZMI polish**: All ZMI tabs now use Bootstrap 4 cards/tables matching
+  Zope 5's modern look (was old-style `<table>` layout with `section-bar`).
+
+- **Catalog tab** (`manage_catalogView`): Replaced inherited ZCatalog
+  BTree-based view with PG-backed version. Shows catalog summary (object
+  count, index/metadata count, search backend with BM25/Tsvector status),
+  path filter, and server-side paginated object table (20/page) with
+  Previous/Next navigation. Object detail shows full idx JSONB and
+  searchable text preview.
+
+- **Advanced tab** (`manage_catalogAdvanced`): Simplified to only show
+  Update Catalog and Clear and Rebuild actions. Removed ZCatalog-specific
+  features (subtransactions, progress logging, standalone Clear Catalog)
+  that don't apply to PostgreSQL.
+
+- **Indexes & Metadata tab** (`manage_catalogIndexesAndMetadata`): Merged
+  the separate Indexes and Metadata tabs into one read-only view showing
+  all registered indexes (name, type, PG storage location, source attrs)
+  and metadata columns.  Reflects the IndexRegistry rather than BTree
+  counts (which were always 0).
+
+- **Removed tabs**: Query Report, Query Plan (BTree timing), and the
+  separate Indexes / Metadata tabs are hidden — replaced by PG-aware
+  equivalents.
+
+- **Lexicon cleanup**: `setuphandlers.install()` now removes orphaned
+  ZCTextIndex lexicons (`htmltext_lexicon`, `plaintext_lexicon`,
+  `plone_lexicon`) created by Plone's `catalog.xml` — unused with
+  PG-backed text search.
+
 ## 1.0.0b8
 
 ### Changed

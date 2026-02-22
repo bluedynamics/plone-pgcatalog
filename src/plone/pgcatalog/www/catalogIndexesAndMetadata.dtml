@@ -1,0 +1,81 @@
+<dtml-var manage_page_header>
+<dtml-var manage_tabs>
+
+<main class="container-fluid">
+
+<dtml-let data="manage_get_indexes_and_metadata()">
+
+<div class="card mt-3 mb-3">
+  <div class="card-header d-flex justify-content-between align-items-center">
+    <strong>Indexes</strong>
+    <span class="badge badge-secondary"><dtml-var "data['index_count']"> indexes</span>
+  </div>
+  <div class="card-body p-0">
+    <p class="text-muted small px-3 pt-3 mb-2">
+      All index values are stored in the <code>idx</code> JSONB column of
+      <code>object_state</code>.  Special indexes (SearchableText, path,
+      effectiveRange) use dedicated PostgreSQL columns.
+      Indexes are managed via GenericSetup <code>catalog.xml</code> profiles.
+    </p>
+    <table class="table table-striped table-hover table-sm mb-0" style="table-layout:fixed">
+      <thead class="thead-light">
+        <tr>
+          <th scope="col" style="width:22%">Name</th>
+          <th scope="col" style="width:16%">Index Type</th>
+          <th scope="col" style="width:38%">PG Storage</th>
+          <th scope="col" style="width:24%">Source Attributes</th>
+        </tr>
+      </thead>
+      <tbody>
+        <dtml-in "data['indexes']">
+        <dtml-let idx="_['sequence-item']">
+        <tr>
+          <td>
+            <strong><dtml-var "idx['name']" html_quote></strong>
+          </td>
+          <td>
+            <dtml-var "idx['index_type']" html_quote>
+          </td>
+          <td>
+            <dtml-if "idx['is_special']">
+              <span class="badge badge-info">dedicated column</span>
+            <dtml-else>
+              <code>idx-&gt;&gt;'<dtml-var "idx['idx_key']" html_quote>'</code>
+            </dtml-if>
+          </td>
+          <td class="text-muted">
+            <small><dtml-var "idx['source_attrs']" html_quote></small>
+          </td>
+        </tr>
+        </dtml-let>
+        </dtml-in>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="card mb-3">
+  <div class="card-header d-flex justify-content-between align-items-center">
+    <strong>Metadata</strong>
+    <span class="badge badge-secondary"><dtml-var "data['metadata_count']"> columns</span>
+  </div>
+  <div class="card-body p-0">
+    <p class="text-muted small px-3 pt-3 mb-2">
+      Metadata values are stored alongside indexes in the <code>idx</code>
+      JSONB column.  Brain attribute access reads from this JSONB —
+      no separate metadata table is needed.
+      Metadata columns are managed via GenericSetup <code>catalog.xml</code> profiles.
+    </p>
+    <div class="px-3 pb-3" style="column-count:3; column-gap:2em">
+      <dtml-in "data['metadata']">
+      <div style="break-inside:avoid"><code><dtml-var "_['sequence-item']" html_quote></code></div>
+      </dtml-in>
+    </div>
+  </div>
+</div>
+
+</dtml-let>
+
+</main>
+
+<dtml-var manage_page_footer>

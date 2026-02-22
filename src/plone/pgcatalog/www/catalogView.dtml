@@ -1,0 +1,137 @@
+<dtml-var manage_page_header>
+<dtml-var manage_tabs>
+
+<main class="container-fluid">
+
+<dtml-let summary="manage_get_catalog_summary()">
+
+<div class="card mt-3 mb-3">
+  <div class="card-header">
+    <strong>Catalog Summary</strong>
+  </div>
+  <div class="card-body p-3">
+    <table class="table table-sm table-borderless mb-0">
+      <tr>
+        <td class="text-muted" style="width:160px">Cataloged objects</td>
+        <td><strong><dtml-var "summary['object_count']" thousands_commas></strong></td>
+      </tr>
+      <tr>
+        <td class="text-muted">Indexes</td>
+        <td><dtml-var "summary['index_count']"></td>
+      </tr>
+      <tr>
+        <td class="text-muted">Metadata columns</td>
+        <td><dtml-var "summary['metadata_count']"></td>
+      </tr>
+      <tr>
+        <td class="text-muted">Search backend</td>
+        <td>
+          <strong><dtml-var "summary['backend_name']"></strong>
+          <dtml-if "summary['has_bm25']">
+            <span class="text-muted">(languages: <dtml-var "', '.join(summary['bm25_languages'])">)</span>
+          <dtml-else>
+            <span class="text-muted">(default PostgreSQL tsvector)</span>
+          </dtml-if>
+        </td>
+      </tr>
+    </table>
+  </div>
+</div>
+
+</dtml-let>
+
+<dtml-let batch_start="_.int(REQUEST.get('batch_start', 0))"
+          filterpath="REQUEST.get('filterpath', '')"
+          result="manage_get_catalog_objects(batch_start=batch_start, filterpath=filterpath)"
+          objects="result['objects']"
+          total="result['total']"
+          page_size="20">
+
+<div class="card mb-3">
+  <div class="card-header d-flex justify-content-between align-items-center">
+    <strong>Cataloged Objects</strong>
+    <dtml-if "total > 0">
+    <span class="badge badge-secondary">
+      <dtml-var "batch_start + 1">&ndash;<dtml-var "min(batch_start + page_size, total)">
+      of <dtml-var total thousands_commas>
+    </span>
+    <dtml-else>
+    <span class="badge badge-secondary">0</span>
+    </dtml-if>
+  </div>
+  <div class="card-body p-3">
+    <form action="&dtml-URL1;/manage_catalogView" method="GET" class="form-inline mb-3">
+      <label class="mr-2" for="filterpath"><small class="text-muted">Path filter:</small></label>
+      <input class="form-control form-control-sm mr-2" type="text" name="filterpath" id="filterpath"
+             value="<dtml-if filterpath><dtml-var filterpath html_quote><dtml-else></dtml-if>"
+             size="40" placeholder="/Plone/..." />
+      <button class="btn btn-sm btn-outline-secondary" type="submit">Filter</button>
+      <dtml-if filterpath>
+      <a class="btn btn-sm btn-outline-secondary ml-1" href="manage_catalogView">Clear</a>
+      </dtml-if>
+    </form>
+
+    <dtml-if "total > 0">
+    <table class="table table-striped table-hover table-sm mb-2">
+      <thead class="thead-light">
+        <tr>
+          <th scope="col">Path</th>
+          <th scope="col" style="width:140px">Type</th>
+          <th scope="col" style="width:80px" class="text-right">ZOID</th>
+        </tr>
+      </thead>
+      <tbody>
+        <dtml-in objects>
+        <dtml-let obj="_['sequence-item']">
+        <tr>
+          <td>
+            <a href="manage_objectInformation?zoid=<dtml-var "obj['zoid']">">
+              <dtml-var "obj['path']" html_quote>
+            </a>
+          </td>
+          <td><dtml-var "obj['portal_type']" html_quote></td>
+          <td class="text-right text-muted"><dtml-var "obj['zoid']"></td>
+        </tr>
+        </dtml-let>
+        </dtml-in>
+      </tbody>
+    </table>
+
+    <nav>
+      <ul class="pagination pagination-sm justify-content-center mb-0">
+        <dtml-if "batch_start > 0">
+        <dtml-let prev="max(batch_start - page_size, 0)">
+        <li class="page-item">
+          <a class="page-link" href="manage_catalogView?batch_start=<dtml-var prev>&filterpath=<dtml-var filterpath url_quote>">&laquo; Previous</a>
+        </li>
+        </dtml-let>
+        <dtml-else>
+        <li class="page-item disabled"><span class="page-link">&laquo; Previous</span></li>
+        </dtml-if>
+        <dtml-if "batch_start + page_size < total">
+        <dtml-let nxt="batch_start + page_size">
+        <li class="page-item">
+          <a class="page-link" href="manage_catalogView?batch_start=<dtml-var nxt>&filterpath=<dtml-var filterpath url_quote>">Next &raquo;</a>
+        </li>
+        </dtml-let>
+        <dtml-else>
+        <li class="page-item disabled"><span class="page-link">Next &raquo;</span></li>
+        </dtml-if>
+      </ul>
+    </nav>
+    <dtml-else>
+    <p class="text-muted mb-0"><em>No cataloged objects found.</em></p>
+    </dtml-if>
+  </div>
+</div>
+
+</dtml-let>
+
+<p class="text-muted small">
+  <em>Catalog data is maintained automatically from ZODB object state.
+  Use the <strong>Advanced</strong> tab for bulk operations (Update Catalog, Clear and Rebuild).</em>
+</p>
+
+</main>
+
+<dtml-var manage_page_footer>
