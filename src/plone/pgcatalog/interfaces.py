@@ -1,5 +1,6 @@
 """Interfaces for plone.pgcatalog."""
 
+from plone.base.interfaces import IPloneCatalogTool
 from Products.CMFCore.interfaces import ICatalogTool
 from zope.interface import Interface
 
@@ -7,7 +8,7 @@ from zope.interface import Interface
 __all__ = ["IPGCatalogTool", "IPGIndexTranslator"]
 
 
-class IPGCatalogTool(ICatalogTool):
+class IPGCatalogTool(ICatalogTool, IPloneCatalogTool):
     """Interface for the PostgreSQL-backed catalog tool."""
 
 

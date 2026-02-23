@@ -168,6 +168,23 @@ catalog(path={"query": "/plone/folder", "navtree": True})
 catalog(path={"query": ["/plone/a", "/plone/b"]})
 ```
 
+### Unregistered Indexes
+
+Index names not in `META_TYPE_MAP` (e.g., `Language`, `TranslationGroup`
+from `plone.app.multilingual`) are not silently skipped. The query
+builder first checks for an `IPGIndexTranslator` named utility, then
+falls back to a simple JSONB containment query:
+
+```python
+# Becomes: idx @> '{"Language": "en"}'::jsonb
+catalog(Language="en")
+```
+
+This allows third-party add-on queries to work without explicit registry
+entries, as long as the index value was stored in the `idx` JSONB during
+indexing (via an `IPGIndexTranslator.extract()` or the standard
+extraction path).
+
 ### GopipIndex
 
 Integer ordering index (`getObjPositionInParent`). Used for sorting,

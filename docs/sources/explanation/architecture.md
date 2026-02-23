@@ -11,6 +11,28 @@ writes: there is no window where an object is committed but its catalog entry is
 This page explains how data flows through the system on writes and reads, how the
 pieces fit together, and the reasoning behind key design choices.
 
+## Key files
+
+| File | Purpose |
+|---|---|
+| `catalog.py` | `PlonePGCatalogTool(UniqueObject, Folder)` -- Plone's `portal_catalog` replacement |
+| `query.py` | Query translation: ZCatalog dict -> SQL WHERE + ORDER BY |
+| `columns.py` | `IndexRegistry`, `IndexType` enum, `convert_value()`, `ensure_date_param()` |
+| `indexing.py` | SQL write operations (`catalog_object`, `uncatalog_object`, `reindex_object`) |
+| `pending.py` | Thread-local pending store + `PendingDataManager` (savepoint support) |
+| `pool.py` | Connection pool discovery + request-scoped connection reuse |
+| `processor.py` | `CatalogStateProcessor` for zodb-pgjsonb integration |
+| `startup.py` | `IDatabaseOpenedWithRoot` subscriber, registry sync, DRI/DRIRI translator registration |
+| `schema.py` | DDL for catalog columns, functions, and indexes |
+| `brain.py` | `PGCatalogBrain` + lazy `CatalogSearchResults` |
+| `pgindex.py` | `PGIndex`, `PGCatalogIndexes` -- ZCatalog internal API wrappers |
+| `backends.py` | `SearchBackend` ABC, `TsvectorBackend`, `BM25Backend` |
+| `dri.py` | `DateRecurringIndexTranslator` for recurring events |
+| `driri.py` | `DateRangeInRangeIndexTranslator` for overlap queries |
+| `interfaces.py` | `IPGCatalogTool`, `IPGIndexTranslator` |
+| `setuphandlers.py` | GenericSetup install: snapshot, replace, restore indexes |
+| `addons_compat/` | Addon compatibility adapters (eea.facetednavigation) |
+
 ## Overview
 
 The high-level data flow looks like this:
@@ -114,12 +136,40 @@ indexes, plone.pgcatalog avoids the overhead of full re-extraction. Instead:
 This matters for frequent, targeted reindexes like workflow state changes, where
 re-serializing the entire object and re-extracting all 30+ indexes would be wasteful.
 
+Special indexes with `idx_key=None` (SearchableText, effectiveRange, path) cannot be
+partially updated because they use dedicated columns, not idx JSONB keys. When any
+requested index is special, `_partial_reindex()` returns False and the full write path
+runs instead.
+
+**Interaction with full pending:** If a full `set_pending()` already exists for a zoid
+(e.g., from a `catalog_object` call in the same transaction), the partial update merges
+into the full pending's `idx` dict. Conversely, a subsequent `set_pending()` removes any
+partial pending for the same zoid -- full always supersedes partial.
+
+**Savepoint safety:** `set_partial_pending()` uses non-mutating merges (`{**old, **new}`)
+because `PendingSavepoint` snapshots are shallow copies. Mutating shared dicts would
+corrupt rollback state.
+
 ### Uncataloging
 
 When an object is deleted, `uncatalog_object()` registers a `None` sentinel in the
 pending store. The state processor sees this sentinel and NULLs all catalog columns
 (path, idx, searchable_text, and any backend-specific columns). The base
 `object_state` row is preserved -- ZODB still tracks the object's lifecycle.
+
+### Pending-store lookup for security reindex
+
+`unrestrictedSearchResults` extends PG results with objects from the thread-local
+pending store when the query includes a `path` filter. This is needed because
+`CMFCatalogAware.reindexObjectSecurity` searches
+`catalog.unrestrictedSearchResults(path=path)` to find all objects in a subtree and
+reindex their `allowedRolesAndUsers`. Newly created objects exist only in the pending
+store (not yet committed to PG), so without this merging step security indexes would
+never be updated for new objects during workflow transitions.
+
+`_pending_brains_for_path()` scans the pending store, matches paths against the
+query, and returns lightweight `_PendingBrain` instances with just enough interface
+(`getPath()`, `_unrestrictedGetObject()`) for `reindexObjectSecurity` to work.
 
 ## Read path
 
@@ -221,10 +271,30 @@ plone.pgcatalog's SQL query builder. Here is how it gets populated:
 The registry is a module-level singleton. Once populated, it is used by both the
 write path (`_extract_idx()`) and the read path (`build_query()`).
 
+## Base class architecture
+
+`PlonePGCatalogTool` inherits from `UniqueObject + Folder` -- not from ZCatalog.
+This deliberate "clean break" eliminates the deep inheritance chain
+(`CatalogTool -> ZCatalog -> ObjectManager -> ...`, roughly 15 classes) and the
+associated overhead from attribute lookups, security checks, and Acquisition
+wrapping in the query and write hot paths.  Benchmarks show ~2x improvement in
+query latency after the clean break.
+
+`Folder` provides `ObjectManager` containment for ZCatalog index objects and
+lexicons (needed by `PGCatalogIndexes._getOb()` and GenericSetup's
+`ZCatalogXMLAdapter`).  `UniqueObject` provides the standard `getId()` method.
+
+A `_CatalogCompat(Persistent)` shim provides `_catalog.indexes` and
+`_catalog.schema` for backward compatibility with code that reads ZCatalog
+internal data structures.  Existing ZODB instances with the old `_catalog` (a
+full `Catalog` object from before the clean break) continue to work without
+migration because the code only reads `.indexes` and `.schema` attributes.
+
 ## ZCatalog compatibility layer
 
 Plone add-ons and core code access ZCatalog internal data structures directly.
-plone.pgcatalog provides PG-backed substitutes so this code continues to work:
+Since plone.pgcatalog stores no BTree index data in ZODB, these are replaced
+with PG-backed implementations:
 
 - **`PGCatalogIndexes`** replaces the `Indexes` container. When code accesses
   `catalog.Indexes["UID"]`, it returns a `PGIndex` proxy instead of the raw ZCatalog
@@ -244,3 +314,9 @@ plone.pgcatalog provides PG-backed substitutes so this code continues to work:
   `idx` JSONB -- matching ZCatalog's Missing Value behavior. Unknown fields raise
   `AttributeError`, which triggers the `getObject()` fallback in
   `CatalogContentListingObject.__getattr__()`.
+
+- **Blocked methods**: ZCatalog methods that would return wrong/empty data
+  (`getAllBrains`, `searchAll`, `getobject`, etc.) raise `NotImplementedError`.
+
+- **Deprecated proxies**: `search()` and `uniqueValuesFor()` emit
+  `DeprecationWarning` and delegate to their PG-backed equivalents.

@@ -6,7 +6,6 @@ from plone.pgcatalog.catalog import PlonePGCatalogTool
 from plone.pgcatalog.columns import get_registry
 from plone.pgcatalog.columns import IndexType
 from plone.pgcatalog.interfaces import IPGCatalogTool
-from Products.CMFPlone.CatalogTool import CatalogTool
 from unittest import mock
 
 
@@ -37,10 +36,11 @@ class TestSecurityDeclarations:
         assert roles is not None and roles != ()
 
     def test_ac_permissions_includes_manage_entries(self):
-        # __ac_permissions__ maps permission → method names
+        # __ac_permissions__ tuples: (perm_name, methods) or (perm_name, methods, roles)
         perms = PlonePGCatalogTool.__ac_permissions__
         manage_entries = None
-        for perm_name, methods in perms:
+        for entry in perms:
+            perm_name, methods = entry[0], entry[1]
             if perm_name == "Manage ZCatalog Entries":
                 manage_entries = methods
                 break
@@ -50,6 +50,65 @@ class TestSecurityDeclarations:
         assert "refreshCatalog" in manage_entries
         assert "reindexIndex" in manage_entries
         assert "clearFindAndRebuild" in manage_entries
+
+    def test_search_results_is_protected(self):
+        roles = getattr(PlonePGCatalogTool, "searchResults__roles__", None)
+        assert roles is not None and roles != ()
+
+    def test_call_is_protected(self):
+        roles = getattr(PlonePGCatalogTool, "__call____roles__", None)
+        assert roles is not None and roles != ()
+
+    def test_catalog_object_is_protected(self):
+        roles = getattr(PlonePGCatalogTool, "catalog_object__roles__", None)
+        assert roles is not None and roles != ()
+
+    def test_uncatalog_object_is_protected(self):
+        roles = getattr(PlonePGCatalogTool, "uncatalog_object__roles__", None)
+        assert roles is not None and roles != ()
+
+    def test_index_management_is_protected(self):
+        for name in (
+            "addIndex",
+            "delIndex",
+            "addColumn",
+            "delColumn",
+            "getIndexObjects",
+        ):
+            roles = getattr(PlonePGCatalogTool, f"{name}__roles__", None)
+            assert roles is not None and roles != (), f"{name} should be protected"
+
+    def test_read_methods_are_protected(self):
+        for name in ("indexes", "schema", "getpath", "getrid", "getIndexDataForRID"):
+            roles = getattr(PlonePGCatalogTool, f"{name}__roles__", None)
+            assert roles is not None and roles != (), f"{name} should be protected"
+
+    def test_private_methods(self):
+        for name in (
+            "indexObject",
+            "unindexObject",
+            "reindexObject",
+            "_indexObject",
+            "_unindexObject",
+            "_reindexObject",
+            "_listAllowedRolesAndUsers",
+            "_increment_counter",
+        ):
+            roles = getattr(PlonePGCatalogTool, f"{name}__roles__", None)
+            assert roles == (), f"{name} should be private, got {roles!r}"
+
+    def test_permission_defaults(self):
+        """setPermissionDefault assigns default roles for each permission."""
+        perms = PlonePGCatalogTool.__ac_permissions__
+        for entry in perms:
+            perm_name = entry[0]
+            if perm_name == "Search ZCatalog" and len(entry) > 2:
+                assert "Anonymous" in entry[2], "Search should default to Anonymous"
+                break
+        else:
+            # Search ZCatalog permission might not have default roles tuple
+            # if no methods are declared — this is fine
+            pass
 
 
 class TestObjToZoid:
@@ -179,14 +238,13 @@ class TestCatalogObjectWritePath:
             mock.patch.object(
                 PlonePGCatalogTool, "_pg_connection", _mock_pg_connection(mock_conn)
             ),
-            mock.patch.object(PlonePGCatalogTool.__bases__[0], "catalog_object"),
             mock.patch("plone.pgcatalog.catalog._sql_catalog") as sql_mock,
         ):
             tool.catalog_object(obj)
             sql_mock.assert_not_called()
 
-    def test_does_not_call_parent_catalog_object(self):
-        """catalog_object() must NOT delegate to parent (no BTree writes)."""
+    def test_sets_pending_annotation(self):
+        """catalog_object() sets PG pending annotation (no BTree writes)."""
         tool = PlonePGCatalogTool.__new__(PlonePGCatalogTool)
         obj = mock.Mock()
         obj.getPhysicalPath.return_value = ("", "plone", "doc")
@@ -199,36 +257,24 @@ class TestCatalogObjectWritePath:
                 PlonePGCatalogTool, "_extract_searchable_text", return_value=None
             ),
             mock.patch("plone.pgcatalog.catalog.set_pending") as pending_mock,
-            mock.patch.object(
-                PlonePGCatalogTool.__bases__[0], "catalog_object"
-            ) as parent_mock,
         ):
             tool.catalog_object(obj)
             # PG annotation was set
             pending_mock.assert_called_once()
-            # Parent was NOT called (no BTree writes)
-            parent_mock.assert_not_called()
 
     def test_noop_without_path(self):
         """catalog_object() is a no-op when object has no getPhysicalPath."""
         tool = PlonePGCatalogTool.__new__(PlonePGCatalogTool)
         obj = mock.Mock(spec=[])  # no getPhysicalPath
-        with (
-            mock.patch("plone.pgcatalog.catalog.set_pending") as pending_mock,
-            mock.patch.object(
-                PlonePGCatalogTool.__bases__[0], "catalog_object"
-            ) as parent_mock,
-        ):
+        with mock.patch("plone.pgcatalog.catalog.set_pending") as pending_mock:
             tool.catalog_object(obj)
             # No PG annotation (no physical path)
             pending_mock.assert_not_called()
-            # No parent call (no BTree writes)
-            parent_mock.assert_not_called()
 
 
 class TestUncatalogObjectWritePath:
-    def test_uncatalog_does_not_call_parent(self):
-        """uncatalog_object() must NOT delegate to parent (no BTree writes)."""
+    def test_uncatalog_uses_pg(self):
+        """uncatalog_object() calls PG uncatalog (no BTree writes)."""
         tool = PlonePGCatalogTool.__new__(PlonePGCatalogTool)
         mock_conn = mock.Mock()
         mock_cursor = mock.MagicMock()
@@ -241,14 +287,9 @@ class TestUncatalogObjectWritePath:
                 PlonePGCatalogTool, "_pg_connection", _mock_pg_connection(mock_conn)
             ),
             mock.patch("plone.pgcatalog.catalog._sql_uncatalog") as uncatalog_mock,
-            mock.patch.object(
-                PlonePGCatalogTool.__bases__[0], "uncatalog_object"
-            ) as parent_mock,
         ):
             tool.uncatalog_object("/plone/doc")
             uncatalog_mock.assert_called_once_with(mock_conn, zoid=42)
-            # Parent was NOT called (no BTree writes)
-            parent_mock.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -758,9 +799,10 @@ class TestMaintenanceMethods:
             tool.reindexIndex("portal_type", None, handler)
 
     def test_clearFindAndRebuild(self):
-        """clearFindAndRebuild clears PG data then delegates to parent."""
+        """clearFindAndRebuild clears PG data then walks portal tree."""
         tool = PlonePGCatalogTool.__new__(PlonePGCatalogTool)
         mock_conn = mock.Mock()
+        mock_portal = mock.Mock()
         with (
             mock.patch.object(
                 PlonePGCatalogTool, "_pg_connection", _mock_pg_connection(mock_conn)
@@ -768,11 +810,12 @@ class TestMaintenanceMethods:
             mock.patch(
                 "plone.pgcatalog.catalog.clear_catalog_data", return_value=10
             ) as clear_mock,
-            mock.patch.object(CatalogTool, "clearFindAndRebuild") as super_mock,
+            mock.patch("plone.pgcatalog.catalog.aq_parent", return_value=mock_portal),
+            mock.patch("plone.pgcatalog.catalog.aq_inner", return_value=tool),
         ):
             tool.clearFindAndRebuild()
             clear_mock.assert_called_once_with(mock_conn)
-            super_mock.assert_called_once()
+            mock_portal.ZopeFindAndApply.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

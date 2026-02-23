@@ -16,4 +16,5 @@ fulltext-search
 performance
 security
 bm25-design
+addon-integrations
 ```

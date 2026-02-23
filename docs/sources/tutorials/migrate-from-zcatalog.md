@@ -94,8 +94,8 @@ The GenericSetup profile performs these changes:
 
 1. **Snapshots existing indexes** -- captures all index definitions and metadata
    columns from the current catalog, including any addon-provided indexes
-2. **Replaces `portal_catalog`** -- swaps the `CatalogTool` class with
-   `PlonePGCatalogTool`
+2. **Replaces `portal_catalog`** -- replaces the standard catalog tool with
+   `PlonePGCatalogTool` (based on `UniqueObject + Folder`, not ZCatalog)
 3. **Restores catalog indexes** -- re-applies essential Plone indexes, then
    restores addon indexes from the snapshot so no index definitions are lost
 4. **Removes orphaned ZCTextIndex lexicons** -- no longer needed since

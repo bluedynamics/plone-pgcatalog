@@ -1,0 +1,143 @@
+{
+  "metadata": {
+    "timestamp": "2026-02-23T11:23:43.456635+00:00",
+    "python": "3.13.9",
+    "platform": "Linux 6.14.0-123037-tuxedo",
+    "machine": "x86_64",
+    "iterations": 50,
+    "warmup": 5,
+    "postgresql": "17.7 (Debian 17.7-3.pgdg13+1)",
+    "zodb_pgjsonb_version": "1.1.1.dev5",
+    "plone.pgcatalog_version": "1.0.0b10.dev7",
+    "ZODB_version": "6.0.1",
+    "Products.ZCatalog_version": "7.1"
+  },
+  "level2": {
+    "pgjsonb": {
+      "backend": "PGJsonbStorage + PGCatalog",
+      "site_creation_ms": 2213.481,
+      "content_creation": {
+        "count": 500,
+        "mean_ms": 54.306,
+        "median_ms": 52.185,
+        "p95_ms": 67.833,
+        "p99_ms": 95.218,
+        "min_ms": 40.685,
+        "max_ms": 168.574,
+        "stddev_ms": 11.274,
+        "total_ms": 27153.166,
+        "ops_per_sec": 18.4
+      },
+      "content_modification": {
+        "count": 50,
+        "mean_ms": 14.092,
+        "median_ms": 14.271,
+        "p95_ms": 16.313,
+        "p99_ms": 18.473,
+        "min_ms": 10.693,
+        "max_ms": 18.473,
+        "stddev_ms": 1.683,
+        "total_ms": 704.598,
+        "ops_per_sec": 71.0
+      },
+      "queries": {
+        "P3_simple_query": {
+          "description": "Simple: portal_type=Document",
+          "stats": {
+            "count": 50,
+            "mean_ms": 3.433,
+            "median_ms": 3.209,
+            "p95_ms": 5.369,
+            "p99_ms": 7.275,
+            "min_ms": 2.369,
+            "max_ms": 7.275,
+            "stddev_ms": 0.933,
+            "total_ms": 171.633,
+            "ops_per_sec": 291.3
+          },
+          "count": 500
+        },
+        "P4_complex_query": {
+          "description": "Complex: type+state+subject+sort+limit",
+          "stats": {
+            "count": 50,
+            "mean_ms": 2.393,
+            "median_ms": 2.203,
+            "p95_ms": 3.83,
+            "p99_ms": 4.036,
+            "min_ms": 1.618,
+            "max_ms": 4.036,
+            "stddev_ms": 0.65,
+            "total_ms": 119.633,
+            "ops_per_sec": 417.9
+          },
+          "count": 20
+        },
+        "P5_fulltext": {
+          "description": "Full-text: SearchableText",
+          "stats": {
+            "count": 50,
+            "mean_ms": 5.797,
+            "median_ms": 5.686,
+            "p95_ms": 6.832,
+            "p99_ms": 8.512,
+            "min_ms": 4.188,
+            "max_ms": 8.512,
+            "stddev_ms": 0.757,
+            "total_ms": 289.847,
+            "ops_per_sec": 172.5
+          },
+          "count": 500
+        },
+        "P6_navigation": {
+          "description": "Navigation: path depth=1 + sort",
+          "stats": {
+            "count": 50,
+            "mean_ms": 4.232,
+            "median_ms": 4.041,
+            "p95_ms": 6.081,
+            "p99_ms": 6.866,
+            "min_ms": 2.955,
+            "max_ms": 6.866,
+            "stddev_ms": 0.795,
+            "total_ms": 211.597,
+            "ops_per_sec": 236.3
+          },
+          "count": 500
+        },
+        "P8_security_filtered": {
+          "description": "Security: published + anonymous access",
+          "stats": {
+            "count": 50,
+            "mean_ms": 3.88,
+            "median_ms": 3.797,
+            "p95_ms": 5.364,
+            "p99_ms": 7.39,
+            "min_ms": 2.62,
+            "max_ms": 7.39,
+            "stddev_ms": 0.853,
+            "total_ms": 194.023,
+            "ops_per_sec": 257.7
+          },
+          "count": 368
+        },
+        "P9_date_sorted": {
+          "description": "Date-sorted: all content by creation date",
+          "stats": {
+            "count": 50,
+            "mean_ms": 4.067,
+            "median_ms": 4.021,
+            "p95_ms": 5.466,
+            "p99_ms": 7.076,
+            "min_ms": 2.832,
+            "max_ms": 7.076,
+            "stddev_ms": 0.841,
+            "total_ms": 203.367,
+            "ops_per_sec": 245.9
+          },
+          "count": 50
+        }
+      }
+    }
+  }
+}

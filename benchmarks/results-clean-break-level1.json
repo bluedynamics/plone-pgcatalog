@@ -1,0 +1,513 @@
+{
+  "metadata": {
+    "timestamp": "2026-02-23T08:13:06.726365+00:00",
+    "python": "3.13.9",
+    "platform": "Linux 6.14.0-123037-tuxedo",
+    "machine": "x86_64",
+    "iterations": 50,
+    "warmup": 5,
+    "postgresql": "17.7 (Debian 17.7-3.pgdg13+1)",
+    "zodb_pgjsonb_version": "1.2.0",
+    "plone.pgcatalog_version": "1.0.0b8.dev0",
+    "ZODB_version": "6.2",
+    "Products.ZCatalog_version": "7.3"
+  },
+  "level1": {
+    "small": {
+      "scale": "small",
+      "n_objects": 1000,
+      "setup_pgcatalog_ms": 349.1,
+      "setup_zcatalog_ms": 580.5,
+      "queries": {
+        "Q01_field_match": {
+          "description": "portal_type + review_state (field match)",
+          "pgcatalog": {
+            "count": 50,
+            "mean_ms": 1.6993,
+            "median_ms": 1.6655,
+            "p95_ms": 1.881,
+            "p99_ms": 2.1777,
+            "stddev_ms": 0.1392,
+            "ops_per_sec": 588.5
+          },
+          "zcatalog": {
+            "count": 50,
+            "mean_ms": 0.0813,
+            "median_ms": 0.0815,
+            "p95_ms": 0.0902,
+            "p99_ms": 0.0918,
+            "stddev_ms": 0.0052,
+            "ops_per_sec": 12293.5
+          },
+          "pgcatalog_count": 285,
+          "zcatalog_count": 285,
+          "ratio": 0.05
+        },
+        "Q02_multi_index": {
+          "description": "4-index intersection (type+state+subject+security)",
+          "pgcatalog": {
+            "count": 50,
+            "mean_ms": 0.596,
+            "median_ms": 0.5858,
+            "p95_ms": 0.6885,
+            "p99_ms": 0.8204,
+            "stddev_ms": 0.0558,
+            "ops_per_sec": 1677.7
+          },
+          "zcatalog": {
+            "count": 50,
+            "mean_ms": 0.1118,
+            "median_ms": 0.1126,
+            "p95_ms": 0.121,
+            "p99_ms": 0.1274,
+            "stddev_ms": 0.0063,
+            "ops_per_sec": 8943.3
+          },
+          "pgcatalog_count": 29,
+          "zcatalog_count": 29,
+          "ratio": 0.19
+        },
+        "Q03_date_range": {
+          "description": "created in last 30 days (date range)",
+          "pgcatalog": {
+            "count": 50,
+            "mean_ms": 0.1352,
+            "median_ms": 0.1342,
+            "p95_ms": 0.1587,
+            "p99_ms": 0.1992,
+            "stddev_ms": 0.0177,
+            "ops_per_sec": 7398.0
+          },
+          "zcatalog": {
+            "count": 50,
+            "mean_ms": 0.1109,
+            "median_ms": 0.1125,
+            "p95_ms": 0.1208,
+            "p99_ms": 0.1249,
+            "stddev_ms": 0.0061,
+            "ops_per_sec": 9015.4
+          },
+          "pgcatalog_count": 11,
+          "zcatalog_count": 11,
+          "ratio": 0.84
+        },
+        "Q05_fulltext": {
+          "description": "SearchableText search",
+          "pgcatalog": {
+            "count": 50,
+            "mean_ms": 2.3331,
+            "median_ms": 2.3183,
+            "p95_ms": 2.5563,
+            "p99_ms": 2.5951,
+            "stddev_ms": 0.1158,
+            "ops_per_sec": 428.6
+          },
+          "zcatalog": {
+            "count": 50,
+            "mean_ms": 0.32,
+            "median_ms": 0.3181,
+            "p95_ms": 0.3368,
+            "p99_ms": 0.3776,
+            "stddev_ms": 0.0147,
+            "ops_per_sec": 3124.9
+          },
+          "pgcatalog_count": 214,
+          "zcatalog_count": 214,
+          "ratio": 0.14
+        },
+        "Q06_fulltext_filtered": {
+          "description": "SearchableText + type + state + security",
+          "pgcatalog": {
+            "count": 50,
+            "mean_ms": 2.0497,
+            "median_ms": 1.9903,
+            "p95_ms": 2.2912,
+            "p99_ms": 2.3833,
+            "stddev_ms": 0.1248,
+            "ops_per_sec": 487.9
+          },
+          "zcatalog": {
+            "count": 50,
+            "mean_ms": 0.2544,
+            "median_ms": 0.2526,
+            "p95_ms": 0.2867,
+            "p99_ms": 0.3004,
+            "stddev_ms": 0.0179,
+            "ops_per_sec": 3930.5
+          },
+          "pgcatalog_count": 108,
+          "zcatalog_count": 108,
+          "ratio": 0.13
+        },
+        "Q07_path_subtree": {
+          "description": "path subtree query",
+          "pgcatalog": {
+            "count": 50,
+            "mean_ms": 0.123,
+            "median_ms": 0.1182,
+            "p95_ms": 0.1358,
+            "p99_ms": 0.192,
+            "stddev_ms": 0.0175,
+            "ops_per_sec": 8128.5
+          },
+          "zcatalog": {
+            "count": 50,
+            "mean_ms": 0.0713,
+            "median_ms": 0.0703,
+            "p95_ms": 0.0794,
+            "p99_ms": 0.0821,
+            "stddev_ms": 0.0032,
+            "ops_per_sec": 14018.2
+          },
+          "pgcatalog_count": 0,
+          "zcatalog_count": 63,
+          "ratio": 0.59
+        },
+        "Q08_sorted_paginated": {
+          "description": "type filter + sort by modified + LIMIT 20",
+          "pgcatalog": {
+            "count": 50,
+            "mean_ms": 1.2271,
+            "median_ms": 1.2156,
+            "p95_ms": 1.3276,
+            "p99_ms": 1.4266,
+            "stddev_ms": 0.063,
+            "ops_per_sec": 814.9
+          },
+          "zcatalog": {
+            "count": 50,
+            "mean_ms": 0.1335,
+            "median_ms": 0.1345,
+            "p95_ms": 0.1441,
+            "p99_ms": 0.1466,
+            "stddev_ms": 0.0072,
+            "ops_per_sec": 7492.6
+          },
+          "pgcatalog_count": 20,
+          "zcatalog_count": 20,
+          "ratio": 0.11
+        },
+        "Q09_deep_page": {
+          "description": "type filter + sort by title + OFFSET 5000 LIMIT 20",
+          "pgcatalog": {
+            "count": 50,
+            "mean_ms": 0.918,
+            "median_ms": 0.9044,
+            "p95_ms": 1.0251,
+            "p99_ms": 1.0389,
+            "stddev_ms": 0.0571,
+            "ops_per_sec": 1089.3
+          },
+          "zcatalog": {
+            "count": 50,
+            "mean_ms": 0.0631,
+            "median_ms": 0.0621,
+            "p95_ms": 0.0666,
+            "p99_ms": 0.0868,
+            "stddev_ms": 0.0057,
+            "ops_per_sec": 15841.0
+          },
+          "pgcatalog_count": 0,
+          "zcatalog_count": 0,
+          "ratio": 0.07
+        },
+        "Q10_keyword_overlap": {
+          "description": "keyword OR query (Subject)",
+          "pgcatalog": {
+            "count": 50,
+            "mean_ms": 1.4045,
+            "median_ms": 1.2973,
+            "p95_ms": 1.8299,
+            "p99_ms": 2.1071,
+            "stddev_ms": 0.2607,
+            "ops_per_sec": 712.0
+          },
+          "zcatalog": {
+            "count": 50,
+            "mean_ms": 0.0683,
+            "median_ms": 0.0609,
+            "p95_ms": 0.0979,
+            "p99_ms": 0.1107,
+            "stddev_ms": 0.0144,
+            "ops_per_sec": 14644.7
+          },
+          "pgcatalog_count": 208,
+          "zcatalog_count": 208,
+          "ratio": 0.05
+        }
+      },
+      "writes": {
+        "catalog_object": {
+          "pgcatalog": {
+            "count": 1000,
+            "mean_ms": 0.3827,
+            "median_ms": 0.3814,
+            "p95_ms": 0.5194,
+            "p99_ms": 0.6417,
+            "stddev_ms": 0.0871,
+            "ops_per_sec": 2613.0
+          },
+          "zcatalog": {
+            "count": 1000,
+            "mean_ms": 0.3125,
+            "median_ms": 0.309,
+            "p95_ms": 0.4063,
+            "p99_ms": 0.4949,
+            "stddev_ms": 0.0618,
+            "ops_per_sec": 3200.5
+          },
+          "ratio": 0.81
+        }
+      },
+      "setup_ratio": 1.66
+    },
+    "medium": {
+      "scale": "medium",
+      "n_objects": 10000,
+      "setup_pgcatalog_ms": 2099.9,
+      "setup_zcatalog_ms": 4058.4,
+      "queries": {
+        "Q01_field_match": {
+          "description": "portal_type + review_state (field match)",
+          "pgcatalog": {
+            "count": 50,
+            "mean_ms": 20.5649,
+            "median_ms": 17.1546,
+            "p95_ms": 20.9256,
+            "p99_ms": 95.8157,
+            "stddev_ms": 15.5507,
+            "ops_per_sec": 48.6
+          },
+          "zcatalog": {
+            "count": 50,
+            "mean_ms": 0.2897,
+            "median_ms": 0.2591,
+            "p95_ms": 0.371,
+            "p99_ms": 0.3914,
+            "stddev_ms": 0.0503,
+            "ops_per_sec": 3451.4
+          },
+          "pgcatalog_count": 2741,
+          "zcatalog_count": 2741,
+          "ratio": 0.02
+        },
+        "Q02_multi_index": {
+          "description": "4-index intersection (type+state+subject+security)",
+          "pgcatalog": {
+            "count": 50,
+            "mean_ms": 6.1401,
+            "median_ms": 6.0483,
+            "p95_ms": 7.1805,
+            "p99_ms": 7.8547,
+            "stddev_ms": 0.535,
+            "ops_per_sec": 162.9
+          },
+          "zcatalog": {
+            "count": 50,
+            "mean_ms": 0.3555,
+            "median_ms": 0.3217,
+            "p95_ms": 0.502,
+            "p99_ms": 0.5198,
+            "stddev_ms": 0.0684,
+            "ops_per_sec": 2813.2
+          },
+          "pgcatalog_count": 286,
+          "zcatalog_count": 286,
+          "ratio": 0.05
+        },
+        "Q03_date_range": {
+          "description": "created in last 30 days (date range)",
+          "pgcatalog": {
+            "count": 50,
+            "mean_ms": 0.589,
+            "median_ms": 0.5755,
+            "p95_ms": 0.6669,
+            "p99_ms": 0.7102,
+            "stddev_ms": 0.0407,
+            "ops_per_sec": 1697.8
+          },
+          "zcatalog": {
+            "count": 50,
+            "mean_ms": 0.1259,
+            "median_ms": 0.1197,
+            "p95_ms": 0.1507,
+            "p99_ms": 0.1918,
+            "stddev_ms": 0.0163,
+            "ops_per_sec": 7941.4
+          },
+          "pgcatalog_count": 115,
+          "zcatalog_count": 115,
+          "ratio": 0.21
+        },
+        "Q05_fulltext": {
+          "description": "SearchableText search",
+          "pgcatalog": {
+            "count": 50,
+            "mean_ms": 28.4599,
+            "median_ms": 25.1328,
+            "p95_ms": 27.5273,
+            "p99_ms": 107.2347,
+            "stddev_ms": 16.2574,
+            "ops_per_sec": 35.1
+          },
+          "zcatalog": {
+            "count": 50,
+            "mean_ms": 3.0099,
+            "median_ms": 2.7011,
+            "p95_ms": 4.9279,
+            "p99_ms": 5.9579,
+            "stddev_ms": 0.8753,
+            "ops_per_sec": 332.2
+          },
+          "pgcatalog_count": 2216,
+          "zcatalog_count": 2216,
+          "ratio": 0.11
+        },
+        "Q06_fulltext_filtered": {
+          "description": "SearchableText + type + state + security",
+          "pgcatalog": {
+            "count": 50,
+            "mean_ms": 20.6689,
+            "median_ms": 20.3733,
+            "p95_ms": 22.007,
+            "p99_ms": 28.2767,
+            "stddev_ms": 1.8267,
+            "ops_per_sec": 48.4
+          },
+          "zcatalog": {
+            "count": 50,
+            "mean_ms": 1.662,
+            "median_ms": 1.6358,
+            "p95_ms": 1.7974,
+            "p99_ms": 2.3164,
+            "stddev_ms": 0.1511,
+            "ops_per_sec": 601.7
+          },
+          "pgcatalog_count": 1039,
+          "zcatalog_count": 1039,
+          "ratio": 0.08
+        },
+        "Q07_path_subtree": {
+          "description": "path subtree query",
+          "pgcatalog": {
+            "count": 50,
+            "mean_ms": 0.1354,
+            "median_ms": 0.128,
+            "p95_ms": 0.1795,
+            "p99_ms": 0.2155,
+            "stddev_ms": 0.0202,
+            "ops_per_sec": 7383.9
+          },
+          "zcatalog": {
+            "count": 50,
+            "mean_ms": 0.1964,
+            "median_ms": 0.1826,
+            "p95_ms": 0.2808,
+            "p99_ms": 0.2969,
+            "stddev_ms": 0.0347,
+            "ops_per_sec": 5092.1
+          },
+          "pgcatalog_count": 0,
+          "zcatalog_count": 698,
+          "ratio": 1.43
+        },
+        "Q08_sorted_paginated": {
+          "description": "type filter + sort by modified + LIMIT 20",
+          "pgcatalog": {
+            "count": 50,
+            "mean_ms": 11.2224,
+            "median_ms": 10.9189,
+            "p95_ms": 13.5409,
+            "p99_ms": 14.4188,
+            "stddev_ms": 0.9235,
+            "ops_per_sec": 89.1
+          },
+          "zcatalog": {
+            "count": 50,
+            "mean_ms": 0.4977,
+            "median_ms": 0.4902,
+            "p95_ms": 0.5453,
+            "p99_ms": 0.5626,
+            "stddev_ms": 0.0275,
+            "ops_per_sec": 2009.3
+          },
+          "pgcatalog_count": 20,
+          "zcatalog_count": 20,
+          "ratio": 0.04
+        },
+        "Q09_deep_page": {
+          "description": "type filter + sort by title + OFFSET 5000 LIMIT 20",
+          "pgcatalog": {
+            "count": 50,
+            "mean_ms": 14.3859,
+            "median_ms": 14.1285,
+            "p95_ms": 16.8445,
+            "p99_ms": 17.7041,
+            "stddev_ms": 0.9768,
+            "ops_per_sec": 69.5
+          },
+          "zcatalog": {
+            "count": 50,
+            "mean_ms": 0.0636,
+            "median_ms": 0.0624,
+            "p95_ms": 0.0683,
+            "p99_ms": 0.0817,
+            "stddev_ms": 0.0042,
+            "ops_per_sec": 15711.5
+          },
+          "pgcatalog_count": 0,
+          "zcatalog_count": 0,
+          "ratio": 0.0
+        },
+        "Q10_keyword_overlap": {
+          "description": "keyword OR query (Subject)",
+          "pgcatalog": {
+            "count": 50,
+            "mean_ms": 18.3132,
+            "median_ms": 14.7468,
+            "p95_ms": 19.1058,
+            "p99_ms": 96.728,
+            "stddev_ms": 16.2108,
+            "ops_per_sec": 54.6
+          },
+          "zcatalog": {
+            "count": 50,
+            "mean_ms": 0.1328,
+            "median_ms": 0.1157,
+            "p95_ms": 0.1978,
+            "p99_ms": 0.2028,
+            "stddev_ms": 0.0348,
+            "ops_per_sec": 7532.3
+          },
+          "pgcatalog_count": 2049,
+          "zcatalog_count": 2049,
+          "ratio": 0.01
+        }
+      },
+      "writes": {
+        "catalog_object": {
+          "pgcatalog": {
+            "count": 1000,
+            "mean_ms": 0.481,
+            "median_ms": 0.383,
+            "p95_ms": 0.562,
+            "p99_ms": 0.661,
+            "stddev_ms": 2.2034,
+            "ops_per_sec": 2079.1
+          },
+          "zcatalog": {
+            "count": 1000,
+            "mean_ms": 0.319,
+            "median_ms": 0.3178,
+            "p95_ms": 0.4074,
+            "p99_ms": 0.4368,
+            "stddev_ms": 0.0577,
+            "ops_per_sec": 3135.0
+          },
+          "ratio": 0.83
+        }
+      },
+      "setup_ratio": 1.93
+    }
+  }
+}

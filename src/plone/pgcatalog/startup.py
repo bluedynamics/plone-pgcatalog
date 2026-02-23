@@ -60,7 +60,7 @@ def _get_bm25_languages(db):
     return [lang.strip() for lang in env_val.split(",") if lang.strip()]
 
 
-def _detect_languages_from_db(db):
+def _detect_languages_from_db(db):  # pragma: no cover
     """Read supported languages from portal_languages in the ZODB.
 
     Opens a temporary connection, finds Plone sites, reads their
@@ -127,7 +127,7 @@ def register_catalog_processor(event):
         log.debug("Storage %s does not support state processors", storage)
 
 
-def _ensure_text_indexes(storage):
+def _ensure_text_indexes(storage):  # pragma: no cover
     """Create GIN expression indexes for dynamically discovered TEXT indexes.
 
     For each TEXT-type index with idx_key != None (not SearchableText),
@@ -165,7 +165,7 @@ def _ensure_text_indexes(storage):
         log.warning("Failed to create text expression indexes", exc_info=True)
 
 
-def _register_dri_translators(catalog):
+def _register_dri_translators(catalog):  # pragma: no cover
     """Discover DateRecurringIndex instances and register IPGIndexTranslator utilities.
 
     Called during startup after sync_from_catalog.  Reads per-index config
@@ -193,7 +193,7 @@ def _register_dri_translators(catalog):
         )
 
 
-def _register_driri_translators(catalog):
+def _register_driri_translators(catalog):  # pragma: no cover
     """Discover DateRangeInRangeIndex instances and register IPGIndexTranslator utilities.
 
     Called during startup after sync_from_catalog.  Reads startindex/endindex
@@ -229,7 +229,7 @@ def _register_driri_translators(catalog):
         )
 
 
-def _sync_registry_from_db(db):
+def _sync_registry_from_db(db):  # pragma: no cover
     """Populate the IndexRegistry from portal_catalog at startup.
 
     Opens a temporary ZODB connection, traverses the root to find

@@ -1,0 +1,13 @@
+<configure
+    xmlns="http://namespaces.zope.org/zope"
+    xmlns:zcml="http://namespaces.zope.org/zcml"
+    >
+
+  <!-- eea.facetednavigation: PG-backed IFacetedCatalog adapter -->
+  <include
+      zcml:condition="installed eea.facetednavigation"
+      package=".addons_compat"
+      file="eeafacetednavigation_overrides.zcml"
+      />
+
+</configure>
