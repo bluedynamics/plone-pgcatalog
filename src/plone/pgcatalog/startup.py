@@ -9,12 +9,12 @@ IDatabaseOpenedWithRoot subscriber that:
 6. Registers IPGIndexTranslator utilities for DateRangeInRangeIndex instances
 """
 
+from plone.pgcatalog.addons_compat.driri import DateRangeInRangeIndexTranslator
 from plone.pgcatalog.backends import detect_and_set_backend
 from plone.pgcatalog.columns import get_registry
 from plone.pgcatalog.columns import IndexType
 from plone.pgcatalog.columns import validate_identifier
 from plone.pgcatalog.dri import DateRecurringIndexTranslator
-from plone.pgcatalog.driri import DateRangeInRangeIndexTranslator
 from plone.pgcatalog.interfaces import IPGIndexTranslator
 from plone.pgcatalog.processor import CatalogStateProcessor
 from zope.component import provideUtility

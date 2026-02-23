@@ -116,4 +116,4 @@ Integration test with PostgreSQL (see `tests/test_dri.py` for patterns).
 Study these for more complex patterns:
 
 - `dri.py` (`DateRecurringIndexTranslator`) -- RRULE expansion, multiple query strategies (min, max, min:max, exact), rrule_plpgsql functions for recurrence at query time.
-- `driri.py` (`DateRangeInRangeIndexTranslator`) -- proxy over two indexes, overlap queries, no-op `extract()` (underlying indexes handle storage).
+- `addons_compat/driri.py` (`DateRangeInRangeIndexTranslator`) -- proxy over two indexes, overlap queries, no-op `extract()` (underlying indexes handle storage).
