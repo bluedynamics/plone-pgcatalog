@@ -125,9 +125,43 @@ In `zope.conf`:
 GenericSetup profile `plone.pgcatalog:default` replaces portal_catalog class and
 creates the DDL schema.
 
+## ZCatalog Compatibility
+
+PlonePGCatalogTool does NOT inherit from ZCatalog. It implements the same public API.
+
+**Blocked methods** (raise NotImplementedError):
+getAllBrains, searchAll, getobject, getMetadataForUID, getMetadataForRID,
+getIndexDataForUID, index_objects.
+
+**Deprecated methods** (emit DeprecationWarning):
+- `search()` → use `searchResults()`
+- `uniqueValuesFor(name)` → use `catalog.Indexes[name].uniqueValues()`
+
+**Brain attribute resolution**:
+- Known index/metadata fields → returns None if missing from idx JSONB
+- Unknown attributes → raises AttributeError (triggers getObject() fallback)
+
+## Permissions
+
+Three permission tiers (mirroring ZCatalog):
+
+1. **Search ZCatalog** (Anonymous, Manager): searchResults, __call__, indexes, schema, getpath, getrid
+2. **Manage ZCatalog Entries** (Manager): catalog_object, uncatalog_object, refreshCatalog, reindexIndex, clearFindAndRebuild, ZMI pages
+3. **Manage ZCatalogIndex Entries** (Manager): addIndex, delIndex, addColumn, delColumn, getIndexObjects
+
+Private (Python-only): unrestrictedSearchResults, indexObject, unindexObject, reindexObject
+
+## Addon Integration
+
+- **Automatic**: Addons using catalog.xml are auto-discovered via sync_from_catalog() at startup
+- **eea.facetednavigation**: PGFacetedCatalog adapter dispatches by IndexType to SQL; conditional ZCML
+- **plone.app.multilingual**: Language/TranslationGroup via JSONB containment fallback
+- **collective.taxonomy**: Standard FieldIndex, auto-discovered
+- **DateRangeInRangeIndex**: Native IPGIndexTranslator with overlap queries
+
 ## Documentation Sections
 
 - [Tutorials](tutorials/index.md): Step-by-step lessons (quickstart, migration, multilingual)
-- [How-To Guides](how-to/index.md): Task-focused solutions (install, deploy, BM25, custom translators)
-- [Reference](reference/index.md): API specs (query syntax, index types, schema, configuration)
-- [Explanation](explanation/index.md): Architecture, design decisions, performance, security
+- [How-To Guides](how-to/index.md): Task-focused solutions (install, deploy, BM25, rebuild, custom translators)
+- [Reference](reference/index.md): API specs (query syntax, index types, ZCatalog compat, permissions, schema, configuration)
+- [Explanation](explanation/index.md): Architecture, addon integrations, design decisions, performance, security
