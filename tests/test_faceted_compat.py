@@ -253,3 +253,132 @@ class TestFrozensetIntersection:
 
         # Intersection: published Documents -> zoid 1 only
         assert documents & published == frozenset({1})
+
+
+# ---------------------------------------------------------------------------
+# _pg_apply_index tests (DateIndex)
+# ---------------------------------------------------------------------------
+
+
+class TestPGApplyDate:
+    def test_pg_apply_date_returns_frozenset(self, pg_conn_with_data):
+        """DateIndex returns empty frozenset (unsupported in faceted apply)."""
+        from plone.pgcatalog.addons_compat.eeafacetednavigation import _dispatch_by_type
+        from plone.pgcatalog.columns import IndexType
+
+        # DATE_RANGE is not supported, returns empty
+        result = _dispatch_by_type(
+            pg_conn_with_data, IndexType.DATE_RANGE, "effectiveRange", "2024-01-01"
+        )
+        assert result == frozenset()
+
+    def test_pg_apply_date_match(self, pg_conn_with_data):
+        """DateIndex exact match works via jsonb containment."""
+        # Add a DateIndex entry
+        catalog_object(
+            pg_conn_with_data,
+            zoid=1,
+            path="/plone/doc1",
+            idx={"created": "2024-01-15"},
+        )
+        pg_conn_with_data.commit()
+
+        from plone.pgcatalog.addons_compat.eeafacetednavigation import _dispatch_by_type
+        from plone.pgcatalog.columns import IndexType
+
+        result = _dispatch_by_type(
+            pg_conn_with_data, IndexType.DATE, "created", "2024-01-15"
+        )
+        assert 1 in result
+
+
+# ---------------------------------------------------------------------------
+# _pg_apply_index tests (special indexes → empty)
+# ---------------------------------------------------------------------------
+
+
+class TestPGApplySpecialIndex:
+    def test_special_index_returns_empty(self, pg_conn_with_data):
+        """Special indexes (idx_key=None) return empty frozenset."""
+        from plone.pgcatalog.columns import get_registry
+        from plone.pgcatalog.columns import IndexType
+
+        # Register SearchableText as special (idx_key=None)
+        get_registry().register(
+            "SearchableText", IndexType.TEXT, None, ["SearchableText"]
+        )
+        index = _MockIndex("SearchableText", meta_type="ZCTextIndex")
+        result = _pg_apply_index(pg_conn_with_data, "SearchableText", index, "volcano")
+        assert result == frozenset()
+
+
+# ---------------------------------------------------------------------------
+# PGFacetedCatalog.apply_index tests
+# ---------------------------------------------------------------------------
+
+
+class TestPGFacetedCatalogApplyIndex:
+    """Test the adapter's apply_index method."""
+
+    def test_apply_index_non_pg_catalog_falls_back(self):
+        """When catalog is not IPGCatalogTool, falls back to super."""
+        from unittest import mock
+
+        adapter = PGFacetedCatalog()
+        context = mock.Mock()
+        # getToolByName returns a catalog that doesn't provide IPGCatalogTool
+        catalog = mock.Mock()
+        catalog.__class__ = type("FakeCatalog", (), {})
+        with (
+            mock.patch(
+                "plone.pgcatalog.addons_compat.eeafacetednavigation.getToolByName",
+                return_value=catalog,
+            ),
+            mock.patch.object(
+                FacetedCatalog, "apply_index", return_value=(set(), ())
+            ) as super_mock,
+        ):
+            adapter.apply_index(context, _MockIndex("portal_type"), "Document")
+            super_mock.assert_called_once()
+
+    def test_apply_index_no_catalog_falls_back(self):
+        """When getToolByName returns None, falls back to super."""
+        from unittest import mock
+
+        adapter = PGFacetedCatalog()
+        context = mock.Mock()
+        with (
+            mock.patch(
+                "plone.pgcatalog.addons_compat.eeafacetednavigation.getToolByName",
+                return_value=None,
+            ),
+            mock.patch.object(
+                FacetedCatalog, "apply_index", return_value=(set(), ())
+            ) as super_mock,
+        ):
+            adapter.apply_index(context, _MockIndex("portal_type"), "Document")
+            super_mock.assert_called_once()
+
+    def test_apply_index_pg_exception_falls_back(self):
+        """When PG query raises, falls back to super."""
+        from plone.pgcatalog.catalog import PlonePGCatalogTool
+        from unittest import mock
+
+        adapter = PGFacetedCatalog()
+        context = mock.Mock()
+        catalog = PlonePGCatalogTool.__new__(PlonePGCatalogTool)
+        with (
+            mock.patch(
+                "plone.pgcatalog.addons_compat.eeafacetednavigation.getToolByName",
+                return_value=catalog,
+            ),
+            mock.patch(
+                "plone.pgcatalog.addons_compat.eeafacetednavigation.get_pool",
+                side_effect=RuntimeError("no pool"),
+            ),
+            mock.patch.object(
+                FacetedCatalog, "apply_index", return_value=(set(), ())
+            ) as super_mock,
+        ):
+            adapter.apply_index(context, _MockIndex("portal_type"), "Document")
+            super_mock.assert_called_once()

@@ -567,3 +567,267 @@ class TestAddColumnPersistence:
         # Verify it's accessible the same way sync_from_catalog reads it
         schema = tool._catalog.schema
         assert "sync_test_col" in schema
+
+
+# ---------------------------------------------------------------------------
+# _PendingBrain helper
+# ---------------------------------------------------------------------------
+
+
+class TestPendingBrain:
+    """Test the _PendingBrain synthetic brain used for pending objects."""
+
+    def test_getpath_returns_path(self):
+        from plone.pgcatalog.catalog import _PendingBrain
+
+        brain = _PendingBrain("/plone/doc", object())
+        assert brain.getPath() == "/plone/doc"
+
+    def test_unrestrictedgetobject_returns_obj(self):
+        from plone.pgcatalog.catalog import _PendingBrain
+
+        obj = object()
+        brain = _PendingBrain("/plone/doc", obj)
+        assert brain._unrestrictedGetObject() is obj
+
+
+# ---------------------------------------------------------------------------
+# addIndex edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestAddIndexEdgeCases:
+    """Test addIndex branches not covered by the basic type resolution tests."""
+
+    def test_add_index_caller_only_constructor(self, tool):
+        """Test addIndex with an index whose __init__ accepts 'caller' but not 'extra'."""
+        from Products.PluginIndexes.interfaces import IPluggableIndex
+        from zope.interface import implementer
+
+        import Products
+
+        @implementer(IPluggableIndex)
+        class _CallerOnlyIndex:
+            meta_type = "CallerOnlyIndex"
+
+            def __init__(self, name, caller=None):
+                self.id = name
+                self.caller = caller
+
+        saved = Products.meta_types
+        Products.meta_types = (
+            *saved,
+            {
+                "name": "CallerOnlyIndex",
+                "instance": _CallerOnlyIndex,
+                "interfaces": (IPluggableIndex,),
+                "visibility": "Global",
+            },
+        )
+        try:
+            tool.addIndex("test_caller", "CallerOnlyIndex")
+            assert "test_caller" in tool._catalog.indexes
+        finally:
+            Products.meta_types = saved
+
+    def test_add_index_simple_constructor(self, tool):
+        """Test addIndex with an index whose __init__ accepts only 'name'."""
+        from Products.PluginIndexes.interfaces import IPluggableIndex
+        from zope.interface import implementer
+
+        import Products
+
+        @implementer(IPluggableIndex)
+        class _SimpleIndex:
+            meta_type = "SimpleIndex"
+
+            def __init__(self, name):
+                self.id = name
+
+        saved = Products.meta_types
+        Products.meta_types = (
+            *saved,
+            {
+                "name": "SimpleIndex",
+                "instance": _SimpleIndex,
+                "interfaces": (IPluggableIndex,),
+                "visibility": "Global",
+            },
+        )
+        try:
+            tool.addIndex("test_simple", "SimpleIndex")
+            assert "test_simple" in tool._catalog.indexes
+        finally:
+            Products.meta_types = saved
+
+    def test_add_index_invalid_type_raises(self, tool):
+        """addIndex with a non-string non-IPluggableIndex raises ValueError."""
+        with pytest.raises(ValueError, match="Invalid index_type"):
+            tool.addIndex("bad", 12345)
+
+    def test_add_index_getindexsourcenames_exception(self, tool):
+        """addIndex handles getIndexSourceNames() raising an exception."""
+        from Products.PluginIndexes.interfaces import IPluggableIndex
+        from zope.interface import implementer
+
+        @implementer(IPluggableIndex)
+        class _BrokenSourceIndex:
+            meta_type = "FieldIndex"
+
+            def __init__(self, name, extra=None, caller=None):
+                self.id = name
+
+            def getIndexSourceNames(self):
+                raise RuntimeError("broken")
+
+        idx_obj = _BrokenSourceIndex("broken_src")
+        tool.addIndex("broken_src", idx_obj)
+        assert "broken_src" in tool._catalog.indexes
+        # Falls back to [name] as source attrs
+        reg = get_registry()
+        entry = reg.get("broken_src")
+        assert entry is not None
+        assert entry[2] == ["broken_src"]
+
+
+# ---------------------------------------------------------------------------
+# delIndex
+# ---------------------------------------------------------------------------
+
+
+class TestDelIndex:
+    """Test delIndex method."""
+
+    def test_del_existing_index(self, tool):
+        from Products.PluginIndexes.FieldIndex.FieldIndex import FieldIndex
+
+        tool._catalog.indexes["to_delete"] = FieldIndex("to_delete")
+        tool.delIndex("to_delete")
+        assert "to_delete" not in tool._catalog.indexes
+
+    def test_del_nonexistent_index_noop(self, tool):
+        """Deleting a non-existent index is a silent no-op."""
+        tool.delIndex("nonexistent")  # should not raise
+
+
+# ---------------------------------------------------------------------------
+# getIndexObjects
+# ---------------------------------------------------------------------------
+
+
+class TestGetIndexObjects:
+    """Test getIndexObjects via PGCatalogIndexes wrapping."""
+
+    def test_returns_index_objects(self, tool):
+        """getIndexObjects returns indexes from _catalog.indexes."""
+        from Products.PluginIndexes.FieldIndex.FieldIndex import FieldIndex
+
+        idx = FieldIndex("my_field")
+        tool._catalog.indexes["my_field"] = idx
+
+        # Monkeypatch Indexes._getOb to return from _catalog.indexes
+        original = tool.Indexes.__class__._getOb
+
+        def _mock(self_idx, name, default=None):
+            return tool._catalog.indexes.get(name, default)
+
+        tool.Indexes.__class__._getOb = _mock
+        try:
+            result = tool.getIndexObjects()
+            assert len(result) == 1
+            assert result[0] is idx
+        finally:
+            tool.Indexes.__class__._getOb = original
+
+
+# ---------------------------------------------------------------------------
+# CMFCore processor methods (actual behavior, not just hasattr)
+# ---------------------------------------------------------------------------
+
+
+class TestCMFCoreProcessorBehavior:
+    """Test _indexObject, _unindexObject, _reindexObject actual behavior."""
+
+    def test_url_helper(self, tool):
+        """__url builds path from getPhysicalPath."""
+        from unittest import mock
+
+        obj = mock.Mock()
+        obj.getPhysicalPath.return_value = ("", "plone", "doc1")
+        url = tool._PlonePGCatalogTool__url(obj)
+        assert url == "/plone/doc1"
+
+    def test_index_object_calls_catalog_object(self, tool):
+        """_indexObject calls catalog_object with url."""
+        from unittest import mock
+
+        obj = mock.Mock()
+        obj.getPhysicalPath.return_value = ("", "plone", "doc1")
+        with mock.patch.object(tool, "catalog_object") as cat_mock:
+            tool._indexObject(obj)
+            cat_mock.assert_called_once_with(obj, "/plone/doc1")
+
+    def test_unindex_object_calls_uncatalog(self, tool):
+        """_unindexObject calls uncatalog_object with url."""
+        from unittest import mock
+
+        obj = mock.Mock()
+        obj.getPhysicalPath.return_value = ("", "plone", "doc1")
+        with mock.patch.object(tool, "uncatalog_object") as uncat_mock:
+            tool._unindexObject(obj)
+            uncat_mock.assert_called_once_with("/plone/doc1")
+
+    def test_public_unindex_object(self, tool):
+        """unindexObject calls uncatalog_object with url."""
+        from unittest import mock
+
+        obj = mock.Mock()
+        obj.getPhysicalPath.return_value = ("", "plone", "doc1")
+        with mock.patch.object(tool, "uncatalog_object") as uncat_mock:
+            tool.unindexObject(obj)
+            uncat_mock.assert_called_once_with("/plone/doc1")
+
+    def test_reindex_object_calls_catalog_object(self, tool):
+        """_reindexObject calls catalog_object with url and idxs."""
+        from unittest import mock
+
+        obj = mock.Mock()
+        obj.getPhysicalPath.return_value = ("", "plone", "doc1")
+        tool._catalog.indexes["portal_type"] = mock.Mock()
+        with mock.patch.object(tool, "catalog_object") as cat_mock:
+            tool._reindexObject(obj, idxs=["portal_type"])
+            cat_mock.assert_called_once_with(obj, "/plone/doc1", ["portal_type"], 1)
+
+    def test_reindex_object_filters_unknown_idxs(self, tool):
+        """_reindexObject filters out indexes not in _catalog.indexes."""
+        from unittest import mock
+
+        obj = mock.Mock()
+        obj.getPhysicalPath.return_value = ("", "plone", "doc1")
+        tool._catalog.indexes["portal_type"] = mock.Mock()
+        with mock.patch.object(tool, "catalog_object") as cat_mock:
+            tool._reindexObject(obj, idxs=["portal_type", "nonexistent"])
+            args = cat_mock.call_args
+            assert args[0][2] == ["portal_type"]
+
+    def test_reindex_object_default_uid(self, tool):
+        """_reindexObject uses __url when uid is None."""
+        from unittest import mock
+
+        obj = mock.Mock()
+        obj.getPhysicalPath.return_value = ("", "plone", "doc1")
+        with mock.patch.object(tool, "catalog_object") as cat_mock:
+            tool._reindexObject(obj)
+            args = cat_mock.call_args
+            assert args[0][1] == "/plone/doc1"
+
+    def test_unrestricted_search_results_proxy(self, tool):
+        """_unrestrictedSearchResults delegates to unrestrictedSearchResults."""
+        from unittest import mock
+
+        with mock.patch.object(
+            tool, "unrestrictedSearchResults", return_value=[]
+        ) as usr_mock:
+            result = tool._unrestrictedSearchResults(portal_type="Document")
+            usr_mock.assert_called_once_with(None, portal_type="Document")
+            assert result == []
