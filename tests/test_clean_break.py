@@ -1,5 +1,6 @@
 """Tests for the clean-break PlonePGCatalogTool (no ZCatalog inheritance)."""
 
+from contextlib import contextmanager
 from plone.pgcatalog.catalog import _CatalogCompat
 from plone.pgcatalog.catalog import PlonePGCatalogTool
 from plone.pgcatalog.columns import get_registry
@@ -16,6 +17,12 @@ from zodb_pgjsonb.schema import HISTORY_FREE_SCHEMA
 import psycopg
 import pytest
 import warnings
+
+
+@contextmanager
+def _ctx_mgr(value):
+    """Trivial context manager that yields value (for monkeypatching _pg_connection)."""
+    yield value
 
 
 # ---------------------------------------------------------------------------
@@ -831,3 +838,254 @@ class TestCMFCoreProcessorBehavior:
             result = tool._unrestrictedSearchResults(portal_type="Document")
             usr_mock.assert_called_once_with(None, portal_type="Document")
             assert result == []
+
+
+# ---------------------------------------------------------------------------
+# __init__ with custom id
+# ---------------------------------------------------------------------------
+
+
+class TestInitCustomId:
+    """Test PlonePGCatalogTool constructor."""
+
+    def test_default_id(self):
+        tool = PlonePGCatalogTool()
+        assert tool.id == "portal_catalog"
+
+    def test_custom_id(self):
+        tool = PlonePGCatalogTool(id="custom_catalog")
+        assert tool.id == "custom_catalog"
+
+
+# ---------------------------------------------------------------------------
+# manage_catalogClear with RESPONSE
+# ---------------------------------------------------------------------------
+
+
+class TestManageCatalogClear:
+    """Test manage_catalogClear ZMI action."""
+
+    def test_clear_without_response(self, tool, pg_conn):
+        """manage_catalogClear without RESPONSE just clears data."""
+        from unittest import mock
+
+        with mock.patch("plone.pgcatalog.catalog.clear_catalog_data") as clear_mock:
+            tool._pg_connection = lambda: _ctx_mgr(pg_conn)
+            tool.manage_catalogClear()
+            clear_mock.assert_called_once_with(pg_conn)
+
+    def test_clear_with_response_redirects(self, tool, pg_conn):
+        """manage_catalogClear with RESPONSE redirects to advanced tab."""
+        from unittest import mock
+
+        response = mock.Mock()
+        with mock.patch("plone.pgcatalog.catalog.clear_catalog_data"):
+            tool._pg_connection = lambda: _ctx_mgr(pg_conn)
+            tool.manage_catalogClear(
+                RESPONSE=response, URL1="http://localhost/portal_catalog"
+            )
+        response.redirect.assert_called_once()
+        assert "manage_catalogAdvanced" in response.redirect.call_args[0][0]
+
+
+# ---------------------------------------------------------------------------
+# _partial_reindex
+# ---------------------------------------------------------------------------
+
+
+class TestPartialReindex:
+    """Test _partial_reindex method."""
+
+    def test_returns_false_without_oid(self, tool):
+        """_partial_reindex returns False if obj has no _p_oid."""
+        from unittest import mock
+
+        obj = mock.Mock(spec=[])  # no _p_oid
+        assert tool._partial_reindex(obj, ["portal_type"]) is False
+
+    def test_returns_false_for_special_index(self, tool):
+        """_partial_reindex returns False for SearchableText (idx_key=None)."""
+        from unittest import mock
+
+        obj = mock.Mock()
+        obj._p_oid = b"\x00" * 8
+        assert tool._partial_reindex(obj, ["SearchableText"]) is False
+
+    def test_returns_true_for_regular_index(self, tool):
+        """_partial_reindex returns True for a regular FIELD index."""
+        from unittest import mock
+
+        obj = mock.Mock()
+        obj._p_oid = (42).to_bytes(8, "big")
+        obj.portal_type = "Document"
+        # _wrap_object uses Acquisition — mock it
+        with mock.patch.object(tool, "_wrap_object", return_value=obj):
+            result = tool._partial_reindex(obj, ["portal_type"])
+        assert result is True
+
+    def test_empty_idx_updates_returns_true(self, tool):
+        """_partial_reindex returns True even when _extract_idx returns empty."""
+        from unittest import mock
+
+        obj = mock.Mock()
+        obj._p_oid = (42).to_bytes(8, "big")
+        with (
+            mock.patch.object(tool, "_wrap_object", return_value=obj),
+            mock.patch.object(tool, "_extract_idx", return_value={}),
+        ):
+            result = tool._partial_reindex(obj, ["portal_type"])
+        assert result is True
+
+
+# ---------------------------------------------------------------------------
+# reindexObject / catalog_object partial path
+# ---------------------------------------------------------------------------
+
+
+class TestReindexObjectPartialPath:
+    """Test that reindexObject and catalog_object use partial reindex when possible."""
+
+    def test_reindex_object_uses_partial(self, tool):
+        """reindexObject returns early when _partial_reindex succeeds."""
+        from unittest import mock
+
+        obj = mock.Mock()
+        with (
+            mock.patch.object(tool, "_partial_reindex", return_value=True) as pr_mock,
+            mock.patch.object(tool, "_set_pg_annotation") as ann_mock,
+        ):
+            tool.reindexObject(obj, idxs=["portal_type"])
+            pr_mock.assert_called_once()
+            ann_mock.assert_not_called()
+
+    def test_catalog_object_uses_partial(self, tool):
+        """catalog_object returns early when _partial_reindex succeeds."""
+        from unittest import mock
+
+        obj = mock.Mock()
+        with (
+            mock.patch.object(tool, "_partial_reindex", return_value=True) as pr_mock,
+            mock.patch.object(tool, "_set_pg_annotation") as ann_mock,
+        ):
+            tool.catalog_object(obj, "/plone/doc", idxs=["portal_type"])
+            pr_mock.assert_called_once()
+            ann_mock.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# _pending_brains_for_path
+# ---------------------------------------------------------------------------
+
+
+class TestPendingBrainsForPath:
+    """Test _pending_brains_for_path method."""
+
+    def test_no_pending_returns_empty(self, tool):
+        """No pending data → empty list."""
+        from unittest import mock
+
+        with mock.patch("plone.pgcatalog.catalog._get_pending", return_value={}):
+            result = tool._pending_brains_for_path("/plone", set())
+        assert result == []
+
+    def test_no_jar_returns_empty(self, tool):
+        """No _p_jar → empty list."""
+        from unittest import mock
+
+        pending = {1: {"path": "/plone/doc1"}}
+        tool._p_jar = None
+        with mock.patch("plone.pgcatalog.catalog._get_pending", return_value=pending):
+            result = tool._pending_brains_for_path("/plone", set())
+        assert result == []
+
+    def test_matching_path_returns_brain(self, tool):
+        """Pending object matching path prefix → returned as brain."""
+        from unittest import mock
+
+        fake_obj = mock.Mock()
+        fake_jar = mock.Mock()
+        fake_jar.get.return_value = fake_obj
+
+        tool._p_jar = fake_jar
+        pending = {1: {"path": "/plone/doc1"}}
+        with mock.patch("plone.pgcatalog.catalog._get_pending", return_value=pending):
+            result = tool._pending_brains_for_path("/plone", set())
+        assert len(result) == 1
+        assert result[0].getPath() == "/plone/doc1"
+
+    def test_already_found_path_skipped(self, tool):
+        """Path already in found_paths → skipped."""
+        from unittest import mock
+
+        tool._p_jar = mock.Mock()
+        pending = {1: {"path": "/plone/doc1"}}
+        with mock.patch("plone.pgcatalog.catalog._get_pending", return_value=pending):
+            result = tool._pending_brains_for_path("/plone", {"/plone/doc1"})
+        assert result == []
+
+    def test_uncatalog_sentinel_skipped(self, tool):
+        """None sentinel (uncatalog) → skipped."""
+        from unittest import mock
+
+        tool._p_jar = mock.Mock()
+        pending = {1: None}
+        with mock.patch("plone.pgcatalog.catalog._get_pending", return_value=pending):
+            result = tool._pending_brains_for_path("/plone", set())
+        assert result == []
+
+    def test_non_matching_path_skipped(self, tool):
+        """Path not matching prefix → skipped."""
+        from unittest import mock
+
+        tool._p_jar = mock.Mock()
+        pending = {1: {"path": "/other/doc1"}}
+        with mock.patch("plone.pgcatalog.catalog._get_pending", return_value=pending):
+            result = tool._pending_brains_for_path("/plone", set())
+        assert result == []
+
+    def test_dict_path_query(self, tool):
+        """Path query as dict → uses 'query' key."""
+        from unittest import mock
+
+        fake_obj = mock.Mock()
+        fake_jar = mock.Mock()
+        fake_jar.get.return_value = fake_obj
+        tool._p_jar = fake_jar
+
+        pending = {1: {"path": "/plone/doc1"}}
+        with mock.patch("plone.pgcatalog.catalog._get_pending", return_value=pending):
+            result = tool._pending_brains_for_path({"query": "/plone"}, set())
+        assert len(result) == 1
+
+    def test_empty_prefix_returns_empty(self, tool):
+        """Empty prefix string → empty list."""
+        from unittest import mock
+
+        tool._p_jar = mock.Mock()
+        pending = {1: {"path": "/plone/doc1"}}
+        with mock.patch("plone.pgcatalog.catalog._get_pending", return_value=pending):
+            result = tool._pending_brains_for_path("", set())
+        assert result == []
+
+    def test_non_string_non_dict_returns_empty(self, tool):
+        """Non-string, non-dict path_query → empty list."""
+        from unittest import mock
+
+        tool._p_jar = mock.Mock()
+        pending = {1: {"path": "/plone/doc1"}}
+        with mock.patch("plone.pgcatalog.catalog._get_pending", return_value=pending):
+            result = tool._pending_brains_for_path(42, set())
+        assert result == []
+
+    def test_jar_get_exception_skipped(self, tool):
+        """jar.get() raising → skipped gracefully."""
+        from unittest import mock
+
+        fake_jar = mock.Mock()
+        fake_jar.get.side_effect = Exception("ZODB error")
+        tool._p_jar = fake_jar
+
+        pending = {1: {"path": "/plone/doc1"}}
+        with mock.patch("plone.pgcatalog.catalog._get_pending", return_value=pending):
+            result = tool._pending_brains_for_path("/plone", set())
+        assert result == []
