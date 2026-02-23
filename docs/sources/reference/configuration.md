@@ -21,6 +21,29 @@ The storage is configured in `zope.conf`:
 </zodb_db>
 ```
 
+### Using environment variables in zope.conf
+
+ZConfig supports variable substitution via the `%define` directive and the
+`${}` syntax. Combined with environment variables, this keeps secrets out
+of the configuration file:
+
+```ini
+%import zodb_pgjsonb
+
+<zodb_db main>
+  <pgjsonb>
+    dsn dbname=${ZODB_DB:zodb} host=${ZODB_HOST:localhost} port=${ZODB_PORT:5432} user=${ZODB_USER:zodb} password=${ZODB_PASSWORD:zodb}
+    blob-dir ${ZODB_BLOB_DIR:/var/plone/blobs}
+  </pgjsonb>
+</zodb_db>
+```
+
+The `${VAR:default}` syntax falls back to the value after the colon when
+the environment variable is not set. This works for any ZConfig directive,
+not just `dsn`. See the
+[ZConfig documentation](https://zconfig.readthedocs.io/en/latest/using-zconfig.html#variable-substitution)
+for details.
+
 plone.pgcatalog itself is auto-discovered via `z3c.autoinclude` and does not
 need a separate `%import` directive.
 
