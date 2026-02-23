@@ -1,0 +1,269 @@
+{
+  "metadata": {
+    "timestamp": "2026-02-16T12:41:10.251402+00:00",
+    "python": "3.13.9",
+    "platform": "Linux 6.14.0-123037-tuxedo",
+    "machine": "x86_64",
+    "iterations": 50,
+    "warmup": 5,
+    "postgresql": "17.7 (Debian 17.7-3.pgdg13+1)",
+    "zodb_pgjsonb_version": "1.0.2.dev5",
+    "plone.pgcatalog_version": "1.0.0b4.dev2",
+    "ZODB_version": "6.0.1",
+    "Products.ZCatalog_version": "7.1"
+  },
+  "level2": {
+    "pgjsonb": {
+      "backend": "PGJsonbStorage + PGCatalog",
+      "site_creation_ms": 1915.051,
+      "content_creation": {
+        "count": 500,
+        "mean_ms": 74.905,
+        "median_ms": 72.928,
+        "p95_ms": 93.825,
+        "p99_ms": 125.75,
+        "min_ms": 54.39,
+        "max_ms": 172.396,
+        "stddev_ms": 12.478,
+        "total_ms": 37452.439,
+        "ops_per_sec": 13.4
+      },
+      "content_modification": {
+        "count": 50,
+        "mean_ms": 18.059,
+        "median_ms": 16.334,
+        "p95_ms": 29.095,
+        "p99_ms": 30.302,
+        "min_ms": 14.191,
+        "max_ms": 30.302,
+        "stddev_ms": 4.503,
+        "total_ms": 902.951,
+        "ops_per_sec": 55.4
+      },
+      "queries": {
+        "P3_simple_query": {
+          "description": "Simple: portal_type=Document",
+          "stats": {
+            "count": 50,
+            "mean_ms": 6.518,
+            "median_ms": 6.338,
+            "p95_ms": 7.333,
+            "p99_ms": 9.025,
+            "min_ms": 5.839,
+            "max_ms": 9.025,
+            "stddev_ms": 0.626,
+            "total_ms": 325.891,
+            "ops_per_sec": 153.4
+          },
+          "count": 500
+        },
+        "P4_complex_query": {
+          "description": "Complex: type+state+subject+sort+limit",
+          "stats": {
+            "count": 50,
+            "mean_ms": 4.285,
+            "median_ms": 4.171,
+            "p95_ms": 5.343,
+            "p99_ms": 5.938,
+            "min_ms": 3.783,
+            "max_ms": 5.938,
+            "stddev_ms": 0.481,
+            "total_ms": 214.246,
+            "ops_per_sec": 233.4
+          },
+          "count": 20
+        },
+        "P5_fulltext": {
+          "description": "Full-text: SearchableText",
+          "stats": {
+            "count": 50,
+            "mean_ms": 4.028,
+            "median_ms": 3.832,
+            "p95_ms": 5.555,
+            "p99_ms": 6.34,
+            "min_ms": 3.544,
+            "max_ms": 6.34,
+            "stddev_ms": 0.61,
+            "total_ms": 201.39,
+            "ops_per_sec": 248.3
+          },
+          "count": 500
+        },
+        "P6_navigation": {
+          "description": "Navigation: path depth=1 + sort",
+          "stats": {
+            "count": 50,
+            "mean_ms": 6.292,
+            "median_ms": 6.122,
+            "p95_ms": 7.381,
+            "p99_ms": 9.551,
+            "min_ms": 5.512,
+            "max_ms": 9.551,
+            "stddev_ms": 0.712,
+            "total_ms": 314.584,
+            "ops_per_sec": 158.9
+          },
+          "count": 500
+        },
+        "P8_security_filtered": {
+          "description": "Security: published + anonymous access",
+          "stats": {
+            "count": 50,
+            "mean_ms": 7.449,
+            "median_ms": 7.337,
+            "p95_ms": 8.405,
+            "p99_ms": 9.058,
+            "min_ms": 6.701,
+            "max_ms": 9.058,
+            "stddev_ms": 0.521,
+            "total_ms": 372.47,
+            "ops_per_sec": 134.2
+          },
+          "count": 368
+        },
+        "P9_date_sorted": {
+          "description": "Date-sorted: all content by creation date",
+          "stats": {
+            "count": 50,
+            "mean_ms": 7.287,
+            "median_ms": 6.853,
+            "p95_ms": 10.138,
+            "p99_ms": 10.542,
+            "min_ms": 6.127,
+            "max_ms": 10.542,
+            "stddev_ms": 1.182,
+            "total_ms": 364.37,
+            "ops_per_sec": 137.2
+          },
+          "count": 50
+        }
+      }
+    },
+    "relstorage": {
+      "backend": "RelStorage + ZCatalog",
+      "site_creation_ms": 1419.641,
+      "content_creation": {
+        "count": 500,
+        "mean_ms": 77.169,
+        "median_ms": 81.119,
+        "p95_ms": 94.594,
+        "p99_ms": 110.666,
+        "min_ms": 40.183,
+        "max_ms": 197.542,
+        "stddev_ms": 16.013,
+        "total_ms": 38584.46,
+        "ops_per_sec": 13.0
+      },
+      "content_modification": {
+        "count": 50,
+        "mean_ms": 20.729,
+        "median_ms": 19.969,
+        "p95_ms": 28.546,
+        "p99_ms": 29.536,
+        "min_ms": 16.611,
+        "max_ms": 29.536,
+        "stddev_ms": 3.383,
+        "total_ms": 1036.429,
+        "ops_per_sec": 48.2
+      },
+      "queries": {
+        "P3_simple_query": {
+          "description": "Simple: portal_type=Document",
+          "stats": {
+            "count": 50,
+            "mean_ms": 0.254,
+            "median_ms": 0.25,
+            "p95_ms": 0.304,
+            "p99_ms": 0.55,
+            "min_ms": 0.194,
+            "max_ms": 0.55,
+            "stddev_ms": 0.055,
+            "total_ms": 12.709,
+            "ops_per_sec": 3934.1
+          },
+          "count": 500
+        },
+        "P4_complex_query": {
+          "description": "Complex: type+state+subject+sort+limit",
+          "stats": {
+            "count": 50,
+            "mean_ms": 0.6,
+            "median_ms": 0.606,
+            "p95_ms": 0.827,
+            "p99_ms": 0.887,
+            "min_ms": 0.388,
+            "max_ms": 0.887,
+            "stddev_ms": 0.13,
+            "total_ms": 30.02,
+            "ops_per_sec": 1665.6
+          },
+          "count": 20
+        },
+        "P5_fulltext": {
+          "description": "Full-text: SearchableText",
+          "stats": {
+            "count": 50,
+            "mean_ms": 0.659,
+            "median_ms": 0.612,
+            "p95_ms": 0.994,
+            "p99_ms": 1.133,
+            "min_ms": 0.575,
+            "max_ms": 1.133,
+            "stddev_ms": 0.127,
+            "total_ms": 32.93,
+            "ops_per_sec": 1518.4
+          },
+          "count": 500
+        },
+        "P6_navigation": {
+          "description": "Navigation: path depth=1 + sort",
+          "stats": {
+            "count": 50,
+            "mean_ms": 0.782,
+            "median_ms": 0.735,
+            "p95_ms": 1.073,
+            "p99_ms": 1.25,
+            "min_ms": 0.637,
+            "max_ms": 1.25,
+            "stddev_ms": 0.127,
+            "total_ms": 39.101,
+            "ops_per_sec": 1278.7
+          },
+          "count": 500
+        },
+        "P8_security_filtered": {
+          "description": "Security: published + anonymous access",
+          "stats": {
+            "count": 50,
+            "mean_ms": 0.243,
+            "median_ms": 0.236,
+            "p95_ms": 0.319,
+            "p99_ms": 0.458,
+            "min_ms": 0.201,
+            "max_ms": 0.458,
+            "stddev_ms": 0.047,
+            "total_ms": 12.138,
+            "ops_per_sec": 4119.3
+          },
+          "count": 368
+        },
+        "P9_date_sorted": {
+          "description": "Date-sorted: all content by creation date",
+          "stats": {
+            "count": 50,
+            "mean_ms": 0.337,
+            "median_ms": 0.295,
+            "p95_ms": 0.519,
+            "p99_ms": 0.624,
+            "min_ms": 0.254,
+            "max_ms": 0.624,
+            "stddev_ms": 0.097,
+            "total_ms": 16.851,
+            "ops_per_sec": 2967.1
+          },
+          "count": 50
+        }
+      }
+    }
+  }
+}

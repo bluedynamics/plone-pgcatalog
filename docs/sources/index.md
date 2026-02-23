@@ -2,6 +2,12 @@
 
 <!-- diataxis: landing -->
 
+```{image} _static/logo.png
+:alt: plone.pgcatalog logo
+:width: 200px
+:align: center
+```
+
 PostgreSQL-backed catalog for Plone, replacing ZCatalog BTrees with SQL queries on JSONB.
 
 **Key capabilities:**

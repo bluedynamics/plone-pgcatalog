@@ -1,5 +1,58 @@
 # Changelog
 
+## 1.0.0b11
+
+### Changed
+
+- **Clean break from ZCatalog**: `PlonePGCatalogTool` no longer inherits
+  from `Products.CMFPlone.CatalogTool` (and transitively `ZCatalog`,
+  `ObjectManager`, etc.).  The new base classes are `UniqueObject + Folder`,
+  providing a minimal OFS container for index objects and lexicons while
+  eliminating the deep inheritance chain.
+
+  This improves query performance by ~2x across most scenarios (reduced
+  Python-side overhead from attribute lookups, security checks, and
+  Acquisition wrapping) and write performance by ~5% (lighter commit path).
+
+  A `_CatalogCompat` persistent object provides `_catalog.indexes` and
+  `_catalog.schema` for backward compatibility with code that accesses
+  ZCatalog internal data structures.  Existing ZODB instances with the old
+  `_catalog` (full `Catalog` object) continue to work without migration.
+
+- **ZCML override for eea.facetednavigation**: Moved from `<includeOverrides>`
+  inside `configure.zcml` to a proper `overrides.zcml` at the package root,
+  loaded by Zope's `five:loadProductsOverrides`.  Fixes ZCML conflict errors
+  when both eea.facetednavigation and plone.pgcatalog are installed.
+
+### Added
+
+- **eea.facetednavigation adapter**: `PGFacetedCatalog` in
+  `addons_compat/eeafacetednavigation.py` -- PG-backed `IFacetedCatalog`
+  that queries `idx` JSONB directly for faceted counting.  Dispatches by
+  `IndexType` (FIELD, KEYWORD, BOOLEAN, UUID, DATE) with `IPGIndexTranslator`
+  fallback.  Falls back to the default BTree-based implementation when the
+  catalog is not `IPGCatalogTool`.  Conditionally loaded only when
+  `eea.facetednavigation` is installed.
+
+- **Deprecated proxy methods**: `search()` proxies to `searchResults()` and
+  `uniqueValuesFor()` proxies to `Indexes[name].uniqueValues()`, both
+  emitting `DeprecationWarning`.
+
+- **Blocked methods**: `getAllBrains`, `searchAll`, `getobject`,
+  `getMetadataForUID`, `getMetadataForRID`, `getIndexDataForUID`,
+  `index_objects` raise `NotImplementedError` with descriptive messages.
+
+- **AccessControl security declarations**: Comprehensive Zope security
+  matching ZCatalog's permission model.  `Search ZCatalog` on read
+  methods (`searchResults`, `__call__`, `getpath`, `getrid`, etc.),
+  `Manage ZCatalog Entries` on write methods (`catalog_object`,
+  `uncatalog_object`, `refreshCatalog`, etc.), `Manage ZCatalogIndex
+  Entries` on index management (`addIndex`, `delIndex`, `addColumn`,
+  `delColumn`, `getIndexObjects`).  `setPermissionDefault` assigns
+  default roles (`Anonymous` for search, `Manager` for management).
+  Private helpers (`indexObject`, `reindexObject`, etc.) declared
+  private.
+
 ## 1.0.0b10
 
 ### Fixed

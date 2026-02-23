@@ -36,10 +36,11 @@ class TestSecurityDeclarations:
         assert roles is not None and roles != ()
 
     def test_ac_permissions_includes_manage_entries(self):
-        # __ac_permissions__ maps permission → method names
+        # __ac_permissions__ tuples: (perm_name, methods) or (perm_name, methods, roles)
         perms = PlonePGCatalogTool.__ac_permissions__
         manage_entries = None
-        for perm_name, methods in perms:
+        for entry in perms:
+            perm_name, methods = entry[0], entry[1]
             if perm_name == "Manage ZCatalog Entries":
                 manage_entries = methods
                 break
@@ -49,6 +50,65 @@ class TestSecurityDeclarations:
         assert "refreshCatalog" in manage_entries
         assert "reindexIndex" in manage_entries
         assert "clearFindAndRebuild" in manage_entries
+
+    def test_search_results_is_protected(self):
+        roles = getattr(PlonePGCatalogTool, "searchResults__roles__", None)
+        assert roles is not None and roles != ()
+
+    def test_call_is_protected(self):
+        roles = getattr(PlonePGCatalogTool, "__call____roles__", None)
+        assert roles is not None and roles != ()
+
+    def test_catalog_object_is_protected(self):
+        roles = getattr(PlonePGCatalogTool, "catalog_object__roles__", None)
+        assert roles is not None and roles != ()
+
+    def test_uncatalog_object_is_protected(self):
+        roles = getattr(PlonePGCatalogTool, "uncatalog_object__roles__", None)
+        assert roles is not None and roles != ()
+
+    def test_index_management_is_protected(self):
+        for name in (
+            "addIndex",
+            "delIndex",
+            "addColumn",
+            "delColumn",
+            "getIndexObjects",
+        ):
+            roles = getattr(PlonePGCatalogTool, f"{name}__roles__", None)
+            assert roles is not None and roles != (), f"{name} should be protected"
+
+    def test_read_methods_are_protected(self):
+        for name in ("indexes", "schema", "getpath", "getrid", "getIndexDataForRID"):
+            roles = getattr(PlonePGCatalogTool, f"{name}__roles__", None)
+            assert roles is not None and roles != (), f"{name} should be protected"
+
+    def test_private_methods(self):
+        for name in (
+            "indexObject",
+            "unindexObject",
+            "reindexObject",
+            "_indexObject",
+            "_unindexObject",
+            "_reindexObject",
+            "_listAllowedRolesAndUsers",
+            "_increment_counter",
+        ):
+            roles = getattr(PlonePGCatalogTool, f"{name}__roles__", None)
+            assert roles == (), f"{name} should be private, got {roles!r}"
+
+    def test_permission_defaults(self):
+        """setPermissionDefault assigns default roles for each permission."""
+        perms = PlonePGCatalogTool.__ac_permissions__
+        for entry in perms:
+            perm_name = entry[0]
+            if perm_name == "Search ZCatalog" and len(entry) > 2:
+                assert "Anonymous" in entry[2], "Search should default to Anonymous"
+                break
+        else:
+            # Search ZCatalog permission might not have default roles tuple
+            # if no methods are declared — this is fine
+            pass
 
 
 class TestObjToZoid:

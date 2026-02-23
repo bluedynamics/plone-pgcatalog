@@ -40,12 +40,5 @@
       handler=".pool.release_request_connection"
       />
 
-  <!-- eea.facetednavigation: PG-backed IFacetedCatalog adapter -->
-  <includeOverrides
-      xmlns:zcml="http://namespaces.zope.org/zcml"
-      zcml:condition="installed eea.facetednavigation"
-      package=".addons_compat"
-      file="eeafacetednavigation_overrides.zcml"
-      />
 
 </configure>

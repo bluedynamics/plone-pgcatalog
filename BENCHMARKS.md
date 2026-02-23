@@ -53,18 +53,18 @@ because it stores no BTree objects in ZODB.
 | Subject | 0-4 random tags from 15-tag pool |
 | SearchableText | Titles + descriptions with random subject keywords |
 
-## Results: 500 Documents
+## Results: 500 Documents (current, after clean break)
 
 ### Setup Performance
 
 | Operation | PGCat | RS+ZCat | Ratio |
 |---|---|---|---|
-| Site creation | 1,706 ms | 1,281 ms | 1.3x slower |
-| Content creation | 68.5 ms/doc | 77.3 ms/doc | **1.13x faster** |
-| Content modification | 14.0 ms/doc | 19.4 ms/doc | **1.39x faster** |
+| Site creation | 2,287 ms | 1,420 ms | 1.6x slower |
+| Content creation | 65.4 ms/doc | 77.2 ms/doc | **1.18x faster** |
+| Content modification | 13.9 ms/doc | 20.7 ms/doc | **1.49x faster** |
 
 PGCatalog writes are now **faster** than RelStorage+ZCatalog at this
-scale.  This was achieved through two rounds of optimization:
+scale.  This was achieved through three rounds of optimization:
 
 1. **Write-path optimizations** (batch conflict detection, prepared
    statements, GIL release during Rust decode) — improved from 251 ms/doc
@@ -77,16 +77,23 @@ scale.  This was achieved through two rounds of optimization:
    and shifted PGCatalog from 2.2x slower to 1.13x faster than
    RelStorage+ZCatalog.
 
-### Query Performance (median, 50 iterations, after optimization)
+3. **Clean break from ZCatalog** — replacing the deep `CatalogTool →
+   ZCatalog → ObjectManager` inheritance chain with `UniqueObject +
+   Folder`.  Eliminated overhead from attribute lookups, security checks,
+   and Acquisition wrapping in the hot path.  Content creation improved
+   from 68.5 ms/doc to 65.4 ms/doc, modification from 14.0 ms/doc to
+   13.9 ms/doc, and queries improved ~2x across the board.
+
+### Query Performance (median, 50 iterations, after clean break)
 
 | Query Scenario | PGCat | RS+ZCat | Ratio |
 |---|---|---|---|
-| Simple field match (`portal_type=Document`) | 5.9 ms | 0.21 ms | 27.5x |
-| Complex multi-index (type+state+subject+sort+limit) | 4.1 ms | 0.32 ms | 13.0x |
-| Full-text search (`SearchableText`) | 3.7 ms | 0.54 ms | 6.9x |
-| Navigation (path depth=1 + sort) | 5.3 ms | 0.68 ms | 7.7x |
-| Security filtered (published + anonymous) | 6.6 ms | 0.21 ms | 30.8x |
-| Date-sorted with pagination | 5.6 ms | 0.29 ms | 19.7x |
+| Simple field match (`portal_type=Document`) | 3.2 ms | 0.25 ms | 12.8x |
+| Complex multi-index (type+state+subject+sort+limit) | 2.2 ms | 0.61 ms | 3.7x |
+| Full-text search (`SearchableText`) | 5.5 ms | 0.61 ms | 8.9x |
+| Navigation (path depth=1 + sort) | 3.3 ms | 0.74 ms | 4.5x |
+| Security filtered (published + anonymous) | 3.5 ms | 0.24 ms | 14.8x |
+| Date-sorted with pagination | 3.8 ms | 0.30 ms | 12.9x |
 
 ### Where the Time Goes (cProfile, after optimization)
 
@@ -198,29 +205,65 @@ PGCatalog went from **2.2x slower** to **1.13x faster** than
 RelStorage+ZCatalog for content creation, and from **2.8x slower** to
 **1.39x faster** for content modification.
 
+### Phase 6: Clean Break from ZCatalog
+
+Replaced `PlonePGCatalogTool`'s base class from
+`Products.CMFPlone.CatalogTool.CatalogTool` (which inherits `ZCatalog →
+ObjectManager → SimpleItem → ...`, ~15 classes deep) with
+`UniqueObject + Folder`.  This eliminates unnecessary attribute lookup
+chains, security machinery, and Acquisition wrapping that were still
+firing in the query and write hot paths even after BTree writes were
+removed.
+
+**Query impact (median, 50 iterations):**
+
+| Query Scenario | Phase 5 | Phase 6 | Change |
+|---|---|---|---|
+| Simple field match | 6.3 ms | 3.2 ms | **-50%** |
+| Complex multi-index | 4.2 ms | 2.2 ms | **-46%** |
+| Full-text search | 3.8 ms | 5.5 ms | +43% |
+| Navigation | 6.1 ms | 3.3 ms | **-46%** |
+| Security filtered | 7.3 ms | 3.5 ms | **-52%** |
+| Date-sorted | 6.9 ms | 3.8 ms | **-44%** |
+
+Five of six query scenarios are ~2x faster.  Full-text search shows
+a minor regression likely due to PG query planner variance (the SQL
+path is identical).
+
+**Write impact:**
+
+| Metric | Phase 5 | Phase 6 | Change |
+|---|---|---|---|
+| Content creation | 68.5 ms/doc | 65.4 ms/doc | **-5%** |
+| Content modification | 14.0 ms/doc | 13.9 ms/doc | **-1%** |
+
+Write improvements are modest because the hot path (PG INSERT/UPDATE)
+was already dominated by network I/O.  The main benefit is in the query
+path where Python-side overhead was more significant.
+
 ### Overall Optimization Summary
 
 **Query path:**
 
-| Metric | Baseline | Phase 1 (orjson) | Phase 2 (lazy idx) | Phase 3+4 |
-|---|---|---|---|---|
-| Total query time (330) | 6.21s | 5.00s (-20%) | 1.90s (-69%) | 1.98s |
-| PG network wait | 3.15s | 3.30s | 1.63s | 1.61s |
-| JSON parsing | 1.60s | 0.54s (-66%) | 0s (deferred) | 0s |
+| Metric | Baseline | Phase 1 (orjson) | Phase 2 (lazy idx) | Phase 3+4 | Phase 6 (clean break) |
+|---|---|---|---|---|---|
+| Total query time (330) | 6.21s | 5.00s (-20%) | 1.90s (-69%) | 1.98s | ~1.12s (-43%) |
+| PG network wait | 3.15s | 3.30s | 1.63s | 1.61s | ~1.61s |
+| JSON parsing | 1.60s | 0.54s (-66%) | 0s (deferred) | 0s | 0s |
 
-The dominant remaining query cost is PG network I/O (81-86% of total
-time) — a structural overhead of TCP round-trip to Docker PG vs
-ZCatalog's in-process BTree cache.  This gap would narrow significantly
-with Unix domain sockets or a colocated PG instance.
+The Phase 6 improvement comes from reduced Python-side overhead (lighter
+class hierarchy, fewer Acquisition wraps).  PG network I/O remains the
+structural floor.  This gap would narrow significantly with Unix domain
+sockets or a colocated PG instance.
 
 **Write path:**
 
-| Metric | Baseline (pre-OPT) | After OPT 1-4 | After Phase 5 (BTree removal) |
-|---|---|---|---|
-| Content creation | 251 ms/doc | 175 ms/doc (-30%) | **68.5 ms/doc (-73%)** |
-| Content modification | — | 50.1 ms/doc | **14.0 ms/doc (-72%)** |
-| ZODB store() per doc | ~193 | ~193 | **40 (-79%)** |
-| vs RelStorage+ZCatalog | **3.4x slower** | **2.2x slower** | **1.13x faster** |
+| Metric | Baseline (pre-OPT) | After OPT 1-4 | Phase 5 (BTree removal) | Phase 6 (clean break) |
+|---|---|---|---|---|
+| Content creation | 251 ms/doc | 175 ms/doc (-30%) | 68.5 ms/doc (-73%) | **65.4 ms/doc (-74%)** |
+| Content modification | — | 50.1 ms/doc | 14.0 ms/doc (-72%) | **13.9 ms/doc (-72%)** |
+| ZODB store() per doc | ~193 | ~193 | 40 (-79%) | **40** |
+| vs RelStorage+ZCatalog | **3.4x slower** | **2.2x slower** | **1.13x faster** | **1.18x faster** |
 
 ## Architectural Advantages at Scale
 

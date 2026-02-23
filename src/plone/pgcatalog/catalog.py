@@ -16,6 +16,9 @@ clear_catalog_data) are testable without Plone.
 
 from AccessControl import ClassSecurityInfo
 from AccessControl.class_init import InitializeClass
+from AccessControl.Permissions import manage_zcatalog_entries
+from AccessControl.Permissions import manage_zcatalog_indexes
+from AccessControl.Permissions import search_zcatalog
 from Acquisition import aq_base
 from Acquisition import aq_inner
 from Acquisition import aq_parent
@@ -333,6 +336,72 @@ class PlonePGCatalogTool(UniqueObject, Folder):
     id = "portal_catalog"
     meta_type = "PG Catalog Tool"
     security = ClassSecurityInfo()
+    # Default roles match ZCatalog: search is public, management is Manager-only
+    security.setPermissionDefault(manage_zcatalog_entries, ("Manager",))
+    security.setPermissionDefault(manage_zcatalog_indexes, ("Manager",))
+    security.setPermissionDefault(search_zcatalog, ("Anonymous", "Manager"))
+
+    # -- Read access: Search ZCatalog ----------------------------------------
+    security.declareProtected(search_zcatalog, "searchResults")
+    security.declareProtected(search_zcatalog, "__call__")
+    security.declareProtected(search_zcatalog, "indexes")
+    security.declareProtected(search_zcatalog, "schema")
+    security.declareProtected(search_zcatalog, "getpath")
+    security.declareProtected(search_zcatalog, "getrid")
+    security.declareProtected(search_zcatalog, "getIndexDataForRID")
+    security.declareProtected(search_zcatalog, "uniqueValuesFor")
+    security.declareProtected(search_zcatalog, "search")
+    security.declareProtected(search_zcatalog, "all_meta_types")
+    # Unsupported stubs — same permission as ZCatalog so callers get
+    # NotImplementedError, not Unauthorized
+    security.declareProtected(search_zcatalog, "getAllBrains")
+    security.declareProtected(search_zcatalog, "searchAll")
+    security.declareProtected(search_zcatalog, "getobject")
+    security.declareProtected(search_zcatalog, "getMetadataForUID")
+    security.declareProtected(search_zcatalog, "getMetadataForRID")
+    security.declareProtected(search_zcatalog, "getIndexDataForUID")
+    security.declareProtected(search_zcatalog, "index_objects")
+
+    # -- Write access: Manage ZCatalog Entries -------------------------------
+    security.declareProtected(manage_zcatalog_entries, "catalog_object")
+    security.declareProtected(manage_zcatalog_entries, "uncatalog_object")
+    security.declareProtected(manage_zcatalog_entries, "refreshCatalog")
+    security.declareProtected(manage_zcatalog_entries, "reindexIndex")
+    security.declareProtected(manage_zcatalog_entries, "clearFindAndRebuild")
+    security.declareProtected(manage_zcatalog_entries, "manage_catalogClear")
+
+    # -- Index management: Manage ZCatalogIndex Entries ----------------------
+    security.declareProtected(manage_zcatalog_indexes, "addIndex")
+    security.declareProtected(manage_zcatalog_indexes, "delIndex")
+    security.declareProtected(manage_zcatalog_indexes, "addColumn")
+    security.declareProtected(manage_zcatalog_indexes, "delColumn")
+    security.declareProtected(manage_zcatalog_indexes, "getIndexObjects")
+
+    # -- ZMI pages: Manage ZCatalog Entries ----------------------------------
+    security.declareProtected(manage_zcatalog_entries, "manage_catalogView")
+    security.declareProtected(manage_zcatalog_entries, "manage_catalogAdvanced")
+    security.declareProtected(manage_zcatalog_entries, "manage_objectInformation")
+    security.declareProtected(
+        manage_zcatalog_entries, "manage_catalogIndexesAndMetadata"
+    )
+    security.declareProtected(manage_zcatalog_entries, "manage_get_catalog_summary")
+    security.declareProtected(manage_zcatalog_entries, "manage_get_catalog_objects")
+    security.declareProtected(manage_zcatalog_entries, "manage_get_object_detail")
+    security.declareProtected(
+        manage_zcatalog_entries, "manage_get_indexes_and_metadata"
+    )
+
+    # -- Private methods (Python-only, no through-the-web access) ------------
+    security.declarePrivate("unrestrictedSearchResults")
+    security.declarePrivate("_unrestrictedSearchResults")
+    security.declarePrivate("_listAllowedRolesAndUsers")
+    security.declarePrivate("_increment_counter")
+    security.declarePrivate("indexObject")
+    security.declarePrivate("unindexObject")
+    security.declarePrivate("reindexObject")
+    security.declarePrivate("_indexObject")
+    security.declarePrivate("_unindexObject")
+    security.declarePrivate("_reindexObject")
 
     _counter = None
 
@@ -524,20 +593,6 @@ class PlonePGCatalogTool(UniqueObject, Folder):
             stacklevel=2,
         )
         return tuple(self.Indexes._getOb(name).uniqueValues())
-
-    security.declarePrivate("unrestrictedSearchResults")
-    security.declareProtected("Manage ZCatalog Entries", "refreshCatalog")
-    security.declareProtected("Manage ZCatalog Entries", "reindexIndex")
-    security.declareProtected("Manage ZCatalog Entries", "clearFindAndRebuild")
-    security.declareProtected("Manage ZCatalog Entries", "manage_get_catalog_summary")
-    security.declareProtected("Manage ZCatalog Entries", "manage_get_catalog_objects")
-    security.declareProtected("Manage ZCatalog Entries", "manage_get_object_detail")
-    security.declareProtected(
-        "Manage ZCatalog Entries", "manage_get_indexes_and_metadata"
-    )
-    security.declareProtected(
-        "Manage ZCatalog Entries", "manage_catalogIndexesAndMetadata"
-    )
 
     @contextmanager
     def _pg_connection(self):
@@ -1240,7 +1295,7 @@ class PlonePGCatalogTool(UniqueObject, Folder):
             return None
 
 
-# Attach unsupported method stubs
+# Attach unsupported method stubs (security already declared in class body)
 for _name, _msg in _UNSUPPORTED.items():
     setattr(PlonePGCatalogTool, _name, _make_unsupported(_name, _msg))
 
