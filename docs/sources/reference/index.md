@@ -13,6 +13,8 @@ titlesonly: true
 configuration
 query-api
 index-types
+zcatalog-compat
+permissions
 schema
 ipgindextranslator
 search-backends
