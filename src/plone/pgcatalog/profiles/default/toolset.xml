@@ -1,6 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<tool-setup>
-  <required class="plone.pgcatalog.catalog.PlonePGCatalogTool"
-            tool_id="portal_catalog"
-  />
-</tool-setup>

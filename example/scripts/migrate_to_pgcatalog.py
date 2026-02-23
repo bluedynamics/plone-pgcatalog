@@ -7,7 +7,7 @@ Run via zconsole (after installing plone-pgcatalog into the venv)::
 This script:
 
 1. Installs the ``plone.pgcatalog:default`` GenericSetup profile
-   (replaces portal_catalog with PlonePGCatalogTool via toolset.xml)
+   (replaces portal_catalog with PlonePGCatalogTool, preserving addon indexes)
 2. Rebuilds the catalog (``clearFindAndRebuild``)
 3. Verifies that all content is indexed and searchable
 """
@@ -37,7 +37,7 @@ def install_pgcatalog(site):
     setup.runAllImportStepsFromProfile("profile-plone.pgcatalog:default")
     transaction.commit()
 
-    # Re-fetch catalog (it was replaced by toolset.xml)
+    # Re-fetch catalog (it was replaced by the install step)
     catalog = api.portal.get_tool("portal_catalog")
     print(f"After:  catalog class = {catalog.__class__.__name__}")
     n_indexes = len(list(catalog.indexes()))

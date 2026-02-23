@@ -76,7 +76,7 @@ setup = api.portal.get_tool("portal_setup")
 setup.runAllImportStepsFromProfile("profile-plone.pgcatalog:default")
 transaction.commit()
 
-# Re-fetch -- the catalog object was replaced by toolset.xml
+# Re-fetch -- the catalog object was replaced by the install step
 catalog = api.portal.get_tool("portal_catalog")
 print(f"After:  catalog class = {catalog.__class__.__name__}")
 print(f"After:  {len(list(catalog.indexes()))} ZCatalog indexes registered")
@@ -92,14 +92,21 @@ Run it:
 
 The GenericSetup profile performs these changes:
 
-1. **Replaces `portal_catalog`** -- the `toolset.xml` entry swaps the
-   `CatalogTool` class with `PlonePGCatalogTool`
-2. **Registers catalog indexes** -- ensures essential Plone indexes are known
-   to the PostgreSQL-backed registry
-3. **Removes orphaned ZCTextIndex lexicons** -- no longer needed since
+1. **Snapshots existing indexes** -- captures all index definitions and metadata
+   columns from the current catalog, including any addon-provided indexes
+2. **Replaces `portal_catalog`** -- swaps the `CatalogTool` class with
+   `PlonePGCatalogTool`
+3. **Restores catalog indexes** -- re-applies essential Plone indexes, then
+   restores addon indexes from the snapshot so no index definitions are lost
+4. **Removes orphaned ZCTextIndex lexicons** -- no longer needed since
    full-text search is handled by PostgreSQL tsvector
-4. **Applies DDL schema** -- creates the necessary columns, GIN indexes, and
+5. **Applies DDL schema** -- creates the necessary columns, GIN indexes, and
    PostgreSQL functions on the `object_state` table
+
+:::{tip}
+The old ZCatalog's BTree data (the actual indexed values) becomes unreferenced
+in ZODB after migration.  Run a ZODB pack after migration to reclaim the space.
+:::
 
 ## Step 4: Rebuild the Catalog
 

@@ -37,7 +37,8 @@ need a separate `%import` directive.
 plone.pgcatalog ships a GenericSetup profile (`default`) that configures
 Plone to use the PostgreSQL-backed catalog.
 
-- **`toolset.xml`**: Replaces `portal_catalog` with `PlonePGCatalogTool`.
+- **`setuphandlers.py`**: Replaces `portal_catalog` with `PlonePGCatalogTool`,
+  preserving addon index definitions via automatic snapshot and restore.
 - **`metadata.xml`**: Profile version 1.
 
 The profile is applied automatically when installing the add-on through

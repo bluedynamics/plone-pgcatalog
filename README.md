@@ -88,7 +88,7 @@ If you're migrating from FileStorage or RelStorage, use [zodb-convert](https://p
    setup.runAllImportStepsFromProfile("profile-plone.pgcatalog:default")
    ```
 
-   This replaces `portal_catalog` with `PlonePGCatalogTool` via `toolset.xml`.
+   This replaces `portal_catalog` with `PlonePGCatalogTool`, preserving any addon-provided index definitions.
 
 4. Rebuild the catalog to populate PostgreSQL with all existing content:
 

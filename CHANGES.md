@@ -2,6 +2,16 @@
 
 ## 1.0.0b10
 
+### Fixed
+
+- **Addon index preservation**: Installing plone.pgcatalog on a site with
+  addon-provided catalog indexes (e.g. from `collective.taxonomy`,
+  `plone.app.multilingual`, etc.) no longer silently drops those index
+  definitions. The install step now snapshots all existing index definitions
+  and metadata columns before replacing `portal_catalog`, then restores
+  addon indexes after re-applying core Plone profiles. Removed `toolset.xml`
+  in favour of a setuphandler-controlled replacement for correct timing.
+
 ### Added
 
 - **DateRangeInRangeIndex support**: Native `IPGIndexTranslator` for

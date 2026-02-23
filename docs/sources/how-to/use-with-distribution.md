@@ -56,7 +56,7 @@ curl -X POST http://localhost:8081/@@plone.distribution/create \
 
 ## GenericSetup Integration
 
-The profile's `toolset.xml` replaces `portal_catalog` with `PlonePGCatalogTool`. The `setuphandlers.py` install step ensures:
+The `setuphandlers.py` install step replaces `portal_catalog` with `PlonePGCatalogTool` (preserving existing addon indexes via snapshot/restore) and ensures:
 
 - Essential Plone catalog indexes are present (UID, portal_type, Title, etc.)
 - Orphaned ZCTextIndex lexicons are removed

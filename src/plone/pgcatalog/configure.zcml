@@ -19,9 +19,8 @@
       title="Install plone.pgcatalog schema"
       description="Add catalog columns and indexes to object_state."
       handler="plone.pgcatalog.setuphandlers.install"
-      >
-    <depends name="toolset" />
-  </genericsetup:importStep>
+      />
+
 
   <!-- Register PlonePGCatalogTool as IPGCatalogTool utility -->
   <utility

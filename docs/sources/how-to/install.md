@@ -38,10 +38,13 @@ setup_tool = portal.portal_setup
 setup_tool.runAllImportStepsFromProfile("profile-plone.pgcatalog:default")
 ```
 
-The profile replaces `portal_catalog` with `PlonePGCatalogTool` via `toolset.xml`.
+The profile replaces `portal_catalog` with `PlonePGCatalogTool`.
 The install step automatically:
 
+- **Snapshots** existing index definitions and metadata columns (preserving addon indexes)
+- Replaces `portal_catalog` with a fresh `PlonePGCatalogTool`
 - Re-applies essential Plone catalog indexes (UID, portal_type, etc.)
+- **Restores** addon-provided indexes from the snapshot
 - Removes orphaned ZCTextIndex lexicons (no longer needed with PG-backed search)
 - Applies DDL schema to PostgreSQL (columns, functions, indexes)
 
