@@ -2,7 +2,7 @@
 
 <!-- diataxis: landing -->
 
-```{image} _static/logo.png
+```{image} _static/logo-400.png
 :alt: plone.pgcatalog logo
 :width: 200px
 :align: center
