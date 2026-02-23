@@ -1,8 +1,9 @@
 """PlonePGCatalogTool — PostgreSQL-backed catalog for Plone.
 
-Subclass of Products.CMFPlone.CatalogTool that delegates index extraction
-to plone.indexer and obtains its PG connection from the zodb-pgjsonb
-storage's connection pool.  Registered as ``portal_catalog`` via GenericSetup.
+Standalone catalog tool (no ZCatalog inheritance) that delegates index
+extraction to plone.indexer and obtains its PG connection from the
+zodb-pgjsonb storage's connection pool.  Registered as ``portal_catalog``
+via GenericSetup.
 
 Index extraction uses the dynamic ``IndexRegistry`` from ``columns.py``,
 which is populated at startup from each Plone site's ZCatalog indexes
@@ -14,8 +15,16 @@ clear_catalog_data) are testable without Plone.
 """
 
 from AccessControl import ClassSecurityInfo
+from AccessControl.class_init import InitializeClass
+from Acquisition import aq_base
+from Acquisition import aq_inner
+from Acquisition import aq_parent
 from App.special_dtml import DTMLFile
+from BTrees.Length import Length
 from contextlib import contextmanager
+from OFS.Folder import Folder
+from Persistence import Persistent
+from persistent.mapping import PersistentMapping
 from plone.pgcatalog.backends import BM25Backend
 from plone.pgcatalog.backends import get_backend
 from plone.pgcatalog.brain import CatalogSearchResults
@@ -39,11 +48,13 @@ from plone.pgcatalog.pool import get_request_connection
 from plone.pgcatalog.pool import get_storage_connection
 from plone.pgcatalog.query import apply_security_filters
 from plone.pgcatalog.query import build_query
-from Products.CMFPlone.CatalogTool import CatalogTool
+from Products.CMFCore.utils import UniqueObject
+from Products.ZCatalog.interfaces import IZCatalog
 from psycopg import sql as pgsql
 from zope.interface import implementer
 
 import logging
+import warnings
 
 
 log = logging.getLogger(__name__)
@@ -253,39 +264,81 @@ def clear_catalog_data(conn):
 
 
 # ---------------------------------------------------------------------------
-# Plone CatalogTool subclass
+# _CatalogCompat: minimal shim for ZCatalogIndexes and addons
 # ---------------------------------------------------------------------------
 
 
-@implementer(IPGCatalogTool)
-class PlonePGCatalogTool(CatalogTool):
-    """Plone CatalogTool that uses PostgreSQL instead of BTrees.
+class _CatalogCompat(Persistent):
+    """Minimal _catalog providing index object storage.
 
-    Inherits from Products.CMFPlone.CatalogTool.CatalogTool for full
-    Plone compatibility (manage UI, plone.indexer, security).
-    Overrides both read and write methods to use PG queries.
+    ZCatalogIndexes._getOb() reads aq_parent(self)._catalog.indexes.
+    eea.facetednavigation reads _catalog.getIndex(name).
+    This shim provides just enough API for both.
 
-    PG connections are borrowed from the zodb-pgjsonb storage's pool.
+    For existing ZODB instances the old full Catalog object persists
+    and already has .indexes and .schema — our code only reads those
+    attrs, so it works without migration.
     """
 
+    def __init__(self):
+        self.indexes = PersistentMapping()
+        self.schema = PersistentMapping()
+
+    def getIndex(self, name):
+        return self.indexes[name]
+
+
+# ---------------------------------------------------------------------------
+# Unsupported ZCatalog methods → NotImplementedError
+# ---------------------------------------------------------------------------
+
+_UNSUPPORTED = {
+    "getAllBrains": "Use searchResults() or direct PG queries",
+    "searchAll": "Use searchResults() or direct PG queries",
+    "getobject": "Use brain.getObject() instead",
+    "getMetadataForUID": "Metadata is in idx JSONB — use searchResults",
+    "getMetadataForRID": "Metadata is in idx JSONB — use searchResults",
+    "getIndexDataForUID": "Use getIndexDataForRID(zoid) instead",
+    "index_objects": "Use getIndexObjects() instead",
+}
+
+
+def _make_unsupported(name, msg):
+    """Create a method that raises NotImplementedError."""
+
+    def method(self, *args, **kw):
+        raise NotImplementedError(
+            f"PlonePGCatalogTool.{name}() is not supported. {msg}"
+        )
+
+    method.__name__ = name
+    method.__doc__ = f"Not supported. {msg}"
+    return method
+
+
+# ---------------------------------------------------------------------------
+# PlonePGCatalogTool
+# ---------------------------------------------------------------------------
+
+
+@implementer(IPGCatalogTool, IZCatalog)
+class PlonePGCatalogTool(UniqueObject, Folder):
+    """PostgreSQL-backed catalog tool for Plone.
+
+    Standalone implementation (no ZCatalog inheritance) that stores all
+    catalog data in PostgreSQL via the ``idx`` JSONB column.  PG connections
+    are borrowed from the zodb-pgjsonb storage's connection pool.
+    """
+
+    id = "portal_catalog"
     meta_type = "PG Catalog Tool"
     security = ClassSecurityInfo()
 
-    # Replace irrelevant ZCatalog tabs with PG-aware versions:
-    # - Remove: Query Report, Query Plan (BTree timing), Indexes, Metadata
-    # - Replace Indexes + Metadata with merged "Indexes & Metadata" tab
+    _counter = None
+
     manage_options = (
-        *(
-            tab
-            for tab in CatalogTool.manage_options
-            if tab["action"]
-            not in (
-                "manage_catalogReport",
-                "manage_catalogPlan",
-                "manage_catalogIndexes",
-                "manage_catalogSchema",
-            )
-        ),
+        {"action": "manage_catalogView", "label": "Catalog"},
+        {"action": "manage_catalogAdvanced", "label": "Advanced"},
         {"action": "manage_catalogIndexesAndMetadata", "label": "Indexes & Metadata"},
     )
 
@@ -302,9 +355,175 @@ class PlonePGCatalogTool(CatalogTool):
         "www/catalogIndexesAndMetadata", globals()
     )
 
-    # Override ZCatalog's Indexes container to wrap each index with
-    # PGIndex — provides PG-backed _index and uniqueValues().
+    # Wrap each index with PGIndex — provides PG-backed _index and uniqueValues().
     Indexes = PGCatalogIndexes()
+
+    def __init__(self, id=None):  # noqa: A002
+        if id is not None:
+            self.id = id
+        self._catalog = _CatalogCompat()
+
+    # -- Methods copied from CMFPlone.CatalogTool (group-aware security) ----
+
+    def _listAllowedRolesAndUsers(self, user):
+        """Return roles + groups for security filtering (from CMFPlone)."""
+        result = user.getRoles()
+        if "Anonymous" in result:
+            return ["Anonymous"]
+        result = list(result)
+        if hasattr(aq_base(user), "getGroups"):
+            groups = [f"user:{x}" for x in user.getGroups()]
+            if groups:
+                result = result + groups
+        result.insert(0, f"user:{user.getId()}")
+        result.append("Anonymous")
+        return result
+
+    def _increment_counter(self):
+        if self._counter is None:
+            self._counter = Length()
+        self._counter.change(1)
+
+    @security.private
+    def getCounter(self):
+        return (self._counter is not None and self._counter()) or 0
+
+    # -- ZCatalog-compatible API (PG-backed) --------------------------------
+
+    def indexes(self):
+        """Return list of index names (from _catalog.indexes)."""
+        return list(self._catalog.indexes.keys())
+
+    def schema(self):
+        """Return list of metadata column names (from IndexRegistry)."""
+        return sorted(get_registry().metadata)
+
+    def addIndex(self, name, index_type, extra=None):
+        """Add an index object to _catalog.indexes and sync IndexRegistry.
+
+        Args:
+            name: index name
+            index_type: either a string (meta_type like 'FieldIndex')
+                        or an index object implementing IPluggableIndex
+            extra: extra configuration (passed to index constructor)
+        """
+        from Products.PluginIndexes.interfaces import IPluggableIndex
+
+        if isinstance(index_type, str):
+            # Resolve type string to index class via Products.meta_types
+            # (same approach as ZCatalog.addIndex — query all_meta_types
+            # with IPluggableIndex filter)
+            products = self.all_meta_types(interfaces=(IPluggableIndex,))
+            base = None
+            for info in products:
+                if info.get("name") == index_type:
+                    base = info.get("instance")
+                    break
+
+            if base is None:
+                raise ValueError(f"Unknown index type: {index_type!r}")
+
+            # Each index type has its own constructor signature —
+            # inspect to pass the right args (same as ZCatalog)
+            varnames = base.__init__.__code__.co_varnames
+            if "extra" in varnames:
+                index_obj = base(name, extra=extra, caller=self)
+            elif "caller" in varnames:
+                index_obj = base(name, caller=self)
+            else:
+                index_obj = base(name)
+        elif IPluggableIndex.providedBy(index_type):
+            index_obj = index_type
+        else:
+            raise ValueError(f"Invalid index_type: {index_type!r}")
+
+        self._catalog.indexes[name] = index_obj
+
+        # Sync to IndexRegistry
+        from plone.pgcatalog.columns import META_TYPE_MAP
+        from plone.pgcatalog.columns import SPECIAL_INDEXES
+
+        meta_type = getattr(index_obj, "meta_type", None)
+        idx_type = META_TYPE_MAP.get(meta_type) if meta_type else None
+        if idx_type is not None:
+            idx_key = None if name in SPECIAL_INDEXES else name
+            source_attrs = None
+            if hasattr(index_obj, "getIndexSourceNames"):
+                try:
+                    source_attrs = list(index_obj.getIndexSourceNames())
+                except Exception:
+                    pass
+            if not source_attrs:
+                source_attrs = [name]
+            get_registry().register(name, idx_type, idx_key, source_attrs)
+
+    def delIndex(self, name):
+        """Remove an index from _catalog.indexes."""
+        if name in self._catalog.indexes:
+            del self._catalog.indexes[name]
+
+    def addColumn(self, name, default_value=None):
+        """Register a metadata column in the IndexRegistry."""
+        get_registry().add_metadata(name)
+        # Persist in _catalog.schema so sync_from_catalog() finds it on restart
+        self._catalog.schema[name] = len(self._catalog.schema)
+
+    def delColumn(self, name):
+        """Remove a metadata column from the IndexRegistry."""
+        get_registry().metadata.discard(name)
+        self._catalog.schema.pop(name, None)
+
+    def getIndexObjects(self):
+        """Return list of index objects (wrapped via PGCatalogIndexes)."""
+        result = []
+        for name in self._catalog.indexes:
+            idx = self.Indexes._getOb(name, None)
+            if idx is not None:
+                result.append(idx)
+        return result
+
+    def getIndexDataForRID(self, rid):
+        """Return idx JSONB dict for a record ID (ZOID)."""
+        conn = self._get_pg_read_connection()
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT idx FROM object_state WHERE zoid = %(zoid)s",
+                {"zoid": int(rid)},
+            )
+            row = cur.fetchone()
+        if row is None:
+            return {}
+        return row["idx"] or {}
+
+    def manage_catalogClear(self, REQUEST=None, RESPONSE=None, URL1=None):
+        """Clear all catalog data (ZMI action)."""
+        with self._pg_connection() as conn:
+            clear_catalog_data(conn)
+        if RESPONSE is not None:
+            RESPONSE.redirect(
+                URL1 + "/manage_catalogAdvanced?manage_tabs_message=Catalog+cleared."
+            )
+
+    # -- Deprecated proxy methods -------------------------------------------
+
+    def search(self, *args, **kw):
+        """Deprecated: use searchResults() instead."""
+        warnings.warn(
+            "portal_catalog.search() is deprecated, use searchResults() instead",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.searchResults(*args, **kw)
+
+    def uniqueValuesFor(self, name):
+        """Deprecated: use catalog.Indexes[name].uniqueValues() instead."""
+        warnings.warn(
+            "portal_catalog.uniqueValuesFor() is deprecated, "
+            "use catalog.Indexes[name].uniqueValues() instead",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return tuple(self.Indexes._getOb(name).uniqueValues())
 
     security.declarePrivate("unrestrictedSearchResults")
     security.declareProtected("Manage ZCatalog Entries", "refreshCatalog")
@@ -456,8 +675,11 @@ class PlonePGCatalogTool(CatalogTool):
         set_partial_pending(zoid, idx_updates)
         return True
 
+    def __url(self, ob):
+        return "/".join(ob.getPhysicalPath())
+
     def indexObject(self, object):  # noqa: A002
-        """Set PG annotation immediately for new objects.
+        """Queue-aware: enqueue index request (or direct if queue disabled).
 
         ``CatalogAware.indexObject()`` calls this for newly-added
         content.  We set the annotation NOW because the IndexQueue
@@ -468,6 +690,11 @@ class PlonePGCatalogTool(CatalogTool):
         PostgreSQL via CatalogStateProcessor during tpc_vote.
         """
         self._set_pg_annotation(object)
+
+    def unindexObject(self, object):  # noqa: A002
+        """Queue-aware: enqueue unindex request."""
+        url = self.__url(object)
+        self.uncatalog_object(url)
 
     def reindexObject(self, object, idxs=None, update_metadata=1, uid=None):  # noqa: A002
         """Reindex an object, optionally only specific indexes.
@@ -481,6 +708,26 @@ class PlonePGCatalogTool(CatalogTool):
         if idxs and self._partial_reindex(object, idxs):
             return
         self._set_pg_annotation(object, uid)
+
+    # -- Direct (non-queued) methods called by CMFCore.indexing.PortalCatalogProcessor
+
+    def _indexObject(self, object):  # noqa: A002
+        """Direct index — called by IndexQueue processor."""
+        url = self.__url(object)
+        self.catalog_object(object, url)
+
+    def _unindexObject(self, object):  # noqa: A002
+        """Direct unindex — called by IndexQueue processor."""
+        url = self.__url(object)
+        self.uncatalog_object(url)
+
+    def _reindexObject(self, object, idxs=None, update_metadata=1, uid=None):  # noqa: A002
+        """Direct reindex — called by IndexQueue processor."""
+        if uid is None:
+            uid = self.__url(object)
+        if idxs:
+            idxs = [i for i in idxs if i in self._catalog.indexes]
+        self.catalog_object(object, uid, idxs, update_metadata)
 
     def catalog_object(
         self,
@@ -700,17 +947,17 @@ class PlonePGCatalogTool(CatalogTool):
         """Clear all catalog data and rebuild from content objects.
 
         1. Clears PG catalog columns (path, idx, searchable_text, etc.)
-        2. Delegates to CMFPlone's ``clearFindAndRebuild()`` which
-           traverses the entire portal tree and calls
-           ``reindexObject()`` on each content object.  Our override
-           sets the PG annotation → CatalogStateProcessor writes
-           catalog data during the transaction commit.
+        2. Traverses the entire portal tree and calls catalog_object()
+           on each content object.
         """
-        # Clear PG catalog data (NULLs all catalog columns)
         with self._pg_connection() as conn:
             clear_catalog_data(conn)
-        # Traverse portal tree and re-index all content objects
-        super().clearFindAndRebuild()
+        portal = aq_parent(aq_inner(self))
+        portal.ZopeFindAndApply(
+            portal,
+            search_sub=True,
+            apply_func=lambda obj, path: self.catalog_object(obj, path),
+        )
 
     # -- ZCatalog internal API (PG-backed) ----------------------------------
 
@@ -991,3 +1238,10 @@ class PlonePGCatalogTool(CatalogTool):
             return value if isinstance(value, str) else None
         except Exception:
             return None
+
+
+# Attach unsupported method stubs
+for _name, _msg in _UNSUPPORTED.items():
+    setattr(PlonePGCatalogTool, _name, _make_unsupported(_name, _msg))
+
+InitializeClass(PlonePGCatalogTool)

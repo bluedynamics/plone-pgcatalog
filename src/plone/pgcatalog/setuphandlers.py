@@ -131,12 +131,20 @@ def _snapshot_catalog(catalog):
 def _replace_catalog(site):
     """Replace portal_catalog with a fresh PlonePGCatalogTool."""
     from plone.pgcatalog.catalog import PlonePGCatalogTool
+    from Products.CMFCore.interfaces import ICatalogTool
+    from zope.component import getSiteManager
 
     if "portal_catalog" in site.objectIds():
         site._delObject("portal_catalog")
 
     new_catalog = PlonePGCatalogTool()
     site._setObject("portal_catalog", new_catalog)
+
+    # Register as ICatalogTool immediately so that importCatalogTool
+    # (called by _ensure_catalog_indexes via runImportStepFromProfile)
+    # can find it via queryUtility(ICatalogTool).
+    sm = getSiteManager(site)
+    sm.registerUtility(site.portal_catalog, ICatalogTool)
     log.info("Replaced portal_catalog with PlonePGCatalogTool")
 
 
@@ -266,9 +274,9 @@ def _ensure_catalog_indexes(site):
                 "catalog",
                 run_dependencies=False,
             )
-            log.info("Re-applied catalog config from %s", profile_id)
+            log.info("Applied catalog indexes from %s", profile_id)
         except Exception:
-            log.debug("Could not apply catalog from %s", profile_id, exc_info=True)
+            log.warning("Could not apply catalog from %s", profile_id, exc_info=True)
 
 
 def _remove_lexicons(site):

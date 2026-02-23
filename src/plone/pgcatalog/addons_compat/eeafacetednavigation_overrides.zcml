@@ -1,0 +1,6 @@
+<configure xmlns="http://namespaces.zope.org/zope">
+  <utility
+      factory=".eeafacetednavigation.PGFacetedCatalog"
+      provides="eea.facetednavigation.search.interfaces.IFacetedCatalog"
+      />
+</configure>
