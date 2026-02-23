@@ -10,8 +10,10 @@ which is populated at startup from each Plone site's ZCatalog indexes
 (via ``sync_from_catalog()``).  Custom index types not in the registry
 can be handled by ``IPGIndexTranslator`` utilities.
 
-Module-level functions (_run_search, refresh_catalog, reindex_index,
-clear_catalog_data) are testable without Plone.
+Module structure:
+- ``extraction.py`` — index value extraction from content objects
+- ``maintenance.py`` — standalone PG maintenance ops, compat shims
+- ``search.py`` — core search executor (``_run_search``)
 """
 
 from AccessControl import ClassSecurityInfo
@@ -26,21 +28,23 @@ from App.special_dtml import DTMLFile
 from BTrees.Length import Length
 from contextlib import contextmanager
 from OFS.Folder import Folder
-from Persistence import Persistent
-from persistent.mapping import PersistentMapping
 from plone.pgcatalog.backends import BM25Backend
 from plone.pgcatalog.backends import get_backend
 from plone.pgcatalog.brain import CatalogSearchResults
-from plone.pgcatalog.brain import PGCatalogBrain
 from plone.pgcatalog.columns import compute_path_info
-from plone.pgcatalog.columns import convert_value
 from plone.pgcatalog.columns import get_registry
-from plone.pgcatalog.columns import IndexType
-from plone.pgcatalog.indexing import catalog_object as _sql_catalog
-from plone.pgcatalog.indexing import reindex_object as _sql_reindex
+from plone.pgcatalog.extraction import extract_from_translators
+from plone.pgcatalog.extraction import extract_idx
+from plone.pgcatalog.extraction import extract_searchable_text
+from plone.pgcatalog.extraction import obj_to_zoid
+from plone.pgcatalog.extraction import wrap_object
 from plone.pgcatalog.indexing import uncatalog_object as _sql_uncatalog
 from plone.pgcatalog.interfaces import IPGCatalogTool
-from plone.pgcatalog.interfaces import IPGIndexTranslator
+from plone.pgcatalog.maintenance import _CatalogCompat
+from plone.pgcatalog.maintenance import _make_unsupported
+from plone.pgcatalog.maintenance import _UNSUPPORTED
+from plone.pgcatalog.maintenance import clear_catalog_data
+from plone.pgcatalog.maintenance import reindex_index
 from plone.pgcatalog.pending import _get_pending
 from plone.pgcatalog.pending import _local
 from plone.pgcatalog.pending import set_partial_pending
@@ -50,10 +54,10 @@ from plone.pgcatalog.pool import get_pool
 from plone.pgcatalog.pool import get_request_connection
 from plone.pgcatalog.pool import get_storage_connection
 from plone.pgcatalog.query import apply_security_filters
-from plone.pgcatalog.query import build_query
+from plone.pgcatalog.search import _PendingBrain
+from plone.pgcatalog.search import _run_search
 from Products.CMFCore.utils import UniqueObject
 from Products.ZCatalog.interfaces import IZCatalog
-from psycopg import sql as pgsql
 from zope.interface import implementer
 
 import logging
@@ -61,262 +65,6 @@ import warnings
 
 
 log = logging.getLogger(__name__)
-
-
-def _path_value_to_string(value):
-    """Convert a path index value to a string path.
-
-    Path indexers may return a tuple/list of path components (e.g. tgpath
-    returns ``('uuid1', 'uuid2', 'uuid3')``), or a string path.
-    Returns ``None`` if the value is empty or not convertible.
-    """
-    if value is None:
-        return None
-    if isinstance(value, str):
-        return value if value else None
-    if isinstance(value, (list, tuple)):
-        if not value:
-            return None
-        return "/" + "/".join(str(p) for p in value)
-    return str(value)
-
-
-class _PendingBrain:
-    """Minimal brain for objects in pending store (not yet in PG).
-
-    Provides just enough interface for ``reindexObjectSecurity`` to
-    find and reindex the object.
-    """
-
-    __slots__ = ("_obj", "_path")
-
-    def __init__(self, path, obj):
-        self._path = path
-        self._obj = obj
-
-    def getPath(self):
-        return self._path
-
-    def _unrestrictedGetObject(self):
-        return self._obj
-
-
-# Fixed set of columns for catalog queries (never user-supplied).
-# Lazy mode: only zoid + path; idx fetched on demand via batch load.
-# Eager mode: includes idx (backward compat for direct _run_search calls).
-_SELECT_COLS_LAZY = "zoid, path"
-_SELECT_COLS_LAZY_COUNTED = "zoid, path, COUNT(*) OVER() AS _total_count"
-_SELECT_COLS_EAGER = "zoid, path, idx"
-_SELECT_COLS_EAGER_COUNTED = "zoid, path, idx, COUNT(*) OVER() AS _total_count"
-
-
-# ---------------------------------------------------------------------------
-# Module-level functions (testable without Plone)
-# ---------------------------------------------------------------------------
-
-
-def _run_search(conn, query, catalog=None, lazy_conn=None):
-    """Execute a prepared query dict and return CatalogSearchResults.
-
-    Builds the SQL once and uses a ``COUNT(*) OVER()`` window function
-    when a LIMIT is present so only *one* query is executed.
-
-    When ``lazy_conn`` is provided, uses **lazy mode**: only ``zoid`` and
-    ``path`` are selected.  The ``idx`` JSONB is fetched on demand when
-    brain metadata is first accessed (via
-    ``CatalogSearchResults._load_idx_batch()``), using the same connection
-    (and thus the same REPEATABLE READ snapshot).
-
-    Without ``lazy_conn``, uses **eager mode**: ``idx`` is included in the
-    SELECT for backward compatibility with tests and direct callers.
-
-    Args:
-        conn: psycopg connection (dict_row factory)
-        query: ZCatalog-style query dict (security already applied if needed)
-        catalog: reference for brain.getObject() traversal (optional)
-        lazy_conn: connection for deferred idx batch loading (optional)
-
-    Returns:
-        CatalogSearchResults with PGCatalogBrain instances
-    """
-    qr = build_query(query)
-
-    has_limit = qr["limit"] is not None
-    if lazy_conn is not None:
-        cols = _SELECT_COLS_LAZY_COUNTED if has_limit else _SELECT_COLS_LAZY
-    else:
-        cols = _SELECT_COLS_EAGER_COUNTED if has_limit else _SELECT_COLS_EAGER
-
-    sql = f"SELECT {cols} FROM object_state WHERE {qr['where']}"
-    if qr["order_by"]:
-        sql += f" ORDER BY {qr['order_by']}"
-    if qr["limit"]:
-        sql += f" LIMIT {qr['limit']}"
-    if qr["offset"]:
-        sql += f" OFFSET {qr['offset']}"
-
-    with conn.cursor() as cur:
-        cur.execute(sql, qr["params"], prepare=True)
-        rows = cur.fetchall()
-
-    actual_count = None
-    if has_limit and rows:
-        first = rows[0]
-        actual_count = first["_total_count"] if isinstance(first, dict) else first[-1]
-        # Strip the window-function column from each row
-        rows = [{k: v for k, v in r.items() if k != "_total_count"} for r in rows]
-    elif has_limit:
-        # LIMIT set but no rows — actual count is 0
-        actual_count = 0
-
-    brains = [PGCatalogBrain(row, catalog=catalog) for row in rows]
-    results = CatalogSearchResults(
-        brains, actual_result_count=actual_count, conn=lazy_conn
-    )
-
-    # Wire brains to result set for lazy loading
-    if lazy_conn is not None:
-        for brain in brains:
-            brain._result_set = results
-
-    return results
-
-
-def refresh_catalog(conn):
-    """Re-catalog all objects that have catalog data.
-
-    Re-reads idx/path from each cataloged row and re-applies.
-    This is a lightweight refresh — it does NOT re-extract values
-    from the actual Zope objects (that requires Plone integration).
-    """
-    with conn.cursor() as cur:
-        cur.execute(
-            "SELECT zoid, path, idx, searchable_text "
-            "FROM object_state WHERE idx IS NOT NULL"
-        )
-        rows = cur.fetchall()
-
-    count = 0
-    for row in rows:
-        if row["path"] and row["idx"]:
-            _sql_catalog(
-                conn,
-                zoid=row["zoid"],
-                path=row["path"],
-                idx=row["idx"],
-            )
-            count += 1
-
-    log.info("refresh_catalog: re-indexed %d objects", count)
-    return count
-
-
-def reindex_index(conn, name):
-    """Re-apply a specific idx key across all cataloged objects.
-
-    Args:
-        conn: psycopg connection
-        name: index name (idx JSONB key) to refresh
-    """
-    with conn.cursor() as cur:
-        cur.execute(
-            "SELECT zoid, idx FROM object_state "
-            "WHERE idx IS NOT NULL AND idx ? %(key)s",
-            {"key": name},
-        )
-        rows = cur.fetchall()
-
-    count = 0
-    for row in rows:
-        value = row["idx"].get(name)
-        if value is not None:
-            _sql_reindex(conn, zoid=row["zoid"], idx_updates={name: value})
-            count += 1
-
-    log.info("reindex_index(%r): updated %d objects", name, count)
-    return count
-
-
-def clear_catalog_data(conn):
-    """Clear all catalog data (path, idx, searchable_text, and backend extras).
-
-    The base object_state rows are preserved.
-    """
-    extra_nulls = get_backend().uncatalog_extra()
-    # Use psycopg.sql.Identifier for safe column name quoting
-    extra_parts = [
-        pgsql.SQL(", {} = NULL").format(pgsql.Identifier(col)) for col in extra_nulls
-    ]
-    extra_sql = pgsql.SQL("").join(extra_parts)
-
-    base_sql = pgsql.SQL(
-        "UPDATE object_state SET "
-        "path = NULL, parent_path = NULL, path_depth = NULL, "
-        "idx = NULL, searchable_text = NULL"
-    )
-    query = pgsql.SQL("{base}{extra} WHERE idx IS NOT NULL").format(
-        base=base_sql, extra=extra_sql
-    )
-
-    with conn.cursor() as cur:
-        cur.execute(query)
-        count = cur.rowcount
-
-    log.info("clear_catalog_data: cleared %d objects", count)
-    return count
-
-
-# ---------------------------------------------------------------------------
-# _CatalogCompat: minimal shim for ZCatalogIndexes and addons
-# ---------------------------------------------------------------------------
-
-
-class _CatalogCompat(Persistent):
-    """Minimal _catalog providing index object storage.
-
-    ZCatalogIndexes._getOb() reads aq_parent(self)._catalog.indexes.
-    eea.facetednavigation reads _catalog.getIndex(name).
-    This shim provides just enough API for both.
-
-    For existing ZODB instances the old full Catalog object persists
-    and already has .indexes and .schema — our code only reads those
-    attrs, so it works without migration.
-    """
-
-    def __init__(self):
-        self.indexes = PersistentMapping()
-        self.schema = PersistentMapping()
-
-    def getIndex(self, name):
-        return self.indexes[name]
-
-
-# ---------------------------------------------------------------------------
-# Unsupported ZCatalog methods → NotImplementedError
-# ---------------------------------------------------------------------------
-
-_UNSUPPORTED = {
-    "getAllBrains": "Use searchResults() or direct PG queries",
-    "searchAll": "Use searchResults() or direct PG queries",
-    "getobject": "Use brain.getObject() instead",
-    "getMetadataForUID": "Metadata is in idx JSONB — use searchResults",
-    "getMetadataForRID": "Metadata is in idx JSONB — use searchResults",
-    "getIndexDataForUID": "Use getIndexDataForRID(zoid) instead",
-    "index_objects": "Use getIndexObjects() instead",
-}
-
-
-def _make_unsupported(name, msg):
-    """Create a method that raises NotImplementedError."""
-
-    def method(self, *args, **kw):
-        raise NotImplementedError(
-            f"PlonePGCatalogTool.{name}() is not supported. {msg}"
-        )
-
-    method.__name__ = name
-    method.__doc__ = f"Not supported. {msg}"
-    return method
 
 
 # ---------------------------------------------------------------------------
@@ -1177,116 +925,29 @@ class PlonePGCatalogTool(UniqueObject, Folder):
             "metadata_count": len(metadata),
         }
 
-    # -- Helpers -------------------------------------------------------------
+    # -- Helpers (delegated to extraction.py) --------------------------------
 
     def _wrap_object(self, obj):
         """Wrap an object with IIndexableObject for plone.indexer."""
-        from plone.indexer.interfaces import IIndexableObject
-        from zope.component import queryMultiAdapter
-
-        wrapper = queryMultiAdapter((obj, self), IIndexableObject)
-        return wrapper if wrapper is not None else obj
+        return wrap_object(obj, self)
 
     @staticmethod
     def _obj_to_zoid(obj):
         """Extract the integer zoid from a persistent object's _p_oid."""
-        oid = getattr(obj, "_p_oid", None)
-        if oid is None:
-            return None
-        return int.from_bytes(oid, "big")
+        return obj_to_zoid(obj)
 
     def _extract_idx(self, wrapper, idxs=None):
-        """Extract all idx values from a wrapped indexable object.
-
-        Iterates the dynamic ``IndexRegistry`` for indexes (using
-        ``source_attrs`` for attribute lookup) and metadata columns.
-        Indexes with ``idx_key=None`` (special: SearchableText,
-        effectiveRange, path) are skipped — they have dedicated columns.
-
-        PATH-type indexes with ``idx_key`` set (additional path indexes
-        like ``tgpath``) store the path value plus derived ``_parent``
-        and ``_depth`` keys in the idx JSONB.
-        """
-        registry = get_registry()
-        idx = {}
-
-        # Extract index values
-        for name, (idx_type, idx_key, source_attrs) in registry.items():
-            if idx_key is None:
-                continue  # composite/special (path, SearchableText, effectiveRange)
-            if idxs and name not in idxs:
-                continue  # partial reindex — skip unrequested indexes
-            try:
-                value = None
-                for attr in source_attrs:
-                    value = getattr(wrapper, attr, None)
-                    if callable(value):
-                        value = value()
-                    if value is not None:
-                        break
-                if idx_type == IndexType.PATH:
-                    # Additional path index — store path + parent + depth
-                    path_str = _path_value_to_string(value)
-                    if path_str:
-                        parent, depth = compute_path_info(path_str)
-                        idx[idx_key] = path_str
-                        idx[f"{idx_key}_parent"] = parent
-                        idx[f"{idx_key}_depth"] = depth
-                else:
-                    idx[idx_key] = convert_value(value)
-            except Exception:
-                pass  # indexer raised — skip this field
-
-        # Extract metadata-only columns (not indexes, but stored in idx JSONB)
-        for meta_name in registry.metadata:
-            if meta_name in idx:
-                continue  # already extracted as an index
-            if idxs and meta_name not in idxs:
-                continue
-            try:
-                value = getattr(wrapper, meta_name, None)
-                if callable(value):
-                    value = value()
-                idx[meta_name] = convert_value(value)
-            except Exception:
-                pass
-
-        # IPGIndexTranslator fallback: custom extractors
-        self._extract_from_translators(wrapper, idx, idxs=idxs)
-
-        return idx
+        """Extract all idx values from a wrapped indexable object."""
+        return extract_idx(wrapper, idxs=idxs)
 
     def _extract_from_translators(self, wrapper, idx, idxs=None):
-        """Call IPGIndexTranslator.extract() for all registered translators.
-
-        When ``idxs`` is provided, only calls translators whose name
-        is in the filter list.
-        """
-        try:
-            from zope.component import getUtilitiesFor
-
-            for name, translator in getUtilitiesFor(IPGIndexTranslator):
-                if idxs and name not in idxs:
-                    continue  # skip unrequested translator
-                try:
-                    extra = translator.extract(wrapper, name)
-                    if extra and isinstance(extra, dict):
-                        idx.update(extra)
-                except Exception:
-                    pass  # translator raised — skip
-        except Exception:
-            pass  # no component architecture available
+        """Call IPGIndexTranslator.extract() for all registered translators."""
+        return extract_from_translators(wrapper, idx, idxs=idxs)
 
     @staticmethod
     def _extract_searchable_text(wrapper):
         """Extract SearchableText from a wrapped indexable object."""
-        try:
-            value = getattr(wrapper, "SearchableText", None)
-            if callable(value):
-                value = value()
-            return value if isinstance(value, str) else None
-        except Exception:
-            return None
+        return extract_searchable_text(wrapper)
 
 
 # Attach unsupported method stubs (security already declared in class body)

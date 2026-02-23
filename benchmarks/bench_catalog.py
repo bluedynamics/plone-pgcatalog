@@ -421,7 +421,7 @@ def get_query_scenarios(objects):
 
 def run_pgcatalog_query(conn, query_dict):
     """Run a query via pgcatalog and return result count."""
-    from plone.pgcatalog.catalog import _run_search
+    from plone.pgcatalog.search import _run_search
 
     results = _run_search(conn, query_dict)
     return len(results)
