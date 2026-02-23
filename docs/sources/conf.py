@@ -52,4 +52,4 @@ html_theme_options = {
 }
 
 html_static_path = ["_static"]
-html_logo = "_static/logo.png"
+html_logo = "_static/logo-web.png"
