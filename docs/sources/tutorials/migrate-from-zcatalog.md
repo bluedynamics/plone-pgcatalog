@@ -228,6 +228,52 @@ If anything goes wrong, you can restore the original state.
 3. **Restart Zope** -- the original `CatalogTool` class will be restored from
    the database, and the site will operate as before.
 
+## Troubleshooting
+
+If you run into issues after migration, here are the most common problems
+and how to resolve them.
+
+### "NotImplementedError: PlonePGCatalogTool.getAllBrains() is not supported"
+
+Code that calls ZCatalog internal methods needs updating.
+`PlonePGCatalogTool` does not inherit from ZCatalog and blocks methods
+that have no PostgreSQL equivalent.  See {doc}`../reference/zcatalog-compat`
+for blocked methods and their replacements.
+
+### Object count is zero after migration
+
+The GenericSetup profile replaces the catalog tool but does not populate
+PostgreSQL data.  We need to run `clearFindAndRebuild()` (Step 4 above)
+to traverse the site and index all content objects.
+
+### Addon indexes are missing
+
+The install step snapshots existing indexes before replacing the catalog.
+If addons were installed *after* applying the plone.pgcatalog profile,
+their indexes will not be in the snapshot.  To fix this, either:
+
+- Re-apply the addon's `catalog.xml` via GenericSetup, or
+- Restart Zope -- `sync_from_catalog()` runs at startup and discovers
+  indexes from `portal_catalog._catalog.indexes`
+
+### "DeprecationWarning: portal_catalog.search() is deprecated"
+
+Replace `catalog.search(...)` with `catalog.searchResults(...)`.
+See {doc}`../reference/zcatalog-compat` for all deprecated methods.
+
+### Full-text search returns no results
+
+Run `clearFindAndRebuild()` to populate the `searchable_text` tsvector
+column.  Individual `reindexObject()` calls update the `idx` JSONB but
+only rebuild `searchable_text` when all indexes are reindexed.
+
+### Permission errors after migration
+
+plone.pgcatalog declares the same permissions as ZCatalog, so existing
+role mappings carry over.  If you still see `Unauthorized`, check the
+{doc}`../reference/permissions` page to verify which permission protects
+the method you are calling.
+
 ## What You Learned
 
 - Migration requires zodb-pgjsonb as the ZODB backend (same PostgreSQL
