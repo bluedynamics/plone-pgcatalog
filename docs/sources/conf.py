@@ -24,7 +24,7 @@ myst_enable_extensions = [
 
 myst_fence_as_directive = ["mermaid"]
 
-templates_path = []
+templates_path = ["_templates"]
 exclude_patterns = []
 
 # mermaid options
@@ -53,3 +53,4 @@ html_theme_options = {
 
 html_static_path = ["_static"]
 html_logo = "_static/logo-web.png"
+html_favicon = "_static/favicon.ico"

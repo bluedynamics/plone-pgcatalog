@@ -1,0 +1,13 @@
+{# Extend the theme's layout to inject apple-touch-icon and Open Graph meta #}
+{% extends "!layout.html" %}
+
+{% block metatags %}
+{{ super() }}
+<link rel="apple-touch-icon" sizes="180x180" href="{{ pathto('_static/apple-touch-icon.png', 1) }}">
+<meta property="og:type" content="website">
+<meta property="og:title" content="{{ title }}">
+<meta property="og:description" content="PostgreSQL-backed catalog for Plone, replacing ZCatalog BTrees with SQL queries on JSONB.">
+<meta property="og:image" content="https://bluedynamics.github.io/plone-pgcatalog/_static/og-image.png">
+<meta property="og:url" content="https://bluedynamics.github.io/plone-pgcatalog/">
+<meta name="twitter:card" content="summary_large_image">
+{% endblock %}
