@@ -5,7 +5,7 @@ Unit tests for extract/query/sort + integration tests against PostgreSQL.
 
 from datetime import datetime
 from datetime import UTC
-from plone.pgcatalog.driri import DateRangeInRangeIndexTranslator
+from plone.pgcatalog.addons_compat.driri import DateRangeInRangeIndexTranslator
 from plone.pgcatalog.indexing import catalog_object
 from tests.conftest import insert_object
 

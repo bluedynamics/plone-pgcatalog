@@ -28,10 +28,9 @@ pieces fit together, and the reasoning behind key design choices.
 | `pgindex.py` | `PGIndex`, `PGCatalogIndexes` -- ZCatalog internal API wrappers |
 | `backends.py` | `SearchBackend` ABC, `TsvectorBackend`, `BM25Backend` |
 | `dri.py` | `DateRecurringIndexTranslator` for recurring events |
-| `driri.py` | `DateRangeInRangeIndexTranslator` for overlap queries |
 | `interfaces.py` | `IPGCatalogTool`, `IPGIndexTranslator` |
 | `setuphandlers.py` | GenericSetup install: snapshot, replace, restore indexes |
-| `addons_compat/` | Addon compatibility adapters (eea.facetednavigation) |
+| `addons_compat/` | Addon compatibility adapters (eea.facetednavigation, DateRangeInRangeIndex) |
 
 ## Overview
 

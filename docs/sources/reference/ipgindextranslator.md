@@ -136,7 +136,7 @@ RRULE strings are validated against the pattern
 
 ### DateRangeInRangeIndexTranslator
 
-Defined in `plone.pgcatalog.driri`. Handles
+Defined in `plone.pgcatalog.addons_compat.driri`. Handles
 `Products.DateRangeInRangeIndex` instances.
 
 **Constructor attributes:**
