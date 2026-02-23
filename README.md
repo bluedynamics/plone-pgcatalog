@@ -122,7 +122,9 @@ To use plone.pgcatalog in your own distribution, add it to `profiles.json`:
 
 ## Documentation
 
-- [ARCHITECTURE.md](ARCHITECTURE.md) -- internal design, index registry, query translation, custom index types
+Rendered documentation: **https://bluedynamics.github.io/plone-pgcatalog/**
+
+- [Architecture](docs/sources/explanation/architecture.md) -- design, index registry, query translation
 - [BENCHMARKS.md](BENCHMARKS.md) -- performance comparison vs RelStorage+ZCatalog
 - [CHANGES.md](CHANGES.md) -- changelog
 - [example/](example/) -- runnable example with multilingual content and an example distribution

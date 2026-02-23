@@ -242,7 +242,13 @@ catalog(sort_on=["modified", "sortable_title"], sort_order=["descending", "ascen
 ```
 
 When `sort_order` is shorter than `sort_on`, the last order value is
-reused for remaining sort keys.
+reused for remaining sort keys.  A single `sort_order` string applies to
+all sort keys:
+
+```python
+# Both sorted descending
+catalog(sort_on=["modified", "sortable_title"], sort_order="descending")
+```
 
 Sort expressions by index type:
 
@@ -335,8 +341,12 @@ attributes (e.g., `brain.portal_type`, `brain.Title`, `brain.Subject`).
 - For registered indexes/metadata: returns `None` if the field is
   missing from the `idx` JSONB (Missing Value behavior, matching
   ZCatalog).
-- For unknown attributes: raises `AttributeError`. This triggers
-  `getObject()` fallback in `CatalogContentListingObject`.
+- For unknown attributes: raises `AttributeError`. This is intentional:
+  `CatalogContentListingObject.__getattr__()` catches `AttributeError`
+  and falls back to `getObject()`, loading the real content object.
+  Returning `None` would cause `plone.restapi` and listing views to
+  display `None` values instead.  See {doc}`zcatalog-compat` for
+  details.
 
 **Lazy loading:**
 
@@ -345,3 +355,21 @@ lazy mode (without `idx` data). On first attribute access, all brains
 in the result set have their `idx` loaded in a single batch query via
 `CatalogSearchResults._load_idx_batch()`, using the same REPEATABLE
 READ snapshot as the original search.
+
+## Common Pitfalls
+
+**Accessing non-catalog attributes on brains.**
+`brain.some_field` only works for fields in the `IndexRegistry` (indexes
+and metadata).  For other object attributes, call `brain.getObject()` to
+load the real content object.
+
+**Querying by unregistered index names.**
+Indexes not in `META_TYPE_MAP` are queried via JSONB containment
+(`idx @> '...'::jsonb`).  This works for equality, but range queries,
+negation, and operator-based queries are not supported for unregistered
+indexes.
+
+**Mixing `sort_limit` and `b_size`.**
+Both result in a SQL `LIMIT`.  When both are present, the effective limit
+is `min(sort_limit, b_size)`.  Use `results.actual_result_count` to get
+the total matching count.
