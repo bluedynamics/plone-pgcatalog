@@ -573,6 +573,10 @@ class PlonePGCatalogTool(UniqueObject, Folder):
                 URL1 + "/manage_catalogAdvanced?manage_tabs_message=Catalog+cleared."
             )
 
+    def uniqueValuesFor(self, name):
+        """Return unique values for the given index name."""
+        return tuple(self.Indexes._getOb(name).uniqueValues())
+
     # -- Deprecated proxy methods -------------------------------------------
 
     def search(self, *args, **kw):
@@ -583,16 +587,6 @@ class PlonePGCatalogTool(UniqueObject, Folder):
             stacklevel=2,
         )
         return self.searchResults(*args, **kw)
-
-    def uniqueValuesFor(self, name):
-        """Deprecated: use catalog.Indexes[name].uniqueValues() instead."""
-        warnings.warn(
-            "portal_catalog.uniqueValuesFor() is deprecated, "
-            "use catalog.Indexes[name].uniqueValues() instead",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return tuple(self.Indexes._getOb(name).uniqueValues())
 
     @contextmanager
     def _pg_connection(self):
