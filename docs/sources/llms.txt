@@ -135,7 +135,6 @@ getIndexDataForUID, index_objects.
 
 **Deprecated methods** (emit DeprecationWarning):
 - `search()` → use `searchResults()`
-- `uniqueValuesFor(name)` → use `catalog.Indexes[name].uniqueValues()`
 
 **Brain attribute resolution**:
 - Known index/metadata fields → returns None if missing from idx JSONB

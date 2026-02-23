@@ -256,7 +256,7 @@ class TestAllowedRolesAndUsers:
 
 
 class TestDeprecatedProxies:
-    """Test search() and uniqueValuesFor() deprecation warnings."""
+    """Test that deprecated proxy methods emit warnings."""
 
     def test_search_emits_deprecation_warning(self, tool):
         # Patch searchResults to avoid needing a real PG connection
@@ -273,7 +273,16 @@ class TestDeprecatedProxies:
         assert "searchResults()" in str(w[0].message)
         assert len(called) == 1  # proxied to searchResults
 
-    def test_uniquevaluesfor_emits_deprecation_warning(self, tool, pg_conn):
+
+# ---------------------------------------------------------------------------
+# uniqueValuesFor — supported API
+# ---------------------------------------------------------------------------
+
+
+class TestUniqueValuesFor:
+    """Test uniqueValuesFor() as a supported catalog API."""
+
+    def test_uniquevaluesfor_returns_unique_values(self, tool, pg_conn):
         # Set up a mock index via _catalog.indexes
         class _FakeIndex:
             def __init__(self):
@@ -301,9 +310,8 @@ class TestDeprecatedProxies:
                 warnings.simplefilter("always")
                 result = tool.uniqueValuesFor("portal_type")
 
-            assert len(w) == 1
-            assert issubclass(w[0].category, DeprecationWarning)
-            assert "uniqueValuesFor()" in str(w[0].message)
+            # No deprecation warning — uniqueValuesFor is a supported API
+            assert len(w) == 0
             assert set(result) == {"Document", "Folder"}
         finally:
             tool.Indexes.__class__._getOb = original_getOb

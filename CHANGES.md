@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.0.0b12 (unreleased)
+
+### Changed
+
+- `uniqueValuesFor(name)` is now a supported API (no longer deprecated).
+  It delegates to `catalog.Indexes[name].uniqueValues()`.
+
 ## 1.0.0b10
 
 ### Changed

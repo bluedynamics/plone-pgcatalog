@@ -29,6 +29,7 @@ These methods behave identically to their ZCatalog counterparts:
 | `delIndex(name)` | Manage ZCatalogIndex Entries | Remove an index |
 | `addColumn(name)` | Manage ZCatalogIndex Entries | Register a metadata column |
 | `delColumn(name)` | Manage ZCatalogIndex Entries | Remove a metadata column |
+| `uniqueValuesFor(name)` | Search ZCatalog | Unique values for an index |
 | `getIndexObjects()` | Manage ZCatalogIndex Entries | List of index objects |
 
 ## Blocked Methods
@@ -56,7 +57,6 @@ These methods work but emit `DeprecationWarning`:
 | Method | Replacement |
 |---|---|
 | `search(*args, **kw)` | `searchResults(*args, **kw)` |
-| `uniqueValuesFor(name)` | `catalog.Indexes[name].uniqueValues()` |
 
 ## _CatalogCompat Shim
 

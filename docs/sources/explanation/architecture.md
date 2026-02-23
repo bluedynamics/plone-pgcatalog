@@ -318,5 +318,5 @@ with PG-backed implementations:
 - **Blocked methods**: ZCatalog methods that would return wrong/empty data
   (`getAllBrains`, `searchAll`, `getobject`, etc.) raise `NotImplementedError`.
 
-- **Deprecated proxies**: `search()` and `uniqueValuesFor()` emit
-  `DeprecationWarning` and delegate to their PG-backed equivalents.
+- **Deprecated proxy**: `search()` emits `DeprecationWarning` and
+  delegates to `searchResults()`.

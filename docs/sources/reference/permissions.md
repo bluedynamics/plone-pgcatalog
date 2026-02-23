@@ -21,7 +21,7 @@ Default roles: **Anonymous**, **Manager**
 | `getpath(rid)` | Path for record ID (ZOID) |
 | `getrid(path)` | Record ID for path |
 | `getIndexDataForRID(rid)` | `idx` JSONB for record |
-| `uniqueValuesFor(name)` | Deprecated proxy |
+| `uniqueValuesFor(name)` | Unique values for an index |
 | `search(*args, **kw)` | Deprecated proxy |
 | `all_meta_types()` | Available index types |
 | `getAllBrains()` | Blocked (NotImplementedError) |
