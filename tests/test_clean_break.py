@@ -1,12 +1,12 @@
 """Tests for the clean-break PlonePGCatalogTool (no ZCatalog inheritance)."""
 
 from contextlib import contextmanager
-from plone.pgcatalog.catalog import _CatalogCompat
 from plone.pgcatalog.catalog import PlonePGCatalogTool
 from plone.pgcatalog.columns import get_registry
 from plone.pgcatalog.columns import IndexType
 from plone.pgcatalog.indexing import catalog_object
 from plone.pgcatalog.interfaces import IPGCatalogTool
+from plone.pgcatalog.maintenance import _CatalogCompat
 from plone.pgcatalog.schema import install_catalog_schema
 from psycopg.rows import dict_row
 from tests.conftest import DSN
@@ -593,13 +593,13 @@ class TestPendingBrain:
     """Test the _PendingBrain synthetic brain used for pending objects."""
 
     def test_getpath_returns_path(self):
-        from plone.pgcatalog.catalog import _PendingBrain
+        from plone.pgcatalog.search import _PendingBrain
 
         brain = _PendingBrain("/plone/doc", object())
         assert brain.getPath() == "/plone/doc"
 
     def test_unrestrictedgetobject_returns_obj(self):
-        from plone.pgcatalog.catalog import _PendingBrain
+        from plone.pgcatalog.search import _PendingBrain
 
         obj = object()
         brain = _PendingBrain("/plone/doc", obj)

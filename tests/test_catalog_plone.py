@@ -1,10 +1,10 @@
 """Tests for PlonePGCatalogTool — helper methods and write path."""
 
 from contextlib import contextmanager
-from plone.pgcatalog.catalog import _path_value_to_string
 from plone.pgcatalog.catalog import PlonePGCatalogTool
 from plone.pgcatalog.columns import get_registry
 from plone.pgcatalog.columns import IndexType
+from plone.pgcatalog.extraction import _path_value_to_string
 from plone.pgcatalog.interfaces import IPGCatalogTool
 from unittest import mock
 
@@ -232,16 +232,10 @@ class TestCatalogObjectWritePath:
         tool = PlonePGCatalogTool.__new__(PlonePGCatalogTool)
         obj = mock.Mock(spec=["getPhysicalPath"])
         obj.getPhysicalPath.return_value = ("", "plone", "doc")
-        # No _p_oid → skip PG write
-        mock_conn = mock.Mock()
-        with (
-            mock.patch.object(
-                PlonePGCatalogTool, "_pg_connection", _mock_pg_connection(mock_conn)
-            ),
-            mock.patch("plone.pgcatalog.catalog._sql_catalog") as sql_mock,
-        ):
+        # No _p_oid → _set_pg_annotation bails early, no pending write
+        with mock.patch("plone.pgcatalog.catalog.set_pending") as pending_mock:
             tool.catalog_object(obj)
-            sql_mock.assert_not_called()
+            pending_mock.assert_not_called()
 
     def test_sets_pending_annotation(self):
         """catalog_object() sets PG pending annotation (no BTree writes)."""
@@ -826,7 +820,7 @@ class TestMaintenanceMethods:
 class TestRunSearchLazyMode:
     def test_lazy_mode_wires_result_set(self):
         """_run_search with lazy_conn wires brain._result_set for lazy loading."""
-        from plone.pgcatalog.catalog import _run_search
+        from plone.pgcatalog.search import _run_search
 
         mock_conn = mock.MagicMock()
         mock_cursor = mock.MagicMock()
@@ -837,7 +831,7 @@ class TestRunSearchLazyMode:
             {"zoid": 2, "path": "/plone/b"},
         ]
 
-        with mock.patch("plone.pgcatalog.catalog.build_query") as bq:
+        with mock.patch("plone.pgcatalog.search.build_query") as bq:
             bq.return_value = {
                 "where": "TRUE",
                 "params": {},

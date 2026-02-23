@@ -6,14 +6,13 @@ SQL operations directly, without PGCatalogTool wrapper.
 
 from plone.pgcatalog.brain import CatalogSearchResults
 from plone.pgcatalog.brain import PGCatalogBrain
-from plone.pgcatalog.catalog import _run_search
-from plone.pgcatalog.catalog import clear_catalog_data
-from plone.pgcatalog.catalog import refresh_catalog
-from plone.pgcatalog.catalog import reindex_index
 from plone.pgcatalog.indexing import catalog_object as _sql_catalog
 from plone.pgcatalog.indexing import reindex_object as _sql_reindex
 from plone.pgcatalog.indexing import uncatalog_object as _sql_uncatalog
+from plone.pgcatalog.maintenance import clear_catalog_data
+from plone.pgcatalog.maintenance import reindex_index
 from plone.pgcatalog.query import apply_security_filters
+from plone.pgcatalog.search import _run_search
 from tests.conftest import insert_object
 
 
@@ -292,15 +291,6 @@ class TestResultCount:
 # ---------------------------------------------------------------------------
 # Maintenance operations
 # ---------------------------------------------------------------------------
-
-
-class TestRefreshCatalog:
-    def test_refresh_returns_count(self, pg_conn_with_catalog):
-        conn = pg_conn_with_catalog
-        _setup_objects(conn)
-
-        count = refresh_catalog(conn)
-        assert count == 3
 
 
 class TestReindexIndex:

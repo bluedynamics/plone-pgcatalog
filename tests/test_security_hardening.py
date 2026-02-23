@@ -11,8 +11,8 @@ from plone.pgcatalog.backends import BM25Backend
 from plone.pgcatalog.backends import LANG_TOKENIZER_MAP
 from plone.pgcatalog.backends import reset_backend
 from plone.pgcatalog.backends import set_backend
-from plone.pgcatalog.catalog import clear_catalog_data
 from plone.pgcatalog.dri import DateRecurringIndexTranslator
+from plone.pgcatalog.maintenance import clear_catalog_data
 from psycopg import sql as pgsql
 from unittest.mock import MagicMock
 
