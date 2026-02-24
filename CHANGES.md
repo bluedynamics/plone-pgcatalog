@@ -12,6 +12,11 @@
   Added missing `manage_catalogReindex` and `manage_catalogRebuild` methods.
   Fixes #19.
 
+- Fix `clearFindAndRebuild` indexing non-content objects (e.g. `acl_users`).
+  Now filters for contentish objects only (those with a `reindexObject` method),
+  matching Plone's `CatalogTool` behavior.
+  Fixes #20.
+
 ### Changed
 
 - `uniqueValuesFor(name)` is now a supported API (no longer deprecated).

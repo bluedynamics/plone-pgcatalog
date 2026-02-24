@@ -28,6 +28,8 @@ from App.special_dtml import DTMLFile
 from BTrees.Length import Length
 from contextlib import contextmanager
 from OFS.Folder import Folder
+from plone.base.utils import base_hasattr
+from plone.base.utils import safe_callable
 from plone.pgcatalog.backends import BM25Backend
 from plone.pgcatalog.backends import get_backend
 from plone.pgcatalog.brain import CatalogSearchResults
@@ -762,16 +764,24 @@ class PlonePGCatalogTool(UniqueObject, Folder):
         """Clear all catalog data and rebuild from content objects.
 
         1. Clears PG catalog columns (path, idx, searchable_text, etc.)
-        2. Traverses the entire portal tree and calls catalog_object()
-           on each content object.
+        2. Traverses the entire portal tree and re-indexes each
+           contentish object (i.e. objects with a ``reindexObject``
+           method).  Non-content objects like ``acl_users`` are skipped.
         """
         with self._pg_connection() as conn:
             clear_catalog_data(conn)
+
+        def _index_content(obj, path):
+            if obj is self:
+                return
+            if base_hasattr(obj, "reindexObject") and safe_callable(obj.reindexObject):
+                self.catalog_object(obj, path)
+
         portal = aq_parent(aq_inner(self))
         portal.ZopeFindAndApply(
             portal,
             search_sub=True,
-            apply_func=lambda obj, path: self.catalog_object(obj, path),
+            apply_func=_index_content,
         )
 
     # -- ZCatalog internal API (PG-backed) ----------------------------------
