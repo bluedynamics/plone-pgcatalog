@@ -117,6 +117,8 @@ class PlonePGCatalogTool(UniqueObject, Folder):
     security.declareProtected(manage_zcatalog_entries, "reindexIndex")
     security.declareProtected(manage_zcatalog_entries, "clearFindAndRebuild")
     security.declareProtected(manage_zcatalog_entries, "manage_catalogClear")
+    security.declareProtected(manage_zcatalog_entries, "manage_catalogReindex")
+    security.declareProtected(manage_zcatalog_entries, "manage_catalogRebuild")
 
     # -- Index management: Manage ZCatalogIndex Entries ----------------------
     security.declareProtected(manage_zcatalog_indexes, "addIndex")
@@ -319,6 +321,22 @@ class PlonePGCatalogTool(UniqueObject, Folder):
         if RESPONSE is not None:
             RESPONSE.redirect(
                 URL1 + "/manage_catalogAdvanced?manage_tabs_message=Catalog+cleared."
+            )
+
+    def manage_catalogReindex(self, REQUEST=None, RESPONSE=None, URL1=None):
+        """Re-catalog all currently indexed objects (ZMI action)."""
+        self.refreshCatalog(clear=0)
+        if RESPONSE is not None:
+            RESPONSE.redirect(
+                URL1 + "/manage_catalogAdvanced?manage_tabs_message=Catalog+updated."
+            )
+
+    def manage_catalogRebuild(self, REQUEST=None, RESPONSE=None, URL1=None):
+        """Clear and rebuild all catalog data (ZMI action)."""
+        self.clearFindAndRebuild()
+        if RESPONSE is not None:
+            RESPONSE.redirect(
+                URL1 + "/manage_catalogAdvanced?manage_tabs_message=Catalog+rebuilt."
             )
 
     def uniqueValuesFor(self, name):

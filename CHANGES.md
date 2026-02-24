@@ -8,6 +8,10 @@
   `pgcatalog-example` instead of bare package name (not on PyPI).
   Fixes #18.
 
+- Fix ZMI "Update Catalog" and "Clear and Rebuild" buttons returning 404.
+  Added missing `manage_catalogReindex` and `manage_catalogRebuild` methods.
+  Fixes #19.
+
 ### Changed
 
 - `uniqueValuesFor(name)` is now a supported API (no longer deprecated).
