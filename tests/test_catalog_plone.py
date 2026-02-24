@@ -811,6 +811,64 @@ class TestMaintenanceMethods:
             clear_mock.assert_called_once_with(mock_conn)
             mock_portal.ZopeFindAndApply.assert_called_once()
 
+    def test_clearFindAndRebuild_skips_non_content(self):
+        """clearFindAndRebuild skips objects without reindexObject."""
+        tool = PlonePGCatalogTool.__new__(PlonePGCatalogTool)
+        mock_conn = mock.Mock()
+        mock_portal = mock.Mock()
+
+        # Content object (has reindexObject)
+        content_obj = mock.Mock(spec=["reindexObject"])
+        # Non-content object (no reindexObject, like acl_users)
+        non_content_obj = mock.Mock(spec=["getId"])
+
+        def fake_apply(portal, search_sub, apply_func):
+            apply_func(content_obj, "/plone/doc1")
+            apply_func(non_content_obj, "/plone/acl_users")
+            apply_func(tool, "/plone/portal_catalog")  # skip self
+
+        mock_portal.ZopeFindAndApply.side_effect = fake_apply
+
+        with (
+            mock.patch.object(
+                PlonePGCatalogTool, "_pg_connection", _mock_pg_connection(mock_conn)
+            ),
+            mock.patch("plone.pgcatalog.catalog.clear_catalog_data"),
+            mock.patch("plone.pgcatalog.catalog.aq_parent", return_value=mock_portal),
+            mock.patch("plone.pgcatalog.catalog.aq_inner", return_value=tool),
+            mock.patch.object(PlonePGCatalogTool, "catalog_object") as cat_mock,
+        ):
+            tool.clearFindAndRebuild()
+            cat_mock.assert_called_once_with(content_obj, "/plone/doc1")
+
+    def test_manage_catalogReindex(self):
+        """manage_catalogReindex delegates to refreshCatalog and redirects."""
+        tool = PlonePGCatalogTool.__new__(PlonePGCatalogTool)
+        mock_response = mock.Mock()
+        with mock.patch.object(PlonePGCatalogTool, "refreshCatalog") as refresh_mock:
+            tool.manage_catalogReindex(
+                RESPONSE=mock_response, URL1="http://localhost/portal_catalog"
+            )
+            refresh_mock.assert_called_once_with(clear=0)
+            mock_response.redirect.assert_called_once_with(
+                "http://localhost/portal_catalog"
+                "/manage_catalogAdvanced?manage_tabs_message=Catalog+updated."
+            )
+
+    def test_manage_catalogRebuild(self):
+        """manage_catalogRebuild delegates to clearFindAndRebuild and redirects."""
+        tool = PlonePGCatalogTool.__new__(PlonePGCatalogTool)
+        mock_response = mock.Mock()
+        with mock.patch.object(PlonePGCatalogTool, "clearFindAndRebuild") as cfr_mock:
+            tool.manage_catalogRebuild(
+                RESPONSE=mock_response, URL1="http://localhost/portal_catalog"
+            )
+            cfr_mock.assert_called_once()
+            mock_response.redirect.assert_called_once_with(
+                "http://localhost/portal_catalog"
+                "/manage_catalogAdvanced?manage_tabs_message=Catalog+rebuilt."
+            )
+
 
 # ---------------------------------------------------------------------------
 # _run_search lazy mode tests
