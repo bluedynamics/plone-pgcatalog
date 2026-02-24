@@ -35,7 +35,7 @@ mermaid_output_format = "raw"
 html_theme = "shibuya"
 
 html_theme_options = {
-    "logo_target": "/",
+    "logo_target": "/plone-pgcatalog/",
     "accent_color": "cyan",
     "color_mode": "dark",
     "dark_code": True,
