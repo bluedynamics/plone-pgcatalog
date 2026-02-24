@@ -33,9 +33,11 @@ dependencies = [
 target = "plone"
 
 [project.urls]
-Homepage = "https://github.com/bluedynamics/plone.pgcatalog"
-Repository = "https://github.com/bluedynamics/plone.pgcatalog"
-Issues = "https://github.com/bluedynamics/plone.pgcatalog/issues"
+Homepage = "https://github.com/bluedynamics/plone-pgcatalog"
+Documentation = "https://bluedynamics.github.io/plone-pgcatalog/"
+Repository = "https://github.com/bluedynamics/plone-pgcatalog"
+Changelog = "https://github.com/bluedynamics/plone-pgcatalog/blob/main/CHANGES.md"
+Issues = "https://github.com/bluedynamics/plone-pgcatalog/issues"
 
 [project.optional-dependencies]
 test = [
