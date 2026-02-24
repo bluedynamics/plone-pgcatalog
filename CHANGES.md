@@ -2,6 +2,12 @@
 
 ## 1.0.0b12 (unreleased)
 
+### Fixed
+
+- Fix example `requirements.txt`: use local editable path for
+  `pgcatalog-example` instead of bare package name (not on PyPI).
+  Fixes #18.
+
 ### Changed
 
 - `uniqueValuesFor(name)` is now a supported API (no longer deprecated).
