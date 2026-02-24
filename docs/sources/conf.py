@@ -51,6 +51,7 @@ html_theme_options = {
     ],
 }
 
+html_extra_path = ["llms.txt"]
 html_static_path = ["_static"]
 html_logo = "_static/logo-web.png"
 html_favicon = "_static/favicon.ico"
