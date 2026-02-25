@@ -1,6 +1,18 @@
 # Changelog
 
-## 1.0.0b11 (unreleased)
+## 1.0.0b12
+
+### Fixed
+
+- Fix `clearFindAndRebuild` producing wrong paths (missing portal id prefix,
+  e.g. `/news` instead of `/Plone/news`), indexing `portal_catalog` itself,
+  and not re-indexing the portal root object.
+  Now uses `getPhysicalPath()` for authoritative paths, `aq_base()` for
+  identity comparison through Acquisition wrappers, and explicitly indexes
+  the portal root before traversal (matching Plone's `CatalogTool`).
+  Fixes #21.
+
+## 1.0.0b11 
 
 ### Fixed
 
@@ -11,12 +23,12 @@
 - Fix ZMI "Update Catalog" and "Clear and Rebuild" buttons returning 404.
   Added missing `manage_catalogReindex` and `manage_catalogRebuild` methods.
   Fixes #19.
-
+  
 - Fix `clearFindAndRebuild` indexing non-content objects (e.g. `acl_users`).
   Now filters for contentish objects only (those with a `reindexObject` method),
   matching Plone's `CatalogTool` behavior.
   Fixes #20.
-
+  
 ### Changed
 
 - `uniqueValuesFor(name)` is now a supported API (no longer deprecated).
