@@ -60,7 +60,11 @@ _PLONE_DEFAULT_INDEXES = [
     ("getObjPositionInParent", IndexType.GOPIP, "getObjPositionInParent"),
 ]
 
+# Metadata columns from Plone's default catalog.xml.
+# In production, sync_from_catalog() adds ALL schema columns as metadata.
+# This includes fields that are also indexes (effective, created, …).
 _PLONE_DEFAULT_METADATA = [
+    # Metadata-only (not indexes)
     "CreationDate",
     "EffectiveDate",
     "ExpirationDate",
@@ -72,6 +76,26 @@ _PLONE_DEFAULT_METADATA = [
     "listCreators",
     "location",
     "mime_type",
+    # Fields that are BOTH indexes and metadata (matching catalog.xml)
+    "Creator",
+    "Date",
+    "Description",
+    "Subject",
+    "Title",
+    "Type",
+    "UID",
+    "created",
+    "effective",
+    "end",
+    "exclude_from_nav",
+    "expires",
+    "getId",
+    "id",
+    "is_folderish",
+    "modified",
+    "portal_type",
+    "review_state",
+    "start",
 ]
 
 

@@ -1,6 +1,7 @@
 """Tests for PlonePGCatalogTool — helper methods and write path."""
 
 from contextlib import contextmanager
+from datetime import UTC
 from plone.pgcatalog.catalog import PlonePGCatalogTool
 from plone.pgcatalog.columns import get_registry
 from plone.pgcatalog.columns import IndexType
@@ -1069,3 +1070,285 @@ class TestExtractIdxPathType:
         assert idx["tgpath"] == "/plone/folder/doc"
         assert idx["tgpath_parent"] == "/plone/folder"
         assert idx["tgpath_depth"] == 3
+
+
+# ---------------------------------------------------------------------------
+# _is_json_native tests
+# ---------------------------------------------------------------------------
+
+
+class TestIsJsonNative:
+    def test_primitives(self):
+        from plone.pgcatalog.extraction import _is_json_native
+
+        assert _is_json_native(None) is True
+        assert _is_json_native(True) is True
+        assert _is_json_native(False) is True
+        assert _is_json_native(42) is True
+        assert _is_json_native(3.14) is True
+        assert _is_json_native("hello") is True
+        assert _is_json_native("") is True
+        assert _is_json_native(0) is True
+
+    def test_datetime_false(self):
+        from DateTime import DateTime
+        from datetime import date
+        from datetime import datetime
+        from plone.pgcatalog.extraction import _is_json_native
+
+        assert _is_json_native(DateTime("2024/01/01")) is False
+        assert _is_json_native(datetime(2024, 1, 1)) is False
+        assert _is_json_native(date(2024, 1, 1)) is False
+
+    def test_nested_list_native(self):
+        from plone.pgcatalog.extraction import _is_json_native
+
+        assert _is_json_native(["a", "b"]) is True
+        assert _is_json_native([1, 2, 3]) is True
+        assert _is_json_native(("a", 1)) is True
+
+    def test_nested_list_nonnative(self):
+        from DateTime import DateTime
+        from plone.pgcatalog.extraction import _is_json_native
+
+        assert _is_json_native(["a", DateTime("2024/01/01")]) is False
+
+    def test_nested_dict_native(self):
+        from plone.pgcatalog.extraction import _is_json_native
+
+        assert _is_json_native({"a": 1, "b": "two"}) is True
+
+    def test_nested_dict_nonnative(self):
+        from DateTime import DateTime
+        from plone.pgcatalog.extraction import _is_json_native
+
+        assert _is_json_native({"a": DateTime("2024/01/01")}) is False
+
+
+# ---------------------------------------------------------------------------
+# Metadata extraction with @meta — type preservation
+# ---------------------------------------------------------------------------
+
+
+class TestExtractMetadataTypes:
+    """Test metadata type splitting: JSON-native → top-level idx, other → @meta.
+
+    Uses types.SimpleNamespace instead of mock.Mock() so that only explicitly
+    set attributes exist — unset metadata fields return None via getattr default.
+    """
+
+    def _make_tool(self):
+        return PlonePGCatalogTool.__new__(PlonePGCatalogTool)
+
+    def test_json_native_no_meta_key(self, populated_registry):
+        """Metadata with only JSON-native values → no @meta key."""
+        from types import SimpleNamespace
+
+        tool = self._make_tool()
+        wrapper = SimpleNamespace(
+            portal_type="Document",
+            CreationDate="2024-01-01",
+            getObjSize="42 KB",
+        )
+
+        idx = tool._extract_idx(wrapper)
+        assert "@meta" not in idx
+        assert idx["CreationDate"] == "2024-01-01"
+        assert idx["getObjSize"] == "42 KB"
+
+    def test_datetime_goes_to_meta(self, populated_registry):
+        """Zope DateTime metadata → stored in @meta, not top-level idx."""
+        from DateTime import DateTime
+        from types import SimpleNamespace
+
+        tool = self._make_tool()
+        dt = DateTime("2008/03/17 08:03:00 GMT+1")
+        wrapper = SimpleNamespace(portal_type="Document", EffectiveDate=dt)
+
+        idx = tool._extract_idx(wrapper)
+        assert "@meta" in idx
+        assert "EffectiveDate" in idx["@meta"]
+
+    def test_python_datetime_goes_to_meta(self, populated_registry):
+        """stdlib datetime metadata → stored in @meta."""
+        from datetime import datetime
+        from types import SimpleNamespace
+
+        tool = self._make_tool()
+        dt = datetime(2024, 1, 15, 12, 30, tzinfo=UTC)
+        wrapper = SimpleNamespace(portal_type="Document", ModificationDate=dt)
+
+        idx = tool._extract_idx(wrapper)
+        assert "@meta" in idx
+        assert "ModificationDate" in idx["@meta"]
+
+    def test_python_date_goes_to_meta(self, populated_registry):
+        """stdlib date metadata → stored in @meta."""
+        from datetime import date
+        from types import SimpleNamespace
+
+        tool = self._make_tool()
+        d = date(2024, 6, 15)
+        wrapper = SimpleNamespace(portal_type="Document", ExpirationDate=d)
+
+        idx = tool._extract_idx(wrapper)
+        assert "@meta" in idx
+        assert "ExpirationDate" in idx["@meta"]
+
+    def test_mixed_native_and_nonnative(self, populated_registry):
+        """Mix: native in top-level idx, non-native in @meta."""
+        from DateTime import DateTime
+        from types import SimpleNamespace
+
+        tool = self._make_tool()
+        dt = DateTime("2024/01/01")
+        wrapper = SimpleNamespace(
+            portal_type="Document",
+            getObjSize="10 KB",
+            EffectiveDate=dt,
+        )
+
+        idx = tool._extract_idx(wrapper)
+        assert idx["getObjSize"] == "10 KB"
+        assert "@meta" in idx
+        assert "EffectiveDate" in idx["@meta"]
+
+    def test_field_also_index(self, populated_registry):
+        """Field is both DateIndex and metadata → index in idx, original in @meta."""
+        from DateTime import DateTime
+        from types import SimpleNamespace
+
+        tool = self._make_tool()
+        dt = DateTime("2008/03/17 08:03:00 GMT+1")
+        wrapper = SimpleNamespace(portal_type="Document", effective=dt)
+
+        idx = tool._extract_idx(wrapper)
+        # Index value: converted by convert_value (ISO string)
+        assert isinstance(idx["effective"], str)
+        assert "2008-03-17" in idx["effective"]
+        # Metadata value: original DateTime in @meta
+        assert "@meta" in idx
+        assert "effective" in idx["@meta"]
+
+    def test_none_stays_in_idx(self, populated_registry):
+        """None metadata value → top-level idx (JSON-native)."""
+        from types import SimpleNamespace
+
+        tool = self._make_tool()
+        wrapper = SimpleNamespace(portal_type="Document", getRemoteUrl=None)
+
+        idx = tool._extract_idx(wrapper)
+        # None should be at top-level (not in @meta)
+        if "@meta" in idx:
+            assert "getRemoteUrl" not in idx["@meta"]
+
+    def test_list_of_strings_stays_in_idx(self, populated_registry):
+        """List of strings → top-level idx (JSON-native)."""
+        from types import SimpleNamespace
+
+        tool = self._make_tool()
+        wrapper = SimpleNamespace(
+            portal_type="Document",
+            listCreators=["admin", "editor"],
+        )
+
+        idx = tool._extract_idx(wrapper)
+        assert idx.get("listCreators") == ["admin", "editor"]
+        if "@meta" in idx:
+            assert "listCreators" not in idx["@meta"]
+
+    def test_callable_returning_datetime(self, populated_registry):
+        """Callable metadata returning DateTime → stored in @meta."""
+        from DateTime import DateTime
+        from types import SimpleNamespace
+
+        tool = self._make_tool()
+        dt = DateTime("2024/06/01")
+        wrapper = SimpleNamespace(
+            portal_type="Document",
+            CreationDate=lambda: dt,
+        )
+
+        idx = tool._extract_idx(wrapper)
+        assert "@meta" in idx
+        assert "CreationDate" in idx["@meta"]
+
+
+# ---------------------------------------------------------------------------
+# Codec round-trip integration tests
+# ---------------------------------------------------------------------------
+
+
+class TestCodecRoundTrip:
+    def test_datetime_roundtrip(self):
+        """Zope DateTime survives pickle → codec → pickle round-trip."""
+        from DateTime import DateTime
+        from zodb_json_codec import dict_to_pickle
+        from zodb_json_codec import pickle_to_dict
+
+        import pickle
+
+        dt = DateTime("2008/03/17 08:03:00 GMT+1")
+        original = {"effective": dt}
+
+        coded = pickle_to_dict(pickle.dumps(original, protocol=3))
+        restored = pickle.loads(dict_to_pickle(coded))
+
+        assert isinstance(restored["effective"], DateTime)
+        assert restored["effective"] == dt
+
+    def test_python_datetime_roundtrip(self):
+        """stdlib datetime survives codec round-trip."""
+        from datetime import datetime
+        from zodb_json_codec import dict_to_pickle
+        from zodb_json_codec import pickle_to_dict
+
+        import pickle
+
+        dt = datetime(2024, 1, 15, 12, 30, tzinfo=UTC)
+        original = {"modified": dt}
+
+        coded = pickle_to_dict(pickle.dumps(original, protocol=3))
+        restored = pickle.loads(dict_to_pickle(coded))
+
+        assert isinstance(restored["modified"], datetime)
+        assert restored["modified"] == dt
+
+    def test_mixed_dict_roundtrip(self):
+        """Dict with mixed types survives codec round-trip."""
+        from DateTime import DateTime
+        from datetime import date
+        from zodb_json_codec import dict_to_pickle
+        from zodb_json_codec import pickle_to_dict
+
+        import pickle
+
+        original = {
+            "effective": DateTime("2024/01/01"),
+            "Title": "Hello",
+            "count": 42,
+            "ExpirationDate": date(2025, 12, 31),
+        }
+
+        coded = pickle_to_dict(pickle.dumps(original, protocol=3))
+        restored = pickle.loads(dict_to_pickle(coded))
+
+        assert isinstance(restored["effective"], DateTime)
+        assert restored["Title"] == "Hello"
+        assert restored["count"] == 42
+        assert isinstance(restored["ExpirationDate"], date)
+
+    def test_none_and_empty_roundtrip(self):
+        """None and empty strings survive codec round-trip."""
+        from zodb_json_codec import dict_to_pickle
+        from zodb_json_codec import pickle_to_dict
+
+        import pickle
+
+        original = {"a": None, "b": "", "c": 0}
+        coded = pickle_to_dict(pickle.dumps(original, protocol=3))
+        restored = pickle.loads(dict_to_pickle(coded))
+
+        assert restored["a"] is None
+        assert restored["b"] == ""
+        assert restored["c"] == 0
