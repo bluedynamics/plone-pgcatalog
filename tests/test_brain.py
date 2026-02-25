@@ -1,5 +1,6 @@
 """Tests for plone.pgcatalog.brain — PGCatalogBrain + CatalogSearchResults."""
 
+from datetime import UTC
 from plone.pgcatalog.brain import CatalogSearchResults
 from plone.pgcatalog.brain import PGCatalogBrain
 
@@ -385,3 +386,138 @@ class TestLazyIdxLoading:
         results = CatalogSearchResults([brain])
         assert results._idx_loaded  # True because no conn
         assert brain.Title == "Hello"
+
+
+# ---------------------------------------------------------------------------
+# @meta codec round-trip — metadata type preservation
+# ---------------------------------------------------------------------------
+
+
+def _encode_meta(meta_dict):
+    """Helper: pickle a dict and convert through codec, as extraction.py does."""
+    from zodb_json_codec import pickle_to_dict
+
+    import pickle
+
+    return pickle_to_dict(pickle.dumps(meta_dict, protocol=3))
+
+
+class TestBrainMetaDecoding:
+    """Test that brain attribute access restores non-JSON-native types
+    stored in idx["@meta"] via the Rust codec."""
+
+    def test_json_native_from_idx(self):
+        """JSON-native values come from top-level idx as before."""
+        brain = PGCatalogBrain(
+            _make_row(idx={"Title": "Hello", "portal_type": "Document"})
+        )
+        assert brain.Title == "Hello"
+        assert brain.portal_type == "Document"
+
+    def test_datetime_from_meta(self):
+        """Zope DateTime in @meta is restored to the original type."""
+        from DateTime import DateTime
+
+        dt = DateTime("2008/03/17 08:03:00 GMT+1")
+        coded = _encode_meta({"effective": dt})
+        brain = PGCatalogBrain(_make_row(idx={"@meta": coded}))
+        result = brain.effective
+        assert isinstance(result, DateTime)
+        assert result == dt
+
+    def test_python_datetime_from_meta(self):
+        """stdlib datetime in @meta is restored."""
+        from datetime import datetime
+
+        dt = datetime(2024, 1, 15, 12, 30, tzinfo=UTC)
+        coded = _encode_meta({"EffectiveDate": dt})
+        brain = PGCatalogBrain(_make_row(idx={"@meta": coded}))
+        result = brain.EffectiveDate
+        assert isinstance(result, datetime)
+        assert result == dt
+
+    def test_python_date_from_meta(self):
+        """stdlib date in @meta is restored."""
+        from datetime import date
+
+        d = date(2024, 6, 15)
+        coded = _encode_meta({"CreationDate": d})
+        brain = PGCatalogBrain(_make_row(idx={"@meta": coded}))
+        result = brain.CreationDate
+        assert isinstance(result, date)
+        assert result == d
+
+    def test_mixed_idx_and_meta(self):
+        """Brain with both top-level idx and @meta resolves both correctly."""
+        from DateTime import DateTime
+
+        dt = DateTime("2024/01/01")
+        coded = _encode_meta({"effective": dt})
+        idx = {"portal_type": "Document", "Title": "Hello", "@meta": coded}
+        brain = PGCatalogBrain(_make_row(idx=idx))
+        assert brain.portal_type == "Document"
+        assert brain.Title == "Hello"
+        assert isinstance(brain.effective, DateTime)
+        assert brain.effective == dt
+
+    def test_meta_decode_cached(self):
+        """Decoding @meta is cached — second access reuses the cached dict."""
+        from DateTime import DateTime
+
+        dt1 = DateTime("2024/01/01")
+        dt2 = DateTime("2024/12/31")
+        coded = _encode_meta({"effective": dt1, "expires": dt2})
+        row = _make_row(idx={"@meta": coded})
+        brain = PGCatalogBrain(row)
+
+        # First access triggers decode
+        assert brain.effective == dt1
+        assert "_meta_decoded" in row
+
+        # Second access uses cache
+        cached = row["_meta_decoded"]
+        assert brain.expires == dt2
+        assert row["_meta_decoded"] is cached  # same dict object
+
+    def test_no_meta_key_backward_compat(self):
+        """Old-style idx without @meta returns values from top-level (backward compat)."""
+        brain = PGCatalogBrain(
+            _make_row(idx={"effective": "2008-03-17T08:03:00+01:00"})
+        )
+        # Returns the string — no crash, backward compatible
+        assert brain.effective == "2008-03-17T08:03:00+01:00"
+
+    def test_field_in_both_idx_and_meta(self):
+        """When field exists in both top-level idx and @meta, @meta wins."""
+        from DateTime import DateTime
+
+        dt = DateTime("2008/03/17 08:03:00 GMT+1")
+        coded = _encode_meta({"effective": dt})
+        idx = {"effective": "2008-03-17T08:03:00+01:00", "@meta": coded}
+        brain = PGCatalogBrain(_make_row(idx=idx))
+        result = brain.effective
+        assert isinstance(result, DateTime)
+        assert result == dt
+
+    def test_unknown_field_raises_attributeerror(self):
+        """Unknown fields still raise AttributeError with @meta present."""
+        import pytest
+
+        coded = _encode_meta({"effective": "2024-01-01"})
+        brain = PGCatalogBrain(_make_row(idx={"@meta": coded}))
+        with pytest.raises(AttributeError):
+            _ = brain.content_type
+
+    def test_known_field_missing_returns_none(self):
+        """Registered metadata field not in idx or @meta returns None."""
+        brain = PGCatalogBrain(_make_row(idx={"@meta": _encode_meta({})}))
+        # mime_type is registered metadata (in conftest)
+        assert brain.mime_type is None
+
+    def test_contains_meta_field(self):
+        """'in' operator finds fields in @meta."""
+        from DateTime import DateTime
+
+        coded = _encode_meta({"effective": DateTime("2024/01/01")})
+        brain = PGCatalogBrain(_make_row(idx={"@meta": coded}))
+        assert "effective" in brain

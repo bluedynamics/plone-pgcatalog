@@ -12,9 +12,47 @@ from plone.pgcatalog.columns import IndexType
 from plone.pgcatalog.interfaces import IPGIndexTranslator
 
 import logging
+import pickle
 
 
 log = logging.getLogger(__name__)
+
+
+def _is_json_native(value):
+    """Check if *value* survives a JSON/JSONB round-trip unchanged.
+
+    Returns ``True`` for types that map 1:1 to JSON scalars, arrays, or
+    objects (str, int, float, bool, None, and homogeneous lists/dicts of
+    these).  Returns ``False`` for everything else (DateTime, datetime,
+    date, sets, custom objects, …).
+    """
+    if value is None:
+        return True
+    if isinstance(value, bool):  # before int — bool is a subclass of int
+        return True
+    if isinstance(value, (int, float, str)):
+        return True
+    if isinstance(value, (list, tuple)):
+        return all(_is_json_native(v) for v in value)
+    if isinstance(value, dict):
+        return all(_is_json_native(v) for v in value.values())
+    return False
+
+
+def decode_meta(coded_meta):
+    """Decode a codec-encoded ``@meta`` dict back to original Python types.
+
+    Args:
+        coded_meta: dict from ``idx["@meta"]`` (as loaded from JSONB)
+
+    Returns:
+        dict mapping field names to their original Python values
+        (e.g. DateTime objects instead of ISO strings).
+    """
+    from zodb_json_codec import dict_to_pickle
+
+    pickle_bytes = dict_to_pickle(coded_meta)
+    return pickle.loads(pickle_bytes)
 
 
 def _path_value_to_string(value):
@@ -94,19 +132,39 @@ def extract_idx(wrapper, idxs=None):
         except Exception:
             pass  # indexer raised — skip this field
 
-    # Extract metadata-only columns (not indexes, but stored in idx JSONB)
+    # Extract metadata columns.
+    # JSON-native values (str, int, float, bool, None) go into top-level idx.
+    # Non-native values (DateTime, datetime, date, …) are collected separately,
+    # pickled as a dict, and stored under idx["@meta"] via the Rust codec.
+    # This preserves original types for brain attribute access while keeping
+    # index data in top-level idx for PG queries.
+    meta_nonstandard = {}
     for meta_name in registry.metadata:
-        if meta_name in idx:
-            continue  # already extracted as an index
         if idxs and meta_name not in idxs:
             continue
         try:
             value = getattr(wrapper, meta_name, None)
             if callable(value):
                 value = value()
-            idx[meta_name] = convert_value(value)
+            if value is None:
+                if meta_name not in idx:
+                    idx[meta_name] = None
+            elif _is_json_native(value):
+                if meta_name not in idx:
+                    idx[meta_name] = value
+            else:
+                meta_nonstandard[meta_name] = value
         except Exception:
-            pass
+            pass  # indexer raised — skip this field
+
+    if meta_nonstandard:
+        try:
+            from zodb_json_codec import pickle_to_dict
+
+            pickled = pickle.dumps(meta_nonstandard, protocol=3)
+            idx["@meta"] = pickle_to_dict(pickled)
+        except Exception:
+            pass  # unpicklable metadata — skip @meta encoding
 
     # IPGIndexTranslator fallback: custom extractors
     extract_from_translators(wrapper, idx, idxs=idxs)

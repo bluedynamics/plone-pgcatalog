@@ -9,6 +9,7 @@ batched queries where LIMIT < total matching rows.
 """
 
 from plone.pgcatalog.columns import get_registry
+from plone.pgcatalog.extraction import decode_meta
 from Products.ZCatalog.interfaces import ICatalogBrain
 from zope.interface import implementer
 from zope.interface.common.sequence import IFiniteSequence
@@ -124,8 +125,12 @@ class PGCatalogBrain:
             if result_set is not None:
                 result_set._load_idx_batch()
                 idx = self._row.get("idx")
-        if idx and name in idx:
-            return True
+        if idx:
+            if name in idx:
+                return True
+            meta = idx.get("@meta")
+            if meta is not None and name in meta:
+                return True
         return name in ("path", "zoid", "getPath", "getURL", "getRID")
 
     # -- attribute access from idx JSONB --------------------------------------
@@ -133,17 +138,45 @@ class PGCatalogBrain:
     def _resolve_from_idx(self, name, idx):
         """Return value from idx for known fields, raise AttributeError for unknown.
 
-        Known catalog fields (registered indexes or metadata) return None when
-        absent from idx (Missing Value behavior, matching ZCatalog).  Unknown
-        fields raise AttributeError so that callers like
-        CatalogContentListingObject.__getattr__ can fall back to getObject().
+        Resolution order:
+
+        1. ``idx["@meta"]`` — codec-encoded non-JSON-native metadata values
+           (DateTime, datetime, date, …).  Decoded once via the Rust codec
+           and cached in ``_row["_meta_decoded"]``.
+        2. Top-level ``idx[name]`` — JSON-native values (str, int, bool, …)
+           and converted index data.
+        3. Known field not present → ``None`` (Missing Value, matching ZCatalog).
+        4. Unknown field → ``AttributeError`` (lets callers fall back to
+           ``getObject()``).
         """
-        if idx is not None and name in idx:
-            return idx[name]
+        if idx is not None:
+            # Check @meta first (codec-encoded non-native types)
+            meta = idx.get("@meta")
+            if meta is not None and name in meta:
+                decoded = self._decode_meta(idx)
+                return decoded.get(name)
+            # Fall back to top-level idx (JSON-native values + index data)
+            if name in idx:
+                return idx[name]
         registry = get_registry()
         if name in registry or name in registry.metadata:
             return None
         raise AttributeError(name)
+
+    def _decode_meta(self, idx):
+        """Decode the ``@meta`` sub-dict via the Rust codec (cached).
+
+        First call: ``dict_to_pickle(@meta) → pickle.loads()`` restores
+        original Python types.  Result is cached in ``_row["_meta_decoded"]``
+        so subsequent attribute accesses skip the codec round-trip.
+        """
+        row = object.__getattribute__(self, "_row")
+        cached = row.get("_meta_decoded")
+        if cached is not None:
+            return cached
+        decoded = decode_meta(idx["@meta"])
+        row["_meta_decoded"] = decoded
+        return decoded
 
     def __getattr__(self, name):
         if name.startswith("_"):
