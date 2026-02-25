@@ -25,7 +25,7 @@ These methods behave identically to their ZCatalog counterparts:
 | `getIndexDataForRID(rid)` | Search ZCatalog | `idx` JSONB dict for a record |
 | `indexes()` | Search ZCatalog | List of index names |
 | `schema()` | Search ZCatalog | List of metadata column names |
-| `addIndex(name, type, extra)` | Manage ZCatalogIndex Entries | Register a new index |
+| `addIndex(name, type, extra)` | Manage ZCatalogIndex Entries | Register a new index (see {doc}`../explanation/architecture` for runtime behavior) |
 | `delIndex(name)` | Manage ZCatalogIndex Entries | Remove an index |
 | `addColumn(name)` | Manage ZCatalogIndex Entries | Register a metadata column |
 | `delColumn(name)` | Manage ZCatalogIndex Entries | Remove a metadata column |

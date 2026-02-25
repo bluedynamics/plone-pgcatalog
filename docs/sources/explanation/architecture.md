@@ -273,6 +273,52 @@ plone.pgcatalog's SQL query builder. Here is how it gets populated:
 The registry is a module-level singleton. Once populated, it is used by both the
 write path (`_extract_idx()`) and the read path (`build_query()`).
 
+### Runtime registration
+
+Addons can register new indexes after startup -- either by calling
+`catalog.addIndex("my_field", "FieldIndex")` directly or, more commonly, via
+GenericSetup profile import (``catalog.xml``).  When `addIndex()` is called:
+
+1. The index object is created and stored in `_catalog.indexes` (a
+   `PersistentMapping`), persisting it across restarts.
+2. The index's `meta_type` is looked up in `META_TYPE_MAP`.  If found, the
+   in-memory `IndexRegistry` singleton is updated immediately via
+   `registry.register()`.
+
+Similarly, `addColumn()` calls `registry.add_metadata()` inline.
+
+**What works immediately** (same transaction, no restart needed):
+
+- **Queries.** The query builder dispatches on the registry, so queries using
+  the new index name work right away for standard types (FieldIndex,
+  KeywordIndex, DateIndex, BooleanIndex, UUIDIndex, GopipIndex).
+- **New writes.** `extract_idx()` iterates the registry, so any subsequent
+  `catalog_object()` or `reindexObject()` extracts and stores the new index
+  value in the `idx` JSONB.
+
+**What requires a Zope restart:**
+
+- **GIN expression indexes for TEXT types.** `_ensure_text_indexes()` only runs
+  during the startup subscriber.  A new ZCTextIndex added at runtime will not
+  have a GIN index until the next restart.  Queries still work (PG falls back
+  to a sequential scan), just without GIN acceleration.
+- **IPGIndexTranslator utilities for DRI / DRIRI.** `_register_dri_translators()`
+  and `_register_driri_translators()` only run at startup.  A
+  DateRecurringIndex or DateRangeInRangeIndex added at runtime will fall through
+  to the generic JSONB containment fallback, which does not handle
+  range/recurrence semantics.
+
+**What requires a manual reindex:**
+
+- **Existing objects.** Objects already in the catalog do not have the new field
+  in their `idx` JSONB.  A `clearFindAndRebuild()` or `refreshCatalog()` is
+  needed to backfill.  This matches ZCatalog's behavior -- adding a new index
+  never auto-populates it.
+
+**No DDL needed** for standard indexes.  Since all index data lives in the
+single `idx` JSONB column, no `ALTER TABLE` is required -- a key benefit of
+the JSONB design.
+
 ## Base class architecture
 
 `PlonePGCatalogTool` inherits from `UniqueObject + Folder` -- not from ZCatalog.
