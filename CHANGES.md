@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.0.0b13
+
+### Fixed
+
+- Preserve original Python types for metadata columns (e.g. `brain.effective`
+  now returns a Zope `DateTime` object instead of an ISO string).
+  Non-JSON-native metadata values (DateTime, datetime, date, etc.) are
+  encoded via the Rust codec into `idx["@meta"]` at write time and restored
+  on brain attribute access with per-brain caching.  JSON-native values
+  (str, int, float, bool, None) remain in top-level `idx` unchanged.
+  Backward compatible — old data without `@meta` still works.
+  Fixes #23.
+
 ## 1.0.0b12
 
 ### Fixed
@@ -12,7 +25,7 @@
   the portal root before traversal (matching Plone's `CatalogTool`).
   Fixes #21.
 
-## 1.0.0b11 
+## 1.0.0b11
 
 ### Fixed
 
@@ -23,12 +36,12 @@
 - Fix ZMI "Update Catalog" and "Clear and Rebuild" buttons returning 404.
   Added missing `manage_catalogReindex` and `manage_catalogRebuild` methods.
   Fixes #19.
-  
+
 - Fix `clearFindAndRebuild` indexing non-content objects (e.g. `acl_users`).
   Now filters for contentish objects only (those with a `reindexObject` method),
   matching Plone's `CatalogTool` behavior.
   Fixes #20.
-  
+
 ### Changed
 
 - `uniqueValuesFor(name)` is now a supported API (no longer deprecated).

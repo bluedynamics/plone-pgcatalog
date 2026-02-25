@@ -338,9 +338,16 @@ Lightweight result object backed by a PostgreSQL row. Implements
 All registered indexes and metadata columns are accessible as
 attributes (e.g., `brain.portal_type`, `brain.Title`, `brain.Subject`).
 
+- Non-JSON-native metadata (Zope `DateTime`, `datetime`, `date`, etc.)
+  is stored in `idx["@meta"]` via the Rust codec and decoded on first
+  access with per-brain caching. This means `brain.effective` returns
+  a `DateTime` object, not an ISO string. See {doc}`schema` for the
+  `@meta` JSONB structure.
+- JSON-native metadata (str, int, float, bool, None, lists/dicts of
+  these) is stored directly in the top-level `idx` JSONB.
 - For registered indexes/metadata: returns `None` if the field is
-  missing from the `idx` JSONB (Missing Value behavior, matching
-  ZCatalog).
+  missing from both `@meta` and top-level `idx` (Missing Value
+  behavior, matching ZCatalog).
 - For unknown attributes: raises `AttributeError`. This is intentional:
   `CatalogContentListingObject.__getattr__()` catches `AttributeError`
   and falls back to `getObject()`, loading the real content object.

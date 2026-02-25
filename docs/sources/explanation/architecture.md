@@ -205,7 +205,10 @@ query, and returns lightweight `_PendingBrain` instances with just enough interf
 6. **Results are wrapped in `CatalogSearchResults` with `PGCatalogBrain` objects.**
    Each brain is a lightweight wrapper around a PG row dict. It implements
    `ICatalogBrain` for Plone compatibility and supports attribute access into the
-   `idx` JSONB for catalog metadata.
+   `idx` JSONB for catalog metadata. Non-JSON-native metadata (such as Zope
+   `DateTime` objects) is stored under `idx["@meta"]` via the Rust codec and
+   decoded on first access with per-brain caching (see {doc}`../reference/schema`
+   for the `@meta` structure).
 
 ## Lazy loading
 
@@ -309,9 +312,11 @@ with PG-backed implementations:
   mapping table.
 
 - **Brain attribute resolution** distinguishes known from unknown fields. Known
-  catalog fields (registered indexes or metadata) return `None` when absent from the
-  `idx` JSONB -- matching ZCatalog's Missing Value behavior. Unknown fields raise
-  `AttributeError`, which triggers the `getObject()` fallback in
+  catalog fields (registered indexes or metadata) are resolved first from the
+  `idx["@meta"]` dict (for non-JSON-native types like `DateTime`), then from the
+  top-level `idx` JSONB.  Fields missing from both return `None` -- matching
+  ZCatalog's Missing Value behavior.  Unknown fields raise `AttributeError`,
+  which triggers the `getObject()` fallback in
   `CatalogContentListingObject.__getattr__()`.
 
 - **Blocked methods**: ZCatalog methods that would return wrong/empty data

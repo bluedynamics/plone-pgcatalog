@@ -118,7 +118,16 @@ together in a single JSONB document. Example for a typical Plone Page:
 
 Key conventions:
 
-- Dates are stored as ISO 8601 strings with timezone offsets.
+- **Index values** (used for PG queries) are converted to JSON-safe types:
+  dates become ISO 8601 strings, etc.  These live at the top level of idx.
+- **Metadata values** that are JSON-native (str, int, float, bool, None,
+  and lists/dicts of these) also live at the top level of idx.
+- **Non-JSON-native metadata** (Zope `DateTime`, stdlib `datetime`, `date`,
+  etc.) is encoded via the Rust codec (`zodb-json-codec`) into a nested
+  `"@meta"` key.  This preserves original Python types so that
+  `brain.effective` returns a `DateTime` object, not a string.
+  The `@meta` dict uses codec type markers (e.g. `@dt`, `@cls`+`@s`) and
+  is decoded once per brain on first access (cached thereafter).
 - Multi-value fields (e.g., `Subject`, `allowedRolesAndUsers`) are
   stored as JSON arrays.
 - Boolean fields are stored as JSON `true`/`false`.
@@ -127,6 +136,10 @@ Key conventions:
 - Path fields (`path`, `path_parent`, `path_depth`) are stored in
   both the dedicated table columns and the idx JSONB for unified
   path query support.
+- Fields that are both indexes and metadata (e.g. `effective`) appear
+  in both places: top-level idx holds the converted ISO string (for
+  PG queries), while `@meta` holds the original `DateTime` (for brain
+  attribute access).
 
 ## SQL Functions
 
