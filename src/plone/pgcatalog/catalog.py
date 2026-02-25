@@ -772,12 +772,14 @@ class PlonePGCatalogTool(UniqueObject, Folder):
             clear_catalog_data(conn)
 
         def _index_content(obj, path):
-            if obj is self:
+            if aq_base(obj) is aq_base(self):
                 return
             if base_hasattr(obj, "reindexObject") and safe_callable(obj.reindexObject):
-                self.catalog_object(obj, path)
+                uid = "/".join(obj.getPhysicalPath())
+                self.catalog_object(obj, uid)
 
         portal = aq_parent(aq_inner(self))
+        _index_content(portal, "")
         portal.ZopeFindAndApply(
             portal,
             search_sub=True,

@@ -797,6 +797,7 @@ class TestMaintenanceMethods:
         tool = PlonePGCatalogTool.__new__(PlonePGCatalogTool)
         mock_conn = mock.Mock()
         mock_portal = mock.Mock()
+        mock_portal.getPhysicalPath.return_value = ("", "Plone")
         with (
             mock.patch.object(
                 PlonePGCatalogTool, "_pg_connection", _mock_pg_connection(mock_conn)
@@ -806,6 +807,7 @@ class TestMaintenanceMethods:
             ) as clear_mock,
             mock.patch("plone.pgcatalog.catalog.aq_parent", return_value=mock_portal),
             mock.patch("plone.pgcatalog.catalog.aq_inner", return_value=tool),
+            mock.patch.object(PlonePGCatalogTool, "catalog_object"),
         ):
             tool.clearFindAndRebuild()
             clear_mock.assert_called_once_with(mock_conn)
@@ -816,9 +818,11 @@ class TestMaintenanceMethods:
         tool = PlonePGCatalogTool.__new__(PlonePGCatalogTool)
         mock_conn = mock.Mock()
         mock_portal = mock.Mock()
+        mock_portal.getPhysicalPath.return_value = ("", "Plone")
 
         # Content object (has reindexObject)
-        content_obj = mock.Mock(spec=["reindexObject"])
+        content_obj = mock.Mock(spec=["reindexObject", "getPhysicalPath"])
+        content_obj.getPhysicalPath.return_value = ("", "Plone", "doc1")
         # Non-content object (no reindexObject, like acl_users)
         non_content_obj = mock.Mock(spec=["getId"])
 
@@ -839,7 +843,114 @@ class TestMaintenanceMethods:
             mock.patch.object(PlonePGCatalogTool, "catalog_object") as cat_mock,
         ):
             tool.clearFindAndRebuild()
-            cat_mock.assert_called_once_with(content_obj, "/plone/doc1")
+            # Portal root + content object, but not non-content or self
+            assert cat_mock.call_count == 2
+            cat_mock.assert_any_call(mock_portal, "/Plone")
+            cat_mock.assert_any_call(content_obj, "/Plone/doc1")
+
+    def test_clearFindAndRebuild_uses_physical_path(self):
+        """clearFindAndRebuild uses getPhysicalPath(), not the ZopeFindAndApply path.
+
+        ZopeFindAndApply can produce wrong paths (missing portal id prefix),
+        so catalog_object must receive the authoritative path from
+        getPhysicalPath(). Fixes #21.
+        """
+        tool = PlonePGCatalogTool.__new__(PlonePGCatalogTool)
+        mock_conn = mock.Mock()
+        mock_portal = mock.Mock()
+        mock_portal.getPhysicalPath.return_value = ("", "Plone")
+
+        content_obj = mock.Mock(spec=["reindexObject", "getPhysicalPath"])
+        content_obj.getPhysicalPath.return_value = ("", "Plone", "news")
+
+        def fake_apply(portal, search_sub, apply_func):
+            # ZopeFindAndApply passes a WRONG path (missing /Plone prefix)
+            apply_func(content_obj, "/news")
+
+        mock_portal.ZopeFindAndApply.side_effect = fake_apply
+
+        with (
+            mock.patch.object(
+                PlonePGCatalogTool, "_pg_connection", _mock_pg_connection(mock_conn)
+            ),
+            mock.patch("plone.pgcatalog.catalog.clear_catalog_data"),
+            mock.patch("plone.pgcatalog.catalog.aq_parent", return_value=mock_portal),
+            mock.patch("plone.pgcatalog.catalog.aq_inner", return_value=tool),
+            mock.patch.object(PlonePGCatalogTool, "catalog_object") as cat_mock,
+        ):
+            tool.clearFindAndRebuild()
+            # Must use getPhysicalPath result, NOT the broken "/news" path
+            assert cat_mock.call_count == 2
+            cat_mock.assert_any_call(mock_portal, "/Plone")
+            cat_mock.assert_any_call(content_obj, "/Plone/news")
+
+    def test_clearFindAndRebuild_skips_self_through_acquisition(self):
+        """clearFindAndRebuild skips self even through Acquisition wrappers.
+
+        In Zope, ZopeFindAndApply returns Acquisition-wrapped objects,
+        so ``obj is self`` may be False even for the same ZODB object.
+        The check must use aq_base() for identity comparison. Fixes #21.
+        """
+        tool = PlonePGCatalogTool.__new__(PlonePGCatalogTool)
+        mock_conn = mock.Mock()
+        mock_portal = mock.Mock()
+        mock_portal.getPhysicalPath.return_value = ("", "Plone")
+
+        # Simulate an Acquisition-wrapped version of tool (different object identity)
+        wrapped_tool = mock.Mock(spec=["reindexObject", "getPhysicalPath"])
+        wrapped_tool.getPhysicalPath.return_value = ("", "Plone", "portal_catalog")
+
+        def fake_apply(portal, search_sub, apply_func):
+            apply_func(wrapped_tool, "/plone/portal_catalog")
+
+        mock_portal.ZopeFindAndApply.side_effect = fake_apply
+
+        with (
+            mock.patch.object(
+                PlonePGCatalogTool, "_pg_connection", _mock_pg_connection(mock_conn)
+            ),
+            mock.patch("plone.pgcatalog.catalog.clear_catalog_data"),
+            mock.patch("plone.pgcatalog.catalog.aq_parent", return_value=mock_portal),
+            mock.patch("plone.pgcatalog.catalog.aq_inner", return_value=tool),
+            mock.patch.object(PlonePGCatalogTool, "catalog_object") as cat_mock,
+            # aq_base(wrapped_tool) returns same object as aq_base(tool)
+            mock.patch(
+                "plone.pgcatalog.catalog.aq_base",
+                side_effect=lambda obj: tool if obj is wrapped_tool else obj,
+            ),
+        ):
+            tool.clearFindAndRebuild()
+            # Only the portal root is indexed; wrapped_tool (self) is skipped
+            cat_mock.assert_called_once_with(mock_portal, "/Plone")
+
+    def test_clearFindAndRebuild_indexes_portal_root(self):
+        """clearFindAndRebuild explicitly indexes the portal root object.
+
+        ZopeFindAndApply only traverses children, not the root itself.
+        The portal root must be indexed separately, matching Plone's
+        CatalogTool behavior. Fixes #21.
+        """
+        tool = PlonePGCatalogTool.__new__(PlonePGCatalogTool)
+        mock_conn = mock.Mock()
+        mock_portal = mock.Mock(
+            spec=["reindexObject", "getPhysicalPath", "ZopeFindAndApply"]
+        )
+        mock_portal.getPhysicalPath.return_value = ("", "Plone")
+        mock_portal.ZopeFindAndApply.side_effect = (
+            lambda portal, search_sub, apply_func: None
+        )
+
+        with (
+            mock.patch.object(
+                PlonePGCatalogTool, "_pg_connection", _mock_pg_connection(mock_conn)
+            ),
+            mock.patch("plone.pgcatalog.catalog.clear_catalog_data"),
+            mock.patch("plone.pgcatalog.catalog.aq_parent", return_value=mock_portal),
+            mock.patch("plone.pgcatalog.catalog.aq_inner", return_value=tool),
+            mock.patch.object(PlonePGCatalogTool, "catalog_object") as cat_mock,
+        ):
+            tool.clearFindAndRebuild()
+            cat_mock.assert_called_once_with(mock_portal, "/Plone")
 
     def test_manage_catalogReindex(self):
         """manage_catalogReindex delegates to refreshCatalog and redirects."""
