@@ -13,6 +13,7 @@ from unittest.mock import MagicMock
 from unittest.mock import patch
 from zodb_pgjsonb.schema import HISTORY_FREE_SCHEMA
 
+import os
 import psycopg
 import pytest
 import threading
@@ -295,3 +296,88 @@ class TestWorkerShutdown:
         assert not worker._shutdown.is_set()
         worker.shutdown()
         assert worker._shutdown.is_set()
+
+
+# ── Integration tests (require real Tika server) ─────────────────────
+
+TIKA_URL = os.environ.get("PGCATALOG_TIKA_URL", "").strip()
+
+
+class TestWorkerIntegration:
+    """End-to-end tests with real Tika server."""
+
+    pytestmark = pytest.mark.skipif(not TIKA_URL, reason="PGCATALOG_TIKA_URL not set")
+
+    def test_extract_plain_text(self, worker_db):
+        """Worker extracts text from a plain text blob via real Tika."""
+        conn = worker_db
+        zoid, tid = 50, 1
+        text_content = b"Important findings about quantum computing research"
+        _insert_object_with_blob(
+            conn,
+            zoid,
+            tid,
+            blob_data=text_content,
+            idx={"Language": "en", "Title": "Research"},
+        )
+        _enqueue_job(conn, zoid, tid, content_type="text/plain")
+
+        # Set initial searchable_text
+        conn.execute(
+            "UPDATE object_state SET searchable_text = "
+            "to_tsvector('english', 'Research') "
+            "WHERE zoid = %(zoid)s",
+            {"zoid": zoid},
+        )
+        conn.commit()
+
+        worker = TikaWorker(dsn=DSN, tika_url=TIKA_URL)
+        result = worker._process_one()
+        assert result is True
+
+        # Verify extraction completed
+        status = _get_queue_status(conn, zoid)
+        assert status["status"] == "done"
+        assert status["error"] is None
+
+        # Verify searchable_text was updated with extracted terms
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT searchable_text::text FROM object_state WHERE zoid = %(zoid)s",
+                {"zoid": zoid},
+            )
+            row = cur.fetchone()
+        tsv_text = row["searchable_text"]
+        assert "quantum" in tsv_text or "comput" in tsv_text
+
+    def test_extract_html_content(self, worker_db):
+        """Worker extracts text from HTML via real Tika."""
+        conn = worker_db
+        zoid, tid = 60, 1
+        html_blob = b"<html><body><h1>PostgreSQL Performance</h1><p>Indexes matter.</p></body></html>"
+        _insert_object_with_blob(conn, zoid, tid, blob_data=html_blob)
+        _enqueue_job(conn, zoid, tid, content_type="text/html")
+
+        conn.execute(
+            "UPDATE object_state SET searchable_text = ''::tsvector, "
+            'idx = \'{"Language": "en"}\'::jsonb '
+            "WHERE zoid = %(zoid)s",
+            {"zoid": zoid},
+        )
+        conn.commit()
+
+        worker = TikaWorker(dsn=DSN, tika_url=TIKA_URL)
+        worker._process_one()
+
+        status = _get_queue_status(conn, zoid)
+        assert status["status"] == "done"
+
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT searchable_text::text FROM object_state WHERE zoid = %(zoid)s",
+                {"zoid": zoid},
+            )
+            row = cur.fetchone()
+        tsv_text = row["searchable_text"]
+        # Tika should have extracted "PostgreSQL Performance" and "Indexes matter"
+        assert "postgresql" in tsv_text or "perform" in tsv_text or "index" in tsv_text

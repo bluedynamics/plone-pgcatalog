@@ -5,6 +5,7 @@ from plone.pgcatalog.processor import CatalogStateProcessor
 from plone.pgcatalog.processor import TIKA_URL
 from plone.pgcatalog.schema import TEXT_EXTRACTION_QUEUE
 from psycopg.rows import dict_row
+from psycopg.rows import tuple_row
 from tests.conftest import DSN
 from tests.conftest import insert_object
 
@@ -20,10 +21,11 @@ pytestmark = pytest.mark.skipif(not DSN, reason="No PostgreSQL DSN configured")
 def pg_conn_with_queue(pg_conn_with_catalog):
     """Database with catalog schema + extraction queue table."""
     conn = pg_conn_with_catalog
-    # Install queue schema
+    # Drop and recreate to ensure clean state between tests
+    conn.execute("DROP TABLE IF EXISTS text_extraction_queue, blob_state CASCADE")
+    conn.commit()
     conn.execute(TEXT_EXTRACTION_QUEUE)
     conn.commit()
-    # Also create blob_state if it doesn't exist
     conn.execute(
         "CREATE TABLE IF NOT EXISTS blob_state ("
         "  zoid BIGINT NOT NULL,"
@@ -101,7 +103,8 @@ class TestEnqueueLogic:
         # Simulate process() accumulating a candidate
         proc._tika_candidates = [{"zoid": zoid, "content_type": "application/pdf"}]
 
-        with conn.cursor() as cur:
+        # Use tuple_row to match production cursor (zodb-pgjsonb uses default)
+        with conn.cursor(row_factory=tuple_row) as cur:
             proc._enqueue_tika_jobs(cur)
         conn.commit()
 
@@ -124,7 +127,7 @@ class TestEnqueueLogic:
         proc = CatalogStateProcessor()
         proc._tika_candidates = [{"zoid": zoid, "content_type": "application/pdf"}]
 
-        with conn.cursor() as cur:
+        with conn.cursor(row_factory=tuple_row) as cur:
             proc._enqueue_tika_jobs(cur)
         conn.commit()
 
@@ -145,7 +148,7 @@ class TestEnqueueLogic:
         # Enqueue twice
         for _ in range(2):
             proc._tika_candidates = [{"zoid": zoid, "content_type": "application/pdf"}]
-            with conn.cursor() as cur:
+            with conn.cursor(row_factory=tuple_row) as cur:
                 proc._enqueue_tika_jobs(cur)
             conn.commit()
 
