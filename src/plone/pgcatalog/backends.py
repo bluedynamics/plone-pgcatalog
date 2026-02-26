@@ -219,6 +219,12 @@ class TsvectorBackend(SearchBackend):
     def get_schema_sql(self):
         return ""
 
+    def get_extraction_update_sql(self):
+        """PL/pgSQL function to merge Tika-extracted text into tsvector."""
+        from plone.pgcatalog.schema import TSVECTOR_MERGE_FUNCTION
+
+        return TSVECTOR_MERGE_FUNCTION
+
     def process_search_data(self, pending):
         return {}
 
@@ -445,6 +451,52 @@ class BM25Backend(SearchBackend):
             "CREATE INDEX IF NOT EXISTS idx_os_search_bm25 "
             "ON object_state USING bm25 (search_bm25 bm25_ops)"
         )
+
+    def get_extraction_update_sql(self):
+        """PL/pgSQL function to merge Tika-extracted text into tsvector + BM25."""
+        # Build per-language column updates
+        lang_updates = []
+        for lang in self.languages:
+            col = self._col_name(lang)
+            tok = self._tok_name(lang)
+            lang_updates.append(
+                f"      {col} = CASE WHEN idx->>'Language' = '{lang}' "
+                f"THEN tokenize(combined, '{tok}') "
+                f"ELSE {col} END"
+            )
+        # Fallback BM25 column (always updated)
+        tok_default = self._tok_name()
+        lang_updates.append(f"      search_bm25 = tokenize(combined, '{tok_default}')")
+        update_clauses = ",\n".join(lang_updates)
+
+        return f"""\
+CREATE OR REPLACE FUNCTION pgcatalog_merge_extracted_text(
+    p_zoid BIGINT,
+    p_text TEXT
+) RETURNS void AS $$
+DECLARE
+    combined TEXT;
+BEGIN
+    SELECT
+        COALESCE(idx->>'Title', '') || ' ' ||
+        COALESCE(idx->>'Title', '') || ' ' ||
+        COALESCE(idx->>'Title', '') || ' ' ||
+        COALESCE(idx->>'Description', '') || ' ' ||
+        COALESCE(p_text, '')
+    INTO combined
+    FROM object_state WHERE zoid = p_zoid;
+
+    UPDATE object_state SET
+      searchable_text = COALESCE(searchable_text, ''::tsvector) ||
+        setweight(to_tsvector(
+          pgcatalog_lang_to_regconfig(idx->>'Language')::regconfig,
+          COALESCE(p_text, '')
+        ), 'C'),
+{update_clauses}
+    WHERE zoid = p_zoid AND idx IS NOT NULL;
+END;
+$$ LANGUAGE plpgsql;
+"""
 
     def process_search_data(self, pending):
         idx = pending.get("idx") or {}

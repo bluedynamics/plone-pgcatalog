@@ -169,6 +169,59 @@ EXPECTED_INDEXES = [
 ]
 
 
+# ── Optional text extraction queue (created when PGCATALOG_TIKA_URL is set) ──
+
+TEXT_EXTRACTION_QUEUE = """\
+CREATE TABLE IF NOT EXISTS text_extraction_queue (
+    id           BIGSERIAL PRIMARY KEY,
+    zoid         BIGINT NOT NULL,
+    tid          BIGINT NOT NULL,
+    content_type TEXT,
+    status       TEXT NOT NULL DEFAULT 'pending',
+    attempts     INTEGER NOT NULL DEFAULT 0,
+    max_attempts INTEGER NOT NULL DEFAULT 3,
+    error        TEXT,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE(zoid, tid)
+);
+
+CREATE INDEX IF NOT EXISTS idx_teq_pending
+    ON text_extraction_queue (id) WHERE status = 'pending';
+
+CREATE OR REPLACE FUNCTION notify_extraction_ready() RETURNS trigger AS $$
+BEGIN
+    PERFORM pg_notify('text_extraction_ready', NEW.id::text);
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_notify_extraction ON text_extraction_queue;
+CREATE TRIGGER trg_notify_extraction
+    AFTER INSERT ON text_extraction_queue
+    FOR EACH ROW EXECUTE FUNCTION notify_extraction_ready();
+"""
+
+# PL/pgSQL merge function template for tsvector-only backend.
+# BM25Backend provides its own version that also updates BM25 columns.
+TSVECTOR_MERGE_FUNCTION = """\
+CREATE OR REPLACE FUNCTION pgcatalog_merge_extracted_text(
+    p_zoid BIGINT,
+    p_text TEXT
+) RETURNS void AS $$
+BEGIN
+    UPDATE object_state SET
+      searchable_text = COALESCE(searchable_text, ''::tsvector) ||
+        setweight(to_tsvector(
+          pgcatalog_lang_to_regconfig(idx->>'Language')::regconfig,
+          COALESCE(p_text, '')
+        ), 'C')
+    WHERE zoid = p_zoid AND idx IS NOT NULL;
+END;
+$$ LANGUAGE plpgsql;
+"""
+
+
 def _load_rrule_sql():
     """Load the vendored rrule_plpgsql SQL from the package data file."""
     import pathlib

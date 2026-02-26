@@ -22,6 +22,7 @@ from zope.component import provideUtility
 import logging
 import os
 import psycopg
+import threading
 import transaction
 
 
@@ -29,6 +30,9 @@ __all__ = ["register_catalog_processor"]
 
 
 log = logging.getLogger(__name__)
+
+# In-process Tika worker thread reference (for testing/shutdown)
+_worker_thread = None
 
 
 def _get_main_storage(db):
@@ -123,6 +127,12 @@ def register_catalog_processor(event):
         log.info("Registered CatalogStateProcessor on %s", storage)
         _sync_registry_from_db(db)
         _ensure_text_indexes(storage)
+
+        # Optionally start in-process Tika extraction worker
+        tika_url = os.environ.get("PGCATALOG_TIKA_URL", "").strip()
+        tika_inprocess = os.environ.get("PGCATALOG_TIKA_INPROCESS", "").strip().lower()
+        if tika_url and tika_inprocess in ("1", "true", "yes"):
+            _start_inprocess_worker(dsn, tika_url, storage)
     else:
         log.debug("Storage %s does not support state processors", storage)
 
@@ -270,3 +280,46 @@ def _sync_registry_from_db(db):  # pragma: no cover
         except Exception:
             pass
         conn.close()
+
+
+def _start_inprocess_worker(dsn, tika_url, storage):  # pragma: no cover
+    """Start Tika extraction worker as a daemon thread inside the Zope process.
+
+    The thread opens its own PG connection and HTTP client -- it shares
+    nothing with Zope's ZODB connections.  Marked ``daemon=True`` so it
+    dies automatically when Zope shuts down.
+    """
+    global _worker_thread
+
+    if not dsn:
+        log.warning("Cannot start in-process Tika worker: no DSN available")
+        return
+
+    try:
+        from plone.pgcatalog.tika_worker import TikaWorker
+    except ImportError:
+        log.warning(
+            "Cannot start in-process Tika worker: "
+            "httpx not installed (pip install plone.pgcatalog[tika])"
+        )
+        return
+
+    # Build S3 config from storage if available
+    s3_config = None
+    s3_client = getattr(storage, "_s3_client", None)
+    if s3_client is not None:
+        s3_config = {
+            "bucket_name": getattr(s3_client, "_bucket_name", None),
+            "endpoint_url": getattr(s3_client, "_endpoint_url", None),
+            "region_name": getattr(s3_client, "_region_name", None),
+        }
+
+    worker = TikaWorker(dsn=dsn, tika_url=tika_url, s3_config=s3_config)
+    thread = threading.Thread(
+        target=worker.run,
+        name="tika-extraction-worker",
+        daemon=True,
+    )
+    thread.start()
+    _worker_thread = thread
+    log.info("Started in-process Tika extraction worker (tika=%s)", tika_url)

@@ -203,3 +203,34 @@ def extract_searchable_text(wrapper):
         return value if isinstance(value, str) else None
     except Exception:
         return None
+
+
+def extract_content_type(wrapper):
+    """Extract MIME content type from a content object's primary field.
+
+    Tries IPrimaryFieldInfo (Dexterity) first, then falls back to
+    a ``content_type`` attribute on the wrapper or underlying object.
+
+    Returns:
+        str or None
+    """
+    # Try Dexterity primary field
+    try:
+        from plone.rfc822.interfaces import IPrimaryFieldInfo
+
+        info = IPrimaryFieldInfo(wrapper, None)
+        if info is not None:
+            field_value = info.value
+            ct = getattr(field_value, "contentType", None)
+            if ct:
+                return ct
+    except Exception:
+        pass
+    # Fallback: content_type attribute
+    ct = getattr(wrapper, "content_type", None)
+    if callable(ct):
+        try:
+            ct = ct()
+        except Exception:
+            return None
+    return ct if isinstance(ct, str) else None
