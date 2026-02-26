@@ -13,6 +13,7 @@ titlesonly: true
 architecture
 why-postgresql
 fulltext-search
+tika-extraction
 performance
 security
 bm25-design
