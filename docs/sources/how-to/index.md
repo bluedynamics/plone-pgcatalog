@@ -25,6 +25,7 @@ maxdepth: 2
 titlesonly: true
 ---
 enable-bm25
+enable-tika-extraction
 configure-multilingual
 ```
 

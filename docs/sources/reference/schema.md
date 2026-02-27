@@ -141,11 +141,55 @@ Key conventions:
   PG queries), while `@meta` holds the original `DateTime` (for brain
   attribute access).
 
+## Text Extraction Queue (Optional)
+
+Created when `PGCATALOG_TIKA_URL` is set. Provides a PostgreSQL-backed
+job queue for asynchronous text extraction via Apache Tika.
+
+### text_extraction_queue Table
+
+| Column | Type | Default | Purpose |
+|---|---|---|---|
+| `id` | `BIGSERIAL` | auto | Primary key |
+| `zoid` | `BIGINT` | — | Object zoid (references `object_state`) |
+| `tid` | `BIGINT` | — | Transaction ID (identifies the blob version) |
+| `content_type` | `TEXT` | — | MIME type (e.g., `application/pdf`) |
+| `status` | `TEXT` | `'pending'` | Job status: `pending`, `processing`, `done`, or `failed` |
+| `attempts` | `INTEGER` | `0` | Number of processing attempts |
+| `max_attempts` | `INTEGER` | `3` | Maximum retry attempts before marking as `failed` |
+| `error` | `TEXT` | — | Error message from the last failed attempt |
+| `created_at` | `TIMESTAMPTZ` | `now()` | Job creation timestamp |
+| `updated_at` | `TIMESTAMPTZ` | `now()` | Last status change timestamp |
+
+Constraints: `UNIQUE(zoid, tid)` prevents duplicate jobs for the same
+object version.
+
+### Queue Indexes
+
+| Index Name | Type | Expression | Purpose |
+|---|---|---|---|
+| `idx_teq_pending` | B-tree (partial) | `id WHERE status = 'pending'` | Fast dequeue of pending jobs |
+
+### Queue Trigger
+
+A `NOTIFY` trigger fires on every INSERT, sending a
+`text_extraction_ready` notification with the job ID. This wakes the
+extraction worker instantly without polling.
+
+```sql
+CREATE TRIGGER trg_notify_extraction
+    AFTER INSERT ON text_extraction_queue
+    FOR EACH ROW EXECUTE FUNCTION notify_extraction_ready();
+```
+
+See {doc}`../explanation/tika-extraction` for the full architecture and
+{doc}`../how-to/enable-tika-extraction` for setup instructions.
+
 ## SQL Functions
 
 See {doc}`sql-functions` for the full reference of
-`pgcatalog_to_timestamptz()`, `pgcatalog_lang_to_regconfig()`, and
-rrule functions.
+`pgcatalog_to_timestamptz()`, `pgcatalog_lang_to_regconfig()`,
+`pgcatalog_merge_extracted_text()`, and rrule functions.
 
 ## rrule_plpgsql Schema
 
@@ -171,6 +215,7 @@ when the state processor is registered. The installation sequence is:
 3. Catalog indexes (`CREATE INDEX IF NOT EXISTS`)
 4. rrule schema (idempotent `CREATE SCHEMA IF NOT EXISTS`)
 5. BM25 extensions and columns (if detected)
+6. Text extraction queue and merge function (if `PGCATALOG_TIKA_URL` is set)
 
 All DDL is idempotent and safe to re-execute on an existing database.
 The `install_catalog_schema()` function in `schema.py` executes each

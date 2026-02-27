@@ -67,6 +67,42 @@ Returns `'simple'` for unrecognized codes or `NULL` input.
 | `yi` | `yiddish` |
 | (other / `NULL`) | `simple` |
 
+## pgcatalog_merge_extracted_text (Optional)
+
+```sql
+pgcatalog_merge_extracted_text(p_zoid BIGINT, p_text TEXT) -> void
+```
+
+Merges Tika-extracted text into the `searchable_text` tsvector for a
+given object. Created when `PGCATALOG_TIKA_URL` is set.
+
+The exact implementation depends on the active search backend:
+
+- **TsvectorBackend**: Appends the extracted text as a tsvector at
+  weight `C` to the existing `searchable_text` column. Uses the
+  object's `Language` from `idx` to select the appropriate regconfig.
+
+- **BM25Backend**: Same tsvector merge as above, plus rebuilds all
+  per-language BM25 columns with a combined text of
+  Title (3x) + Description + extracted text. This preserves the BM25
+  weight hierarchy.
+
+Called by the `TikaWorker` after successful text extraction. The worker
+does not need to know which backend is active — it always calls the
+same function name.
+
+### notify_extraction_ready
+
+```sql
+notify_extraction_ready() -> trigger
+```
+
+Trigger function that fires `pg_notify('text_extraction_ready', NEW.id::text)`
+on every INSERT into `text_extraction_queue`. Attached via the
+`trg_notify_extraction` trigger.
+
+Used by the extraction worker's `LISTEN` loop for instant wakeup.
+
 ## rrule Functions
 
 The `rrule` schema contains a pure PL/pgSQL implementation of RFC 5545

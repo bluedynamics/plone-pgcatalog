@@ -16,6 +16,7 @@ PostgreSQL-backed catalog for Plone, replacing ZCatalog BTrees with SQL queries 
 - All standard ZCatalog index types supported
 - Full-text search with language-aware stemming (30 languages)
 - Optional BM25 ranking via VectorChord-BM25
+- Optional async text extraction from PDFs, Office docs, and images via Apache Tika
 - Zero ZODB cache pressure -- no BTree objects stored
 - Transactional writes atomically alongside ZODB commit
 - Catalog data queryable from any PostgreSQL client

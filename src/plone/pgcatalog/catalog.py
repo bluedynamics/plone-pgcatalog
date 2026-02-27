@@ -35,6 +35,7 @@ from plone.pgcatalog.backends import get_backend
 from plone.pgcatalog.brain import CatalogSearchResults
 from plone.pgcatalog.columns import compute_path_info
 from plone.pgcatalog.columns import get_registry
+from plone.pgcatalog.extraction import extract_content_type
 from plone.pgcatalog.extraction import extract_from_translators
 from plone.pgcatalog.extraction import extract_idx
 from plone.pgcatalog.extraction import extract_searchable_text
@@ -431,6 +432,7 @@ class PlonePGCatalogTool(UniqueObject, Folder):
         wrapper = self._wrap_object(obj)
         idx = self._extract_idx(wrapper)
         searchable_text = self._extract_searchable_text(wrapper)
+        content_type = extract_content_type(wrapper)
         parent_path, path_depth = compute_path_info(uid)
 
         # Store built-in path data in idx JSONB for unified path queries
@@ -444,6 +446,7 @@ class PlonePGCatalogTool(UniqueObject, Folder):
                 "path": uid,
                 "idx": idx,
                 "searchable_text": searchable_text,
+                "content_type": content_type,
             },
         )
         # Mark the object as dirty so ZODB stores it (triggering the processor)
