@@ -56,6 +56,7 @@ from plone.pgcatalog.pgindex import PGCatalogIndexes
 from plone.pgcatalog.pool import get_pool
 from plone.pgcatalog.pool import get_request_connection
 from plone.pgcatalog.pool import get_storage_connection
+from plone.pgcatalog.processor import ANNOTATION_KEY
 from plone.pgcatalog.query import apply_security_filters
 from plone.pgcatalog.search import _PendingBrain
 from plone.pgcatalog.search import _run_search
@@ -423,11 +424,6 @@ class PlonePGCatalogTool(UniqueObject, Folder):
                 return False
 
         zoid = self._obj_to_zoid(obj)
-        if zoid is None:
-            log.debug(
-                "_set_pg_annotation: no _p_oid on %s at %s", type(obj).__name__, uid
-            )
-            return False
 
         wrapper = self._wrap_object(obj)
         idx = self._extract_idx(wrapper)
@@ -440,15 +436,38 @@ class PlonePGCatalogTool(UniqueObject, Folder):
         idx["path_parent"] = parent_path
         idx["path_depth"] = path_depth
 
-        set_pending(
-            zoid,
-            {
-                "path": uid,
-                "idx": idx,
-                "searchable_text": searchable_text,
-                "content_type": content_type,
-            },
-        )
+        pending_data = {
+            "path": uid,
+            "idx": idx,
+            "searchable_text": searchable_text,
+            "content_type": content_type,
+        }
+
+        if zoid is None:
+            # New object: _p_oid not yet assigned by ZODB (OIDs are assigned
+            # during Connection.commit(), after before-commit hooks run).
+            # Store catalog data directly in the object's __dict__ as
+            # ANNOTATION_KEY.  When ZODB later calls storage.store() for this
+            # object, CatalogStateProcessor.process() finds and pops the key
+            # from the JSON state before writing to PG, so it does not persist
+            # in the database.  Safe for new objects because CMFEditions does
+            # not version content at creation time.
+            log.debug(
+                "_set_pg_annotation: no _p_oid on %s at %s, using __dict__ fallback",
+                type(obj).__name__,
+                uid,
+            )
+            try:
+                obj.__dict__[ANNOTATION_KEY] = pending_data
+            except AttributeError:
+                log.warning(
+                    "_set_pg_annotation: can't store annotation on %s (no __dict__)",
+                    type(obj).__name__,
+                )
+                return False
+            return True
+
+        set_pending(zoid, pending_data)
         # Mark the object as dirty so ZODB stores it (triggering the processor)
         obj._p_changed = True
         log.debug(

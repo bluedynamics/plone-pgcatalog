@@ -229,14 +229,29 @@ def _mock_pg_connection(mock_conn):
 
 
 class TestCatalogObjectWritePath:
-    def test_skips_pg_without_p_oid(self):
+    def test_new_object_uses_dict_fallback(self):
+        """New objects (no _p_oid yet) store catalog data in obj.__dict__."""
+        from plone.pgcatalog.processor import ANNOTATION_KEY
+
         tool = PlonePGCatalogTool.__new__(PlonePGCatalogTool)
         obj = mock.Mock(spec=["getPhysicalPath"])
         obj.getPhysicalPath.return_value = ("", "plone", "doc")
-        # No _p_oid → _set_pg_annotation bails early, no pending write
-        with mock.patch("plone.pgcatalog.catalog.set_pending") as pending_mock:
+        # No _p_oid → uses __dict__ fallback, set_pending NOT called
+        with (
+            mock.patch.object(PlonePGCatalogTool, "_wrap_object", return_value=obj),
+            mock.patch.object(PlonePGCatalogTool, "_extract_idx", return_value={}),
+            mock.patch.object(
+                PlonePGCatalogTool, "_extract_searchable_text", return_value=None
+            ),
+            mock.patch(
+                "plone.pgcatalog.catalog.extract_content_type", return_value=None
+            ),
+            mock.patch("plone.pgcatalog.catalog.set_pending") as pending_mock,
+        ):
             tool.catalog_object(obj)
             pending_mock.assert_not_called()
+            assert ANNOTATION_KEY in obj.__dict__
+            assert obj.__dict__[ANNOTATION_KEY]["path"] == "/plone/doc"
 
     def test_sets_pending_annotation(self):
         """catalog_object() sets PG pending annotation (no BTree writes)."""

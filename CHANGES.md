@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.0.0b14
+
+### Fixed
+
+- Fix new objects not being indexed in PostgreSQL.
+  ZODB assigns object IDs (`_p_oid`) during `Connection.commit()`, which runs
+  *after* `before_commit` hooks (where the IndexQueue flushes). All new objects
+  therefore have `_p_oid=None` at `catalog_object()` call time, causing the
+  catalog to silently skip them.  The fix stores pending catalog data directly
+  in `obj.__dict__` under the `_pgcatalog_pending` key when no OID is available
+  yet; `CatalogStateProcessor.process()` pops and uses it during `store()` so
+  the annotation is never persisted to the database.  Fixes #27.
+
 ## 1.0.0b13
 
 ### Fixed
