@@ -17,10 +17,107 @@ by ``PGJsonbStorage.register_state_processor()`` using the storage's
 own connection — no REPEATABLE READ lock conflicts.
 """
 
+from Acquisition import aq_base
+
 import logging
 
 
 log = logging.getLogger(__name__)
+
+
+def importToolset(context):
+    """Override of Products.GenericSetup.tool.importToolset.
+
+    Prevents the toolset step from deleting portal_catalog when it is a
+    PlonePGCatalogTool.  CMFPlone's toolset.xml declares portal_catalog
+    with class Products.CMFPlone.CatalogTool.CatalogTool; since
+    PlonePGCatalogTool is a different class, the default importToolset
+    deletes it and tries to recreate it.  The deletion fires
+    IObjectModifiedEvent → reindexOnModify → queryUtility(ICatalogTool)
+    which fails because the catalog was just deleted.
+
+    This wrapper temporarily removes portal_catalog from the toolset
+    registry's required tools, runs the original importToolset, then
+    restores it.
+    """
+    from Products.GenericSetup.tool import importToolset as _orig
+
+    site = context.getSite()
+    existing = getattr(aq_base(site), "portal_catalog", None)
+
+    if existing is None:
+        # No catalog yet — let the original handler create it
+        return _orig(context)
+
+    from plone.pgcatalog.catalog import PlonePGCatalogTool
+
+    if not isinstance(existing, PlonePGCatalogTool):
+        # Not our class — let the original handler deal with it
+        return _orig(context)
+
+    # Our catalog is installed — suppress toolset replacement.
+    # Read the XML, remove portal_catalog from required tools,
+    # then delegate to the original handler.
+    from Products.GenericSetup.tool import TOOLSET_XML
+
+    xml = context.readDataFile(TOOLSET_XML)
+    if xml is None:
+        return
+
+    setup_tool = context.getSetupTool()
+    toolset = setup_tool.getToolsetRegistry()
+    toolset.parseXML(xml, context.getEncoding())
+
+    # Remove portal_catalog from required tools before processing
+    had_catalog = False
+    if "portal_catalog" in {info["id"] for info in toolset.listRequiredToolInfo()}:
+        had_catalog = True
+        # Clear and re-add without portal_catalog
+        new_required = [
+            info
+            for info in toolset.listRequiredToolInfo()
+            if info["id"] != "portal_catalog"
+        ]
+        toolset._required.clear()
+        for info in new_required:
+            toolset.addRequiredTool(info["id"], info["class"])
+
+    setup_tool._p_changed = True
+
+    # Now process all tools except portal_catalog
+    existing_ids = site.objectIds()
+    for tool_id in toolset.listForbiddenTools():
+        if tool_id in existing_ids:
+            site._delObject(tool_id)
+
+    for info in toolset.listRequiredToolInfo():
+        tool_id = str(info["id"])
+        from Products.GenericSetup.utils import _resolveDottedName
+
+        tool_class = _resolveDottedName(info["class"])
+        if tool_class is None:
+            continue
+        existing_tool = getattr(aq_base(site), tool_id, None)
+        if existing_tool is None:
+            try:
+                new_tool = tool_class()
+            except TypeError:
+                new_tool = tool_class(tool_id)
+            else:
+                new_tool._setId(tool_id)
+            site._setObject(tool_id, new_tool)
+        elif type(aq_base(existing_tool)) is not tool_class:
+            site._delObject(tool_id)
+            site._setObject(tool_id, tool_class())
+
+    # Re-add portal_catalog to the registry (for record-keeping) without
+    # actually touching the object
+    if had_catalog:
+        toolset.addRequiredTool(
+            "portal_catalog", "plone.pgcatalog.catalog.PlonePGCatalogTool"
+        )
+
+    log.info("Toolset imported (portal_catalog protected)")
 
 
 class _Extra:

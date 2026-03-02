@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.0.0b15 (unreleased)
+
+### Fixed
+
+- Protect PlonePGCatalogTool from being replaced during GenericSetup
+  profile imports.  CMFPlone's baseline `toolset.xml` declares
+  `portal_catalog` with `CatalogTool`; since `PlonePGCatalogTool` is a
+  different class, the default `importToolset` deletes it, triggering an
+  `IObjectModifiedEvent` cascade that raises `KeyError: 'portal_catalog'`.
+  Added `importToolset` wrapper in `overrides.zcml` that skips
+  `portal_catalog` when it is already a `PlonePGCatalogTool`.
+
 ## 1.0.0b14
 
 ### Fixed

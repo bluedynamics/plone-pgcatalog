@@ -1,7 +1,17 @@
 <configure
     xmlns="http://namespaces.zope.org/zope"
+    xmlns:genericsetup="http://namespaces.zope.org/genericsetup"
     xmlns:zcml="http://namespaces.zope.org/zcml"
     >
+
+  <!-- Override toolset step to protect PlonePGCatalogTool from
+       being replaced by CMFPlone's CatalogTool during profile imports -->
+  <genericsetup:importStep
+      name="toolset"
+      title="Required Tools"
+      description="Create required tools, skip portal_catalog when PlonePGCatalogTool."
+      handler="plone.pgcatalog.setuphandlers.importToolset"
+      />
 
   <!-- eea.facetednavigation: PG-backed IFacetedCatalog adapter -->
   <include
