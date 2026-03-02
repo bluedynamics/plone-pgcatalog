@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.0.0b15 (unreleased)
+## 1.0.0b15
 
 ### Fixed
 
