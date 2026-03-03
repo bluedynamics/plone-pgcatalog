@@ -646,3 +646,215 @@ class TestEnsureCatalogIndexes:
         )
         # Should not raise — all exceptions are caught
         _ensure_catalog_indexes(site)
+
+
+# ===========================================================================
+# importToolset — override to protect PlonePGCatalogTool
+# ===========================================================================
+
+
+class TestImportToolset:
+    """Tests for importToolset() — the overrides.zcml handler that protects
+    PlonePGCatalogTool from being replaced by CMFPlone's toolset step."""
+
+    def _make_context(self, site, toolset_xml=b"<dummy/>"):
+        """Build a mock GS import context."""
+        ctx = mock.Mock()
+        ctx.getSite.return_value = site
+        ctx.readDataFile.return_value = toolset_xml
+        ctx.getEncoding.return_value = "utf-8"
+        return ctx
+
+    def _make_toolset(self, required_tools):
+        """Build a mock toolset registry with required tools.
+
+        required_tools: list of {"id": ..., "class": ...} dicts
+        """
+        toolset = mock.Mock()
+        toolset.listRequiredToolInfo.return_value = list(required_tools)
+        toolset.listForbiddenTools.return_value = []
+        toolset._required = {}
+        return toolset
+
+    def test_delegates_when_no_catalog(self):
+        """No portal_catalog → delegates to original importToolset."""
+        from plone.pgcatalog.setuphandlers import importToolset
+
+        site = mock.Mock(spec=[])  # no portal_catalog attribute
+        ctx = self._make_context(site)
+
+        with (
+            mock.patch(
+                "plone.pgcatalog.setuphandlers.importToolset.__wrapped__",
+                create=True,
+            ),
+            mock.patch("Products.GenericSetup.tool.importToolset") as orig_mock,
+        ):
+            importToolset(ctx)
+            orig_mock.assert_called_once_with(ctx)
+
+    def test_delegates_when_foreign_catalog(self):
+        """portal_catalog is not PlonePGCatalogTool → delegates to original."""
+        from plone.pgcatalog.setuphandlers import importToolset
+
+        site = mock.Mock()
+        site.portal_catalog = mock.Mock()  # foreign class
+        ctx = self._make_context(site)
+
+        with mock.patch("Products.GenericSetup.tool.importToolset") as orig_mock:
+            importToolset(ctx)
+            orig_mock.assert_called_once_with(ctx)
+
+    def test_protects_pgcatalog_tool(self):
+        """PlonePGCatalogTool installed → portal_catalog NOT deleted."""
+        from plone.pgcatalog.catalog import PlonePGCatalogTool
+        from plone.pgcatalog.setuphandlers import importToolset
+
+        catalog = PlonePGCatalogTool()
+        site = mock.Mock()
+        site.portal_catalog = catalog
+        # aq_base(site).portal_catalog must also return our catalog
+        site.__dict__["portal_catalog"] = catalog
+
+        toolset = self._make_toolset(
+            [
+                {
+                    "id": "portal_catalog",
+                    "class": "Products.CMFPlone.CatalogTool.CatalogTool",
+                },
+                {
+                    "id": "portal_actions",
+                    "class": "Products.CMFCore.ActionsTool.ActionsTool",
+                },
+            ]
+        )
+        setup_tool = mock.Mock()
+        setup_tool.getToolsetRegistry.return_value = toolset
+
+        ctx = self._make_context(site)
+        ctx.getSetupTool.return_value = setup_tool
+
+        # After parseXML, listRequiredToolInfo returns the parsed tools.
+        # Our code filters out portal_catalog, so after clear+re-add,
+        # only portal_actions remains.
+        def mock_parse(xml, enc):
+            pass  # already set up
+
+        toolset.parseXML = mock_parse
+
+        with mock.patch(
+            "Products.GenericSetup.utils._resolveDottedName",
+            return_value=None,  # skip tool creation
+        ):
+            importToolset(ctx)
+
+        # portal_catalog must NOT be deleted
+        del_calls = (
+            [c[0][0] for c in site._delObject.call_args_list]
+            if site._delObject.called
+            else []
+        )
+        assert "portal_catalog" not in del_calls
+
+    def test_returns_early_when_no_toolset_xml(self):
+        """No toolset.xml in profile → returns without error."""
+        from plone.pgcatalog.catalog import PlonePGCatalogTool
+        from plone.pgcatalog.setuphandlers import importToolset
+
+        catalog = PlonePGCatalogTool()
+        site = mock.Mock()
+        site.portal_catalog = catalog
+        site.__dict__["portal_catalog"] = catalog
+
+        ctx = self._make_context(site, toolset_xml=None)
+
+        # Should return without error, no delegation
+        with mock.patch("Products.GenericSetup.tool.importToolset") as orig_mock:
+            importToolset(ctx)
+            orig_mock.assert_not_called()
+
+    def test_re_registers_catalog_with_correct_class(self):
+        """After processing, portal_catalog is re-added to the registry
+        with PlonePGCatalogTool class path."""
+        from plone.pgcatalog.catalog import PlonePGCatalogTool
+        from plone.pgcatalog.setuphandlers import importToolset
+
+        catalog = PlonePGCatalogTool()
+        site = mock.Mock()
+        site.portal_catalog = catalog
+        site.__dict__["portal_catalog"] = catalog
+        site.objectIds.return_value = []
+
+        toolset = self._make_toolset(
+            [
+                {
+                    "id": "portal_catalog",
+                    "class": "Products.CMFPlone.CatalogTool.CatalogTool",
+                },
+            ]
+        )
+        setup_tool = mock.Mock()
+        setup_tool.getToolsetRegistry.return_value = toolset
+        toolset.parseXML = mock.Mock()
+
+        ctx = self._make_context(site)
+        ctx.getSetupTool.return_value = setup_tool
+
+        importToolset(ctx)
+
+        # Should have re-added portal_catalog with our class
+        add_calls = toolset.addRequiredTool.call_args_list
+        re_added = [c for c in add_calls if c[0][0] == "portal_catalog"]
+        assert len(re_added) == 1
+        assert re_added[0][0][1] == "plone.pgcatalog.catalog.PlonePGCatalogTool"
+
+    def test_processes_other_required_tools(self):
+        """Non-catalog required tools are still processed normally."""
+        from plone.pgcatalog.catalog import PlonePGCatalogTool
+        from plone.pgcatalog.setuphandlers import importToolset
+
+        catalog = PlonePGCatalogTool()
+        site = mock.Mock()
+        site.portal_catalog = catalog
+        site.__dict__["portal_catalog"] = catalog
+        site.objectIds.return_value = []
+
+        # After filtering, only portal_actions should remain in required
+        toolset = self._make_toolset(
+            [
+                {
+                    "id": "portal_catalog",
+                    "class": "Products.CMFPlone.CatalogTool.CatalogTool",
+                },
+                {"id": "portal_actions", "class": "test.ActionsTool"},
+            ]
+        )
+        setup_tool = mock.Mock()
+        setup_tool.getToolsetRegistry.return_value = toolset
+        toolset.parseXML = mock.Mock()
+
+        # After clear+re-add, listRequiredToolInfo returns only non-catalog tools
+        remaining = [{"id": "portal_actions", "class": "test.ActionsTool"}]
+        toolset.listRequiredToolInfo.side_effect = [
+            # First call: initial check for portal_catalog
+            [
+                {"id": "portal_catalog", "class": "CatalogTool"},
+                {"id": "portal_actions", "class": "test.ActionsTool"},
+            ],
+            # Second call: building new_required list
+            [
+                {"id": "portal_catalog", "class": "CatalogTool"},
+                {"id": "portal_actions", "class": "test.ActionsTool"},
+            ],
+            # Third call: iteration for tool processing
+            remaining,
+        ]
+
+        ctx = self._make_context(site)
+        ctx.getSetupTool.return_value = setup_tool
+
+        with mock.patch(
+            "Products.GenericSetup.utils._resolveDottedName",
+            return_value=mock.Mock,
+        ):
+            importToolset(ctx)
