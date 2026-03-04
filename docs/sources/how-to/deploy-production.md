@@ -1,10 +1,10 @@
 <!-- diataxis: how-to -->
 
-# Deploy in Production
+# Deploy in production
 
-## PostgreSQL Setup
+## PostgreSQL setup
 
-### Recommended Configuration
+### Recommended configuration
 
 Key `postgresql.conf` settings for a dedicated PostgreSQL instance:
 
@@ -36,7 +36,7 @@ plone.pgcatalog is compatible with CloudNativePG.
 VectorChord-BM25 supports WAL replication, so read replicas can serve BM25 queries.
 No special operator configuration is needed beyond the standard PostgreSQL image.
 
-## Performance Tuning
+## Performance tuning
 
 - Set ZODB `cache-size` high (e.g., 10000) -- no BTree pressure means more cache available for application objects.
 - PostgreSQL auto-creates all necessary indexes at startup via the `CatalogStateProcessor` DDL. No manual index creation is needed.
@@ -69,7 +69,7 @@ Check catalog object count via ZMI (portal_catalog > Catalog tab) or SQL:
 SELECT COUNT(*) FROM object_state WHERE idx IS NOT NULL;
 ```
 
-## Backup and Recovery
+## Backup and recovery
 
 - `pg_dump` captures all catalog data -- it lives in the same `object_state` table as ZODB object data.
 - No separate catalog export/import is needed.

@@ -1,12 +1,12 @@
 <!-- diataxis: reference -->
 
-# Query API Reference
+# Query API reference
 
 This page documents the query interface for plone.pgcatalog, including
 all supported index types, query parameters, sorting, pagination,
 security filtering, DoS limits, and result objects.
 
-## Standard Catalog Query Interface
+## Standard catalog query interface
 
 plone.pgcatalog supports the same calling conventions as Plone's
 `CatalogTool`:
@@ -26,7 +26,7 @@ results = catalog.unrestrictedSearchResults(portal_type="Document")
 `effectiveRange` filters based on the current user's roles.
 `unrestrictedSearchResults()` bypasses all security filtering.
 
-## Query Parameters by Index Type
+## Query parameters by index type
 
 ### FieldIndex
 
@@ -121,7 +121,7 @@ UUID equality lookup (e.g., `UID`).
 catalog(UID="abc123-def456")
 ```
 
-### ZCTextIndex (Full-Text Search)
+### ZCTextIndex (full-text search)
 
 Full-text search indexes: `SearchableText`, `Title`, `Description`,
 and any addon `ZCTextIndex` fields.
@@ -168,7 +168,7 @@ catalog(path={"query": "/plone/folder", "navtree": True})
 catalog(path={"query": ["/plone/a", "/plone/b"]})
 ```
 
-### Unregistered Indexes
+### Unregistered indexes
 
 Index names not in `META_TYPE_MAP` (e.g., `Language`, `TranslationGroup`
 from `plone.app.multilingual`) are not silently skipped. The query
@@ -227,7 +227,7 @@ query range `[2025-03-01, 2025-03-31]`.
 
 See {doc}`ipgindextranslator` for implementation details.
 
-## Sort Parameters
+## Sort parameters
 
 | Parameter | Type | Description |
 |---|---|---|
@@ -284,7 +284,7 @@ matching count is available via `results.actual_result_count`.
 Security filters are injected by `apply_security_filters()` in
 `query.py` before the query is passed to `build_query()`.
 
-## DoS Limits
+## DoS limits
 
 Hardcoded limits to prevent resource exhaustion:
 
@@ -297,7 +297,7 @@ Hardcoded limits to prevent resource exhaustion:
 
 These limits are enforced in `query.py` and cannot be overridden.
 
-## Result Objects
+## Result objects
 
 ### CatalogSearchResults
 
@@ -363,7 +363,7 @@ in the result set have their `idx` loaded in a single batch query via
 `CatalogSearchResults._load_idx_batch()`, using the same REPEATABLE
 READ snapshot as the original search.
 
-## Common Pitfalls
+## Common pitfalls
 
 **Accessing non-catalog attributes on brains.**
 `brain.some_field` only works for fields in the `IndexRegistry` (indexes

@@ -1,11 +1,11 @@
 <!-- diataxis: reference -->
 
-# Database Schema Reference
+# Database schema reference
 
 This page documents the PostgreSQL schema extensions, indexes, JSONB
 structure, and SQL functions installed by plone.pgcatalog.
 
-## object_state Table Extensions
+## object_state table extensions
 
 plone.pgcatalog extends the `object_state` table (owned by zodb-pgjsonb)
 with the following columns:
@@ -24,9 +24,9 @@ The first five columns are always present. The `search_bm25` and
 per-language `search_bm25_{lang}` columns are created only when
 VectorChord-BM25 extensions are detected at startup.
 
-## PostgreSQL Indexes
+## PostgreSQL indexes
 
-### Core Indexes
+### Core indexes
 
 | Index Name | Type | Expression | Purpose |
 |---|---|---|---|
@@ -34,7 +34,7 @@ VectorChord-BM25 extensions are detected at startup.
 | `idx_os_catalog` | GIN | `idx` | JSONB containment/existence queries |
 | `idx_os_searchable_text` | GIN | `searchable_text` | Full-text search |
 
-### Path Expression Indexes
+### Path expression indexes
 
 | Index Name | Type | Expression | Purpose |
 |---|---|---|---|
@@ -43,7 +43,7 @@ VectorChord-BM25 extensions are detected at startup.
 | `idx_os_cat_path_parent` | B-tree | `idx->>'path_parent'` | Parent path queries (depth=1) |
 | `idx_os_cat_path_depth` | B-tree | `(idx->>'path_depth')::integer` | Depth-limited queries |
 
-### Date Expression Indexes
+### Date expression indexes
 
 | Index Name | Type | Expression | Purpose |
 |---|---|---|---|
@@ -52,7 +52,7 @@ VectorChord-BM25 extensions are detected at startup.
 | `idx_os_cat_effective` | B-tree | `pgcatalog_to_timestamptz(idx->>'effective')` | Date sorting/filtering |
 | `idx_os_cat_expires` | B-tree | `pgcatalog_to_timestamptz(idx->>'expires')` | Date sorting/filtering |
 
-### Field Expression Indexes
+### Field expression indexes
 
 | Index Name | Type | Expression | Purpose |
 |---|---|---|---|
@@ -61,7 +61,7 @@ VectorChord-BM25 extensions are detected at startup.
 | `idx_os_cat_review_state` | B-tree | `idx->>'review_state'` | Workflow state filtering |
 | `idx_os_cat_uid` | B-tree | `idx->>'uid'` | UUID lookup |
 
-### Text Expression Indexes
+### Text expression indexes
 
 | Index Name | Type | Expression | Purpose |
 |---|---|---|---|
@@ -73,7 +73,7 @@ addon `ZCTextIndex` fields discovered in `portal_catalog`. These follow
 the naming pattern `idx_os_cat_{key}_tsv` and use the `'simple'`
 regconfig for word-level matching.
 
-### BM25 Indexes (Optional)
+### BM25 indexes (optional)
 
 When VectorChord-BM25 extensions are installed:
 
@@ -85,7 +85,7 @@ When VectorChord-BM25 extensions are installed:
 All indexes use `WHERE idx IS NOT NULL` or `WHERE searchable_text IS NOT NULL`
 partial index predicates to exclude uncataloged rows.
 
-## idx JSONB Structure
+## idx JSONB structure
 
 All standard Plone catalog indexes and metadata columns are stored
 together in a single JSONB document. Example for a typical Plone Page:
@@ -185,13 +185,13 @@ CREATE TRIGGER trg_notify_extraction
 See {doc}`../explanation/tika-extraction` for the full architecture and
 {doc}`../how-to/enable-tika-extraction` for setup instructions.
 
-## SQL Functions
+## SQL functions
 
 See {doc}`sql-functions` for the full reference of
 `pgcatalog_to_timestamptz()`, `pgcatalog_lang_to_regconfig()`,
 `pgcatalog_merge_extracted_text()`, and rrule functions.
 
-## rrule_plpgsql Schema
+## rrule_plpgsql schema
 
 Installed automatically at startup. Provides a pure PL/pgSQL
 implementation of RFC 5545 RRULE expansion for DateRecurringIndex
@@ -204,7 +204,7 @@ from the vendored `rrule_schema.sql` file in the package.
 See {doc}`sql-functions` for `rrule."between"()` and `rrule."after"()`
 function signatures.
 
-## Schema Installation
+## Schema installation
 
 Schema is applied automatically at startup via the
 `CatalogStateProcessor.get_schema_sql()` method, called by zodb-pgjsonb

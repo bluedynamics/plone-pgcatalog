@@ -1,15 +1,15 @@
 <!-- diataxis: how-to -->
 
-# Rebuild or Reindex the Catalog
+# Rebuild or reindex the catalog
 
-## When to Rebuild
+## When to rebuild
 
 - After enabling BM25 (new columns need populating)
 - After upgrading plone.pgcatalog (if release notes mention schema changes)
 - After manual database restoration
 - When catalog counts do not match actual content
 
-## Full Rebuild (clearFindAndRebuild)
+## Full rebuild (clearFindAndRebuild)
 
 Clears all catalog data and re-indexes every object by traversing the site.
 
@@ -28,7 +28,7 @@ import transaction; transaction.commit()
 
 Expected timing: approximately 15 ms per object.
 
-## Selective Reindex (reindexIndex)
+## Selective reindex (reindexIndex)
 
 Re-extracts a single index for all objects:
 
@@ -39,11 +39,11 @@ import transaction; transaction.commit()
 
 Useful after changing an indexer or adding a new index.
 
-## Partial Reindex (automatic)
+## Partial reindex (automatic)
 
 When Plone calls `reindexObject(idxs=["review_state"])`, plone.pgcatalog uses a lightweight JSONB merge (`||` operator) instead of full re-extraction. This happens automatically and does not trigger ZODB serialization of the object.
 
-## Choosing the Right Operation
+## Choosing the right operation
 
 | Operation | Clears data? | Traverses site? | Speed | Use when |
 |---|---|---|---|---|

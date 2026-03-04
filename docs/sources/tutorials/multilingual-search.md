@@ -1,8 +1,8 @@
 <!-- diataxis: tutorial -->
 
-# Tutorial: Set Up Multilingual Search
+# Tutorial: set up multilingual search
 
-## What You Will Build
+## What you will build
 
 A Plone site with English, German, and Chinese content, where search results
 are ranked using language-specific stemming.  German "Vulkan" will match
@@ -25,7 +25,7 @@ example articles in three languages.  Follow that first if you do not have a
 multilingual site ready.
 :::
 
-## Step 1: Verify Language Configuration
+## Step 1: verify language configuration
 
 In Plone's **Site Setup** > **Language**, ensure your desired languages are
 enabled.  plone.pgcatalog reads the `Language` field from each content object
@@ -48,7 +48,7 @@ Every content object carries a `Language` field.  When plone.pgcatalog indexes
 an object, it uses this field to select the PostgreSQL text search
 configuration for stemming.
 
-## Step 2: Understand How Stemming Works
+## Step 2: understand how stemming works
 
 plone.pgcatalog maps each object's `Language` field to a PostgreSQL text search
 configuration via the `pgcatalog_lang_to_regconfig()` SQL function.  Here are
@@ -70,7 +70,7 @@ This means a German search for "Vulkan" will find articles containing
 "Vulkane", "Vulkans", or "vulkanisch" -- the stemmer reduces them all to the
 same root form.
 
-## Step 3: Create Test Content
+## Step 3: create test content
 
 If you followed the {doc}`quickstart-demo` tutorial, you already have
 multilingual content.  Otherwise, create a few test documents to see stemming
@@ -86,7 +86,7 @@ word forms:
 
 Publish both documents so they appear in search results.
 
-## Step 4: Test Language-Aware Search
+## Step 4: test language-aware search
 
 ### Via the REST API
 
@@ -128,7 +128,7 @@ print(f"'volcano': {len(singular)}, 'volcanoes': {len(plural)}")
 Both "volcano" and "volcanoes" should return the same result set because the
 English stemmer reduces both to the same root.
 
-## Step 5: Enable BM25 for Better CJK Search (Optional)
+## Step 5: enable BM25 for better CJK search (optional)
 
 PostgreSQL's `simple` text search configuration provides basic whitespace
 tokenization for Chinese, Japanese, and Korean.  This works for queries where
@@ -171,7 +171,7 @@ extensions).  plone.pgcatalog auto-detects these extensions at startup and
 falls back to tsvector ranking when they are not available.
 :::
 
-## Step 6: Verify with SQL
+## Step 6: verify with SQL
 
 Connect to PostgreSQL and inspect the indexed data directly.
 
@@ -204,7 +204,7 @@ SELECT plainto_tsquery('simple', 'volcanoes');
 -- Returns 'volcano' and 'volcanoes' respectively (no stemming)
 ```
 
-## What You Learned
+## What you learned
 
 - plone.pgcatalog uses each object's `Language` field to select a
   PostgreSQL text search configuration at index time
@@ -217,7 +217,7 @@ SELECT plainto_tsquery('simple', 'volcanoes');
 - Language filtering works via the standard `Language` query parameter or
   by searching within a language folder path
 
-## Next Steps
+## Next steps
 
 - {doc}`quickstart-demo` to try a full multilingual setup with example content
 - {doc}`migrate-from-zcatalog` to migrate an existing site

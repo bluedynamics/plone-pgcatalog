@@ -1,6 +1,6 @@
 <!-- diataxis: explanation -->
 
-# Performance Characteristics
+# Performance characteristics
 
 plone.pgcatalog's performance profile is fundamentally different from ZCatalog's.
 ZCatalog is fast when everything fits in the ZODB cache and degrades as cache
@@ -95,7 +95,7 @@ it with `orjson.loads()` (a Rust-based JSON parser) reduced the cost of
 deserializing the `idx` JSONB column from each row. This is a one-line change in
 `pool.py` that applies globally to all psycopg connections.
 
-### Phase 2: Lazy idx batch loading
+### Phase 2: lazy idx batch loading
 
 **Impact: -62% query time (the biggest win).**
 
@@ -117,7 +117,7 @@ access metadata, the single batch query is cheaper than including `idx` in every
 of the original query because PostgreSQL can decompress the JSONB values more
 efficiently in a targeted lookup than in a full table scan.
 
-### Phase 3: Prepared statements
+### Phase 3: prepared statements
 
 **Impact: Negligible per benchmark, saves PG parse overhead in production.**
 
@@ -128,7 +128,7 @@ of the same query shape, the per-query savings are too small to measure reliably
 In production, where the same query patterns repeat thousands of times per
 connection lifetime, the cumulative savings are meaningful.
 
-### Phase 4: Request-scoped connections
+### Phase 4: request-scoped connections
 
 **Impact: Negligible per benchmark, avoids pool lock contention in production.**
 
@@ -152,7 +152,7 @@ architectural change. By writing catalog data as PostgreSQL columns instead of Z
 BTree objects, plone.pgcatalog eliminates the majority of `store()` calls during a
 content transaction.
 
-### Phase 6: Clean break from ZCatalog
+### Phase 6: clean break from ZCatalog
 
 **Impact: ~2x faster queries across most patterns, modest write improvements.**
 

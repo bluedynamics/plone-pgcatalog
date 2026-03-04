@@ -1,6 +1,6 @@
 <!-- diataxis: reference -->
 
-# Search Backends Reference
+# Search backends reference
 
 This page documents the search backend abstraction, the two built-in
 backends (TsvectorBackend and BM25Backend), language-to-tokenizer
@@ -98,7 +98,7 @@ BM25Backend(languages=None, tokenizer_prefix="pgcatalog")
 Maps ISO 639-1 language codes to pg_tokenizer configuration. Defined in
 `plone.pgcatalog.backends`.
 
-### Snowball Stemmers
+### Snowball stemmers
 
 | ISO Code | Stemmer |
 |---|---|
@@ -134,7 +134,7 @@ Maps ISO 639-1 language codes to pg_tokenizer configuration. Defined in
 | `tr` | `turkish` |
 | `yi` | `yiddish` |
 
-### CJK Segmenters
+### CJK segmenters
 
 | ISO Code | Pre-tokenizer |
 |---|---|
@@ -145,7 +145,7 @@ Maps ISO 639-1 language codes to pg_tokenizer configuration. Defined in
 Languages not in this map are served by the fallback column
 (`search_bm25`) which uses `unicode_segmentation` without stemming.
 
-## Backend Detection and Activation
+## Backend detection and activation
 
 ### Automatic (at startup)
 

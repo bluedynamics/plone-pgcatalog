@@ -2,7 +2,7 @@
 
 # Install plone.pgcatalog
 
-## Install the Package
+## Install the package
 
 ```bash
 pip install plone.pgcatalog
@@ -29,7 +29,7 @@ plone.pgcatalog discovers its PostgreSQL connection from the storage layer.
 
 plone.pgcatalog is auto-discovered via `z3c.autoinclude` -- no `%import` needed for the catalog itself.
 
-## Apply the GenericSetup Profile
+## Apply the GenericSetup profile
 
 Install via Plone's Add-on installer (Site Setup > Add-ons), or programmatically:
 
@@ -48,7 +48,7 @@ The install step automatically:
 - Removes orphaned ZCTextIndex lexicons (no longer needed with PG-backed search)
 - Applies DDL schema to PostgreSQL (columns, functions, indexes)
 
-## Verify Installation
+## Verify installation
 
 - Visit ZMI > portal_catalog -- the class should show `PlonePGCatalogTool` and the meta type `PG Catalog Tool`.
 - Run a test query:

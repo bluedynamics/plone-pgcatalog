@@ -1,12 +1,12 @@
 <!-- diataxis: reference -->
 
-# IPGIndexTranslator Interface Reference
+# IPGIndexTranslator interface reference
 
 This page documents the `IPGIndexTranslator` interface for extending
 plone.pgcatalog with custom index types, its methods, security
 contract, registration, wiring points, and built-in implementations.
 
-## Interface Definition
+## Interface definition
 
 Defined in `plone.pgcatalog.interfaces`:
 
@@ -48,7 +48,7 @@ class IPGIndexTranslator(Interface):
   Returns a SQL expression for ORDER BY, or `None` if the index does not
   support sorting.
 
-## Security Contract
+## Security contract
 
 All `IPGIndexTranslator` implementations must follow these rules:
 
@@ -84,7 +84,7 @@ provideUtility(translator_instance, IPGIndexTranslator, name="my_index")
 
 The utility name **must** match the ZCatalog index name.
 
-## Wiring Points
+## Wiring points
 
 | Module | Function | When Called |
 |---|---|---|
@@ -98,7 +98,7 @@ name=index_name)`. If a translator is found, its `query()` method is
 called. If no translator is found either, the index is treated as a
 simple JSONB field query.
 
-## Built-in Implementations
+## Built-in implementations
 
 ### DateRecurringIndexTranslator
 

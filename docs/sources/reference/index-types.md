@@ -1,12 +1,12 @@
 <!-- diataxis: reference -->
 
-# Index Types Reference
+# Index types reference
 
 This page documents the index types supported by plone.pgcatalog,
 the mapping from ZCatalog meta types, special indexes stored outside
 the `idx` JSONB column, and the index registry API.
 
-## IndexType Enum
+## IndexType enum
 
 Defined in `plone.pgcatalog.columns`. Each value represents a category
 of index behavior that determines how queries are translated to SQL.
@@ -40,7 +40,7 @@ Defined in `plone.pgcatalog.columns`.
 | `ExtendedPathIndex` | `PATH` |
 | `GopipIndex` | `GOPIP` |
 
-## Special Indexes
+## Special indexes
 
 These indexes are stored in dedicated columns on the `object_state` table
 rather than inside the `idx` JSONB column. They have `idx_key=None` in the
@@ -52,7 +52,7 @@ index registry.
 | `effectiveRange` | `idx->>'effective'` and `idx->>'expires'` fields. | Compound date range query across two JSONB keys. |
 | `path` | `path` TEXT column, `parent_path` TEXT column, and `path_depth` INTEGER column. | Dedicated columns for fast hierarchy queries. |
 
-## Index Registry
+## Index registry
 
 The `IndexRegistry` is a singleton that maps index names to their type
 information. It is populated at startup by `sync_from_catalog()`, which
@@ -82,7 +82,7 @@ from plone.pgcatalog.columns import get_registry
 registry = get_registry()
 ```
 
-## Custom Index Types
+## Custom index types
 
 Index types not listed in `META_TYPE_MAP` (such as `DateRecurringIndex`,
 `DateRangeInRangeIndex`, or composite indexes) are supported via

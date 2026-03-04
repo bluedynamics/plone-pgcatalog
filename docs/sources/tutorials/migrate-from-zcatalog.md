@@ -1,8 +1,8 @@
 <!-- diataxis: tutorial -->
 
-# Tutorial: Migrate from ZCatalog to plone.pgcatalog
+# Tutorial: migrate from ZCatalog to plone.pgcatalog
 
-## What You Will Do
+## What you will do
 
 Take an existing Plone 6 site that uses the standard ZCatalog and migrate all
 catalog data to PostgreSQL.  After this tutorial, your site will use
@@ -23,7 +23,7 @@ uses FileStorage or RelStorage with MySQL, you will need to migrate to
 zodb-pgjsonb first.
 :::
 
-## Step 1: Back Up Your Database
+## Step 1: back up your database
 
 Before making any changes, create a full backup of your PostgreSQL database.
 You will use this to roll back if anything goes wrong.
@@ -34,7 +34,7 @@ pg_dump -h localhost -p 5433 -U zodb zodb > backup_before_pgcatalog.sql
 
 Adjust the host, port, and credentials to match your environment.
 
-## Step 2: Install plone.pgcatalog
+## Step 2: install plone.pgcatalog
 
 ```bash
 uv pip install plone.pgcatalog
@@ -43,18 +43,18 @@ uv pip install plone.pgcatalog
 The package is auto-discovered by Plone via `z3c.autoinclude`.  No ZCML slug
 or manual include is needed.
 
-## Step 3: Apply the GenericSetup Profile
+## Step 3: apply the GenericSetup profile
 
 You have two options: use the Plone web UI, or run a zconsole script.  The
 result is the same.
 
-### Option A: Via the Plone Add-on Installer
+### Option A: via the Plone add-on installer
 
 1. Log in as a Manager user
 2. Go to **Site Setup** > **Add-ons**
 3. Find **plone.pgcatalog** in the list and click **Install**
 
-### Option B: Via a zconsole Script
+### Option B: via a zconsole script
 
 Create a file called `migrate.py`:
 
@@ -88,7 +88,7 @@ Run it:
 .venv/bin/zconsole run instance/etc/zope.conf migrate.py
 ```
 
-### What the Profile Does
+### What the profile does
 
 The GenericSetup profile performs these changes:
 
@@ -108,7 +108,7 @@ The old ZCatalog's BTree data (the actual indexed values) becomes unreferenced
 in ZODB after migration.  Run a ZODB pack after migration to reclaim the space.
 :::
 
-## Step 4: Rebuild the Catalog
+## Step 4: rebuild the catalog
 
 The old ZCatalog BTree data is now irrelevant.  You need to populate the
 PostgreSQL catalog columns from your existing content objects.
@@ -154,9 +154,9 @@ takes about 2.5 minutes.  Large sites with 100,000+ objects may take 25 minutes
 or more.
 :::
 
-## Step 5: Verify the Migration
+## Step 5: verify the migration
 
-### Check Object Counts
+### Check object counts
 
 Start Zope and visit `portal_catalog` in the ZMI (Zope Management Interface).
 The **Catalog** tab should show:
@@ -165,7 +165,7 @@ The **Catalog** tab should show:
 - All expected indexes listed
 - All expected metadata columns listed
 
-### Test Search from Python
+### Test search from Python
 
 Create a file called `verify.py`:
 
@@ -209,7 +209,7 @@ SELECT COUNT(*) FROM object_state WHERE path IS NOT NULL;
 
 This count should match the object count shown in the ZMI.
 
-## Rollback Strategy
+## Rollback strategy
 
 If anything goes wrong, you can restore the original state.
 
@@ -274,7 +274,7 @@ role mappings carry over.  If you still see `Unauthorized`, check the
 {doc}`../reference/permissions` page to verify which permission protects
 the method you are calling.
 
-## What You Learned
+## What you learned
 
 - Migration requires zodb-pgjsonb as the ZODB backend (same PostgreSQL
   database)
@@ -284,7 +284,7 @@ the method you are calling.
 - The standard Plone catalog API works unchanged after migration
 - A database backup provides a safe rollback path
 
-## Next Steps
+## Next steps
 
 - {doc}`multilingual-search` to set up language-aware search
 - {doc}`quickstart-demo` to try plone.pgcatalog with example content

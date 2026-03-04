@@ -1,12 +1,12 @@
 <!-- diataxis: how-to -->
 
-# Enable BM25 Ranking
+# Enable BM25 ranking
 
 ## Overview
 
 BM25 provides probabilistic relevance ranking, improving search quality over tsvector's `ts_rank_cd()`. It is auto-detected at startup -- no code changes are needed. When BM25 extensions are available, plone.pgcatalog switches from `TsvectorBackend` to `BM25Backend` automatically.
 
-## Step 1: Install VectorChord-BM25
+## Step 1: install VectorChord-BM25
 
 ### Docker (recommended)
 
@@ -19,13 +19,13 @@ docker run -d --name plone-pg-bm25 \
   tensorchord/vchord-suite:pg17-latest
 ```
 
-### Manual Installation
+### Manual installation
 
 Install the `vchord_bm25` and `pg_tokenizer` PostgreSQL extensions.
 Both must appear in `pg_available_extensions` for auto-detection to succeed.
 See the [VectorChord-BM25 documentation](https://github.com/tensorchord/VectorChord-bm25) for build instructions.
 
-## Step 2: Configure Languages
+## Step 2: configure languages
 
 Set the `PGCATALOG_BM25_LANGUAGES` environment variable before starting Zope:
 
@@ -44,7 +44,7 @@ Each language gets a dedicated `search_bm25_{lang}` column with a language-speci
 
 See {doc}`../reference/search-backends` for the full `LANG_TOKENIZER_MAP`.
 
-## Step 3: Restart Zope
+## Step 3: restart Zope
 
 On restart, plone.pgcatalog auto-detects the extensions and:
 
@@ -59,7 +59,7 @@ Check the log for:
 BM25 search backend activated (languages=['en', 'de', 'fr'])
 ```
 
-## Step 4: Rebuild the Catalog
+## Step 4: rebuild the catalog
 
 A full reindex is required to populate the new BM25 columns:
 
@@ -74,7 +74,7 @@ catalog.clearFindAndRebuild()
 import transaction; transaction.commit()
 ```
 
-## Switching Back to Tsvector
+## Switching back to Tsvector
 
 Remove the VectorChord-BM25 extensions (or switch to a standard `postgres:17` image) and restart Zope.
 plone.pgcatalog automatically falls back to `TsvectorBackend` when the extensions are not detected in `pg_available_extensions`.

@@ -2,7 +2,7 @@
 
 # Use with plone.distribution
 
-## Adding to Your Distribution
+## Adding to your distribution
 
 plone.pgcatalog works with `plone.distribution` for automated site creation.
 

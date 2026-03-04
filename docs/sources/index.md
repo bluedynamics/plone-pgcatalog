@@ -66,7 +66,7 @@ PostgreSQL-backed catalog for Plone, replacing ZCatalog BTrees with SQL queries 
 
 ::::
 
-## Quick Start
+## Quick start
 
 1. {doc}`Install plone.pgcatalog <how-to/install>`
 2. {doc}`Run the quickstart demo <tutorials/quickstart-demo>` (Docker + multilingual content in 5 minutes)

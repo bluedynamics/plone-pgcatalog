@@ -1,6 +1,6 @@
 <!-- diataxis: reference -->
 
-# SQL Functions Reference
+# SQL functions reference
 
 This page documents the PostgreSQL functions installed by plone.pgcatalog.
 All functions are created automatically at startup as part of schema
@@ -32,7 +32,7 @@ per-object language configuration.
 
 Returns `'simple'` for unrecognized codes or `NULL` input.
 
-### Language Mapping Table
+### Language mapping table
 
 | ISO Code | PG Regconfig |
 |---|---|
@@ -67,7 +67,7 @@ Returns `'simple'` for unrecognized codes or `NULL` input.
 | `yi` | `yiddish` |
 | (other / `NULL`) | `simple` |
 
-## pgcatalog_merge_extracted_text (Optional)
+## pgcatalog_merge_extracted_text (optional)
 
 ```sql
 pgcatalog_merge_extracted_text(p_zoid BIGINT, p_text TEXT) -> void
@@ -103,7 +103,7 @@ on every INSERT into `text_extraction_queue`. Attached via the
 
 Used by the extraction worker's `LISTEN` loop for instant wakeup.
 
-## rrule Functions
+## rrule functions
 
 The `rrule` schema contains a pure PL/pgSQL implementation of RFC 5545
 RRULE expansion. These functions are installed automatically at startup

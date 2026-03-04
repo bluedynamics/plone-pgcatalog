@@ -1,12 +1,12 @@
 <!-- diataxis: explanation -->
 
-# Addon Integrations
+# Addon integrations
 
 plone.pgcatalog replaces ZCatalog's BTree storage with PostgreSQL queries.
 This page explains how third-party Plone add-ons interact with the
 PostgreSQL-backed catalog and why compatibility works the way it does.
 
-## How Addons Integrate Automatically
+## How addons integrate automatically
 
 Most Plone addons register their indexes via GenericSetup `catalog.xml`.
 These indexes are stored in `_catalog.indexes` (a `PersistentMapping`) and
@@ -65,7 +65,7 @@ handled by `apply_index()` because they use dedicated PostgreSQL columns
 and query patterns.  For these, the adapter returns `frozenset()` --
 eea.facetednavigation then falls back to its own handling.
 
-### Error Recovery
+### Error recovery
 
 If a PostgreSQL query fails, the adapter catches the exception, logs it
 via `log.exception()`, and falls back to the original BTree-based
@@ -116,7 +116,7 @@ auto-discovered at startup.  The translator reads the `startindex` and
 `endindex` configuration from each `DateRangeInRangeIndex` object and
 generates an overlap SQL query.
 
-## Writing Your Own Integration
+## Writing your own integration
 
 If your addon needs custom query translation or index extraction beyond
 what the default JSONB containment provides, implement an

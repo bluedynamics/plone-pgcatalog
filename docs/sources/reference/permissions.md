@@ -6,7 +6,7 @@
 public methods.  The permission model mirrors ZCatalog so existing role
 assignments carry over after migration.
 
-## Permission Tiers
+## Permission tiers
 
 ### Search ZCatalog
 
@@ -35,7 +35,7 @@ Default roles: **Anonymous**, **Manager**
 Blocked methods use the same permission as ZCatalog so callers receive
 `NotImplementedError`, not `Unauthorized`.
 
-### Manage ZCatalog Entries
+### Manage ZCatalog entries
 
 Default roles: **Manager**
 
@@ -56,7 +56,7 @@ Default roles: **Manager**
 | `manage_get_object_detail()` | Single object detail |
 | `manage_get_indexes_and_metadata()` | Index/metadata registry |
 
-### Manage ZCatalogIndex Entries
+### Manage ZCatalogIndex entries
 
 Default roles: **Manager**
 
@@ -86,7 +86,7 @@ through-the-web or via URL traversal:
 | `_unindexObject()` | Direct unindex (IndexQueue processor) |
 | `_reindexObject()` | Direct reindex (IndexQueue processor) |
 
-## ZCatalog Parity
+## ZCatalog parity
 
 Permissions are identical to those declared by ZCatalog and CMFPlone's
 `CatalogTool`.  After migrating from ZCatalog, any custom role-permission

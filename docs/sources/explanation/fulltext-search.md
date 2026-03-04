@@ -1,6 +1,6 @@
 <!-- diataxis: explanation -->
 
-# Full-Text Search Deep Dive
+# Full-text search deep dive
 
 plone.pgcatalog supports four tiers of text search, from basic word matching to
 probabilistic relevance ranking. Each tier builds on the previous one, and the system
@@ -170,7 +170,7 @@ to_tsvector('simple'::regconfig, COALESCE(idx->>'Title', ''))
 
 This expression matches the GIN expression index, so PostgreSQL uses an index scan.
 
-### Tier 4: Addon ZCTextIndex fields
+### Tier 4: addon ZCTextIndex fields
 
 Plone add-ons can register additional ZCTextIndex indexes (e.g., for custom content
 types that need field-specific search). plone.pgcatalog auto-discovers these at

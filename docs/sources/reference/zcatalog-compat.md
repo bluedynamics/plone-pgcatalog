@@ -1,12 +1,12 @@
 <!-- diataxis: reference -->
 
-# ZCatalog Compatibility
+# ZCatalog compatibility
 
 `PlonePGCatalogTool` does not inherit from `ZCatalog` or `CatalogTool`.
 It implements the same public API so existing Plone code continues to work.
 This page documents the compatibility surface.
 
-## Supported Methods
+## Supported methods
 
 These methods behave identically to their ZCatalog counterparts:
 
@@ -32,7 +32,7 @@ These methods behave identically to their ZCatalog counterparts:
 | `uniqueValuesFor(name)` | Search ZCatalog | Unique values for an index |
 | `getIndexObjects()` | Manage ZCatalogIndex Entries | List of index objects |
 
-## Blocked Methods
+## Blocked methods
 
 These ZCatalog methods are not supported.
 They raise `NotImplementedError` with a guidance message.
@@ -50,7 +50,7 @@ They raise `NotImplementedError` with a guidance message.
 All blocked methods are assigned the `Search ZCatalog` permission so callers
 receive `NotImplementedError`, not `Unauthorized`.
 
-## Deprecated Methods
+## Deprecated methods
 
 These methods work but emit `DeprecationWarning`:
 
@@ -58,7 +58,7 @@ These methods work but emit `DeprecationWarning`:
 |---|---|
 | `search(*args, **kw)` | `searchResults(*args, **kw)` |
 
-## _CatalogCompat Shim
+## _CatalogCompat shim
 
 `PlonePGCatalogTool._catalog` is a `_CatalogCompat` instance providing
 the minimal API that ZCatalog-aware code expects:
@@ -88,7 +88,7 @@ index._index.get("Document")   # PG query returning matching ZOIDs
 `PGIndex._index` is a `_PGIndexMapping` that translates dict-style
 `get(value)` calls into PostgreSQL queries.
 
-## Brain Attribute Resolution
+## Brain attribute resolution
 
 `PGCatalogBrain` attribute access follows these rules:
 

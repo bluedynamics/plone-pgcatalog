@@ -1,8 +1,8 @@
 <!-- diataxis: how-to -->
 
-# Write a Custom Index Translator
+# Write a custom index translator
 
-## When You Need This
+## When you need this
 
 Use `IPGIndexTranslator` when your ZCatalog index type is not in the standard `META_TYPE_MAP`:
 
@@ -12,7 +12,7 @@ Use `IPGIndexTranslator` when your ZCatalog index type is not in the standard `M
 
 Standard types (FieldIndex, KeywordIndex, DateIndex, BooleanIndex, DateRangeIndex, UUIDIndex, ZCTextIndex, ExtendedPathIndex, GopipIndex) are handled automatically.
 
-## The IPGIndexTranslator Interface
+## The IPGIndexTranslator interface
 
 Three methods:
 
@@ -27,7 +27,7 @@ def sort(index_name) -> str | None:
     """Return SQL expression for ORDER BY, or None."""
 ```
 
-## Example: A Priority Score Index
+## Example: A priority score index
 
 Suppose you have a custom `PriorityIndex` that stores a numeric score:
 
@@ -80,7 +80,7 @@ class PriorityIndexTranslator:
 
 The utility **name** must match the ZCatalog index name.
 
-## Register Programmatically (for auto-discovery)
+## Register programmatically (for auto-discovery)
 
 ```python
 from zope.component import provideUtility
@@ -90,7 +90,7 @@ translator = PriorityIndexTranslator()
 provideUtility(translator, IPGIndexTranslator, name="priority_score")
 ```
 
-## Security Requirements
+## Security requirements
 
 - **Always** use `%(name)s` parameter placeholders for user-supplied values.
 - **Never** interpolate query values into SQL strings.
@@ -111,7 +111,7 @@ def test_query_exact():
 
 Integration test with PostgreSQL (see `tests/test_dri.py` for patterns).
 
-## Built-in Examples
+## Built-in examples
 
 Study these for more complex patterns:
 

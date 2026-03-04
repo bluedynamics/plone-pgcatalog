@@ -1,6 +1,6 @@
 <!-- diataxis: explanation -->
 
-# BM25 Design Decisions
+# BM25 design decisions
 
 plone.pgcatalog's BM25 integration is optional, auto-detected, and layered on top
 of vanilla PostgreSQL's tsvector infrastructure. This page explains the goals and
@@ -68,7 +68,7 @@ Three PostgreSQL BM25 extensions were evaluated for plone.pgcatalog. The evaluat
 considered license compatibility, language support, cloud-native deployment, maturity,
 and feature completeness.
 
-### pg_textsearch (Tiger Data)
+### pg_textsearch (Tiger data)
 
 The most natural fit architecturally -- it extends PostgreSQL's native tsvector/tsquery
 with BM25 scoring, requiring minimal changes to the query and write paths.

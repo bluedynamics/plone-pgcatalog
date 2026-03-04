@@ -1,8 +1,8 @@
 <!-- diataxis: explanation -->
 
-# Tika Text Extraction Architecture
+# Tika text extraction architecture
 
-## The Problem
+## The problem
 
 Plone's default search indexes text from rich-text fields: Title,
 Description, and the HTML body of a Page or News Item. This works
@@ -17,7 +17,7 @@ content inside the PDF are invisible to search.
 Elasticsearch solves this with its Tika ingest pipeline. plone.pgcatalog
 brings the same capability to PostgreSQL.
 
-## Design Decisions
+## Design decisions
 
 ### Why Apache Tika?
 
@@ -26,7 +26,7 @@ HTTP API. It handles PDFs (including scanned ones via Tesseract OCR),
 Office documents, OpenDocument formats, images, and more. It is the
 same technology Elasticsearch uses internally.
 
-### Why PostgreSQL as the Job Queue?
+### Why PostgreSQL as the job queue?
 
 Redis or RabbitMQ would add operational complexity. Since plone.pgcatalog
 already depends on PostgreSQL, we use it as the queue too:
@@ -42,7 +42,7 @@ already depends on PostgreSQL, we use it as the queue too:
 - **Visibility**: Queue state is queryable via standard SQL. No
   separate monitoring infrastructure needed.
 
-### Why Asynchronous?
+### Why asynchronous?
 
 Text extraction is slow — a large PDF can take seconds. Running it
 synchronously during `catalog_object()` would block the Zope request
@@ -50,7 +50,7 @@ thread, making content saves unacceptably slow. The asynchronous
 approach keeps the synchronous path fast (Title/Description/body are
 indexed immediately) while extraction runs in the background.
 
-### Why Not Store the Full Extracted Text?
+### Why not store the full extracted text?
 
 The extracted text is not stored as a column. Instead, it is
 transformed into a tsvector (and optionally BM25 vectors) and merged
@@ -58,7 +58,7 @@ into the existing `searchable_text` column. This is more space-efficient
 and matches how PostgreSQL full-text search works: the search engine
 operates on tsvectors, not raw text.
 
-## Data Flow
+## Data flow
 
 ```{mermaid}
 sequenceDiagram
@@ -127,7 +127,7 @@ sequenceDiagram
 9. The job status is updated to `done`. On failure, the job returns
    to `pending` (up to `max_attempts` retries).
 
-## Weight Hierarchy
+## Weight hierarchy
 
 The `searchable_text` tsvector uses PostgreSQL's four weight classes
 to rank content by importance:
@@ -144,7 +144,7 @@ the title higher than one where it only appears in an attached PDF.
 PostgreSQL's `ts_rank_cd()` (and BM25's scoring) respect these weights
 automatically.
 
-## Queue Table
+## Queue table
 
 The `text_extraction_queue` table is created when `PGCATALOG_TIKA_URL`
 is set. See {doc}`../reference/schema` for the full schema.
@@ -160,9 +160,9 @@ Key design choices:
 - **attempts/max_attempts**: Built-in retry with configurable limit
   (default: 3). Failed jobs stay visible for debugging.
 
-## Worker Modes
+## Worker modes
 
-### In-Process (Development)
+### In-process (development)
 
 When `PGCATALOG_TIKA_INPROCESS=true`, the worker runs as a daemon
 thread inside the Zope process. It opens its own PostgreSQL connection
@@ -175,7 +175,7 @@ the Zope process exits. No separate shutdown handling is needed.
 This mode is convenient for development and small deployments. The
 trade-off is that extraction work competes with Zope for CPU and memory.
 
-### Standalone (Production)
+### Standalone (production)
 
 The `pgcatalog-tika-worker` CLI runs as a separate process (or
 container). It depends only on `psycopg` and `httpx` — no Zope, no
@@ -185,7 +185,7 @@ Multiple workers can run concurrently. The `SKIP LOCKED` dequeue
 pattern ensures each job is processed exactly once, even under
 concurrent load.
 
-## Image Indexing
+## Image indexing
 
 Tika includes Tesseract OCR, which can extract text from images
 (JPEG, PNG, TIFF, WebP, GIF). By default, plone.pgcatalog configures
@@ -201,7 +201,7 @@ Plone does not make image blobs searchable by default (there was no
 extraction mechanism). With Tika, this happens automatically for all
 Image content types that have blobs.
 
-## Interaction with Existing Search
+## Interaction with existing search
 
 Enabling Tika does not change how existing search works:
 

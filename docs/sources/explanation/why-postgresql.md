@@ -1,6 +1,6 @@
 <!-- diataxis: explanation -->
 
-# Why PostgreSQL for the Catalog?
+# Why PostgreSQL for the catalog?
 
 Plone's default ZCatalog stores every index as a BTree inside ZODB. This works well
 for small to medium sites, but the architecture has structural limits that become

@@ -1,8 +1,8 @@
 <!-- diataxis: tutorial -->
 
-# Quickstart: Run plone.pgcatalog in 5 Minutes
+# Quickstart: run plone.pgcatalog in 5 minutes
 
-## What You Will Build
+## What you will build
 
 In this tutorial you will run a multilingual Plone 6 site backed by PostgreSQL,
 import ~800 Wikipedia articles in English, German, and Chinese, and explore
@@ -17,7 +17,7 @@ PostgreSQL JSONB -- queryable from `psql`, the REST API, or the Plone search box
 - Python 3.12+
 - [uv](https://docs.astral.sh/uv/) (recommended) or pip
 
-## Step 1: Clone the Repository
+## Step 1: clone the repository
 
 ```bash
 git clone https://github.com/bluedynamics/plone-pgcatalog.git
@@ -26,7 +26,7 @@ cd plone-pgcatalog/example
 
 All remaining commands assume you are inside the `example/` directory.
 
-## Step 2: Start PostgreSQL
+## Step 2: start PostgreSQL
 
 Choose one of two variants.  Both expose PostgreSQL on **port 5433**.
 
@@ -50,7 +50,7 @@ You can switch variants later by running `docker compose down -v` and starting
 again with the other image.  A full catalog reindex is required after switching.
 :::
 
-## Step 3: Install Python Dependencies
+## Step 3: install Python dependencies
 
 ```bash
 uv venv -p 3.13
@@ -61,7 +61,7 @@ uv pip install -r requirements.txt
 This installs Plone 6, plone.pgcatalog, zodb-pgjsonb, and the example
 distribution in one step.  The `constraints.txt` file pins known-good versions.
 
-## Step 4: Generate a Zope Instance
+## Step 4: generate a Zope instance
 
 ```bash
 uvx cookiecutter -f --no-input --config-file /dev/null \
@@ -81,7 +81,7 @@ The `zope.conf` shipped in the example directory configures zodb-pgjsonb
 (connecting to PostgreSQL on port 5433) and sets the environment variable
 `PGCATALOG_BM25_LANGUAGES=en,de,zh` for the BM25 variant.
 
-## Step 5: Create the Site and Import Content
+## Step 5: create the site and import content
 
 ```bash
 .venv/bin/zconsole run instance/etc/zope.conf scripts/create_site.py
@@ -97,7 +97,7 @@ This single command:
 
 The import takes about one to two minutes depending on your hardware.
 
-## Step 6: Start Zope
+## Step 6: start Zope
 
 ```bash
 .venv/bin/runwsgi instance/etc/zope.ini
@@ -106,9 +106,9 @@ The import takes about one to two minutes depending on your hardware.
 Visit <http://localhost:8081/Plone> in your browser.  Log in with
 **admin / admin**.
 
-## Step 7: Explore Search
+## Step 7: explore search
 
-### Search in the Browser
+### Search in the browser
 
 Type "volcano" into the Plone search box.  You should see English articles
 about volcanoes, ranked by relevance.
@@ -167,7 +167,7 @@ ORDER BY path
 LIMIT 20;
 ```
 
-## Step 8: Clean Up
+## Step 8: clean up
 
 ```bash
 docker compose down -v
@@ -176,7 +176,7 @@ docker compose down -v
 This removes the PostgreSQL container and its data volume.  Omit `-v` if you
 want to keep the data for next time.
 
-## What You Learned
+## What you learned
 
 - plone.pgcatalog stores all catalog data in PostgreSQL JSONB columns
 - Full-text search with language-aware stemming works out of the box
@@ -184,7 +184,7 @@ want to keep the data for next time.
   application code)
 - The standard Plone search API and REST API work unchanged
 
-## Next Steps
+## Next steps
 
 - {doc}`migrate-from-zcatalog` to migrate an existing site from ZCatalog
 - {doc}`multilingual-search` to understand language-aware search in depth

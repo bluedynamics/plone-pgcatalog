@@ -1,12 +1,12 @@
 <!-- diataxis: reference -->
 
-# Configuration Reference
+# Configuration reference
 
 This page documents all configuration options for plone.pgcatalog,
 including Zope configuration, environment variables, GenericSetup profiles,
 and dependency information.
 
-## zope.conf Settings
+## zope.conf settings
 
 plone.pgcatalog requires `zodb-pgjsonb` as its ZODB storage backend.
 The storage is configured in `zope.conf`:
@@ -47,7 +47,7 @@ for details.
 plone.pgcatalog itself is auto-discovered via `z3c.autoinclude` and does not
 need a separate `%import` directive.
 
-## Environment Variables
+## Environment variables
 
 | Variable | Default | Description |
 |---|---|---|
@@ -58,7 +58,7 @@ need a separate `%import` directive.
 | `ZODB_TEST_DSN` | `dbname=zodb_test host=localhost port=5433 user=zodb password=zodb` | DSN for test database (tests only). |
 | `BM25_TEST_DSN` | `dbname=zodb_test host=localhost port=5434 user=zodb password=zodb` | DSN for BM25 integration tests (tests only). |
 
-### Standalone Worker Environment Variables
+### Standalone worker environment variables
 
 These variables configure the `pgcatalog-tika-worker` CLI when running
 as a standalone process (outside Zope):
@@ -72,7 +72,7 @@ as a standalone process (outside Zope):
 | `TIKA_WORKER_S3_ENDPOINT_URL` | (none) | S3 endpoint URL (for MinIO or compatible). |
 | `TIKA_WORKER_S3_REGION` | (none) | S3 region name. |
 
-## GenericSetup Profile
+## GenericSetup profile
 
 plone.pgcatalog ships a GenericSetup profile (`default`) that configures
 Plone to use the PostgreSQL-backed catalog.
@@ -84,7 +84,7 @@ Plone to use the PostgreSQL-backed catalog.
 The profile is applied automatically when installing the add-on through
 the Plone control panel or via a dependency declaration in another profile.
 
-## ZCML Registration
+## ZCML registration
 
 All ZCML registrations are loaded automatically via `z3c.autoinclude`.
 The following registrations are made:
@@ -95,7 +95,7 @@ The following registrations are made:
 - `IPubEnd` subscriber that releases request-scoped PostgreSQL connections
   at the end of each HTTP request.
 
-## Python Dependencies
+## Python dependencies
 
 | Package | Purpose |
 |---|---|
@@ -104,7 +104,7 @@ The following registrations are made:
 | `Products.CMFPlone` | Plone framework. |
 | `zodb-pgjsonb>=1.1` | ZODB storage backend (provides the `object_state` table). |
 
-## Optional Dependencies
+## Optional dependencies
 
 | Package | Extra | Purpose |
 |---|---|---|
@@ -116,13 +116,13 @@ The following registrations are made:
 Install extras with: `pip install plone.pgcatalog[tika]` or
 `pip install plone.pgcatalog[tika-s3]`.
 
-## Console Scripts
+## Console scripts
 
 | Command | Description |
 |---|---|
 | `pgcatalog-tika-worker` | Standalone text extraction worker. Requires `TIKA_WORKER_DSN` and `TIKA_WORKER_URL` environment variables. See {doc}`../how-to/enable-tika-extraction`. |
 
-## Docker Images
+## Docker images
 
 | Image | Use Case |
 |---|---|

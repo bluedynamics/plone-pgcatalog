@@ -1,6 +1,6 @@
 <!-- diataxis: how-to -->
 
-# Query the Catalog via Raw SQL
+# Query the catalog via raw SQL
 
 ## Connecting to PostgreSQL
 
@@ -10,7 +10,7 @@ Use psql, pgAdmin, DBeaver, or any PostgreSQL client. The connection details mat
 psql "dbname=zodb host=localhost port=5432 user=zodb"
 ```
 
-## The object_state Table
+## The object_state table
 
 All catalog data lives in `object_state` alongside ZODB object pickles:
 
@@ -23,9 +23,9 @@ All catalog data lives in `object_state` alongside ZODB object pickles:
 | `idx` | `JSONB` | All index and metadata values |
 | `searchable_text` | `TSVECTOR` | Weighted full-text vector |
 
-## Common Query Patterns
+## Common query patterns
 
-### Content by Type
+### Content by type
 
 ```sql
 SELECT zoid, path, idx->>'Title' AS title
@@ -34,7 +34,7 @@ WHERE idx @> '{"portal_type": "Document"}'::jsonb
   AND path IS NOT NULL;
 ```
 
-### Full-Text Search
+### Full-text search
 
 ```sql
 SELECT path, idx->>'Title' AS title,
@@ -45,7 +45,7 @@ ORDER BY rank DESC
 LIMIT 20;
 ```
 
-### Date Range Query
+### Date range query
 
 ```sql
 SELECT path, idx->>'Title' AS title
@@ -55,7 +55,7 @@ WHERE pgcatalog_to_timestamptz(idx->>'modified')
 ORDER BY pgcatalog_to_timestamptz(idx->>'modified') DESC;
 ```
 
-### Security Filtering
+### Security filtering
 
 ```sql
 SELECT path, idx->>'Title' AS title
@@ -64,7 +64,7 @@ WHERE idx @> '{"portal_type": "Document"}'::jsonb
   AND idx->'allowedRolesAndUsers' ?| ARRAY['Anonymous', 'Member'];
 ```
 
-### Keyword Query (Subject)
+### Keyword query (Subject)
 
 ```sql
 SELECT path, idx->>'Title' AS title
@@ -72,7 +72,7 @@ FROM object_state
 WHERE idx->'Subject' ?| ARRAY['Python', 'Plone'];
 ```
 
-### Path Query (Children of a Folder)
+### Path query (children of a folder)
 
 ```sql
 SELECT path, idx->>'Title' AS title
@@ -98,7 +98,7 @@ WHERE idx ? 'Subject'
 ORDER BY subject;
 ```
 
-## Performance Tips
+## Performance tips
 
 - Use `EXPLAIN ANALYZE` to check query plans.
 - The `idx` column has a GIN index -- `@>` containment is fast.
@@ -107,6 +107,6 @@ ORDER BY subject;
 - Path queries use expression B-tree indexes on `idx->>'path'` and `idx->>'path_parent'`.
 - For text fields, `to_tsvector('simple', idx->>'Title') @@ plainto_tsquery('simple', 'term')` uses the GIN expression index.
 
-## Important: Read-Only
+## Important: read-only
 
 Never modify catalog columns directly via SQL. Catalog writes must go through the ZODB transaction lifecycle (Plone -> `catalog_object()` -> `CatalogStateProcessor` -> atomic commit). Direct SQL updates will be overwritten on the next ZODB transaction that touches the same object.

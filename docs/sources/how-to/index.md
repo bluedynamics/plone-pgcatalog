@@ -1,11 +1,11 @@
-# How-To Guides
+# How-to guides
 
 <!-- diataxis: how-to -->
 
 Goal-oriented guides that show you how to solve specific problems.
 Each guide assumes you already have a working plone.pgcatalog installation.
 
-## Setup and Operations
+## Setup and operations
 
 ```{toctree}
 ---
@@ -17,7 +17,7 @@ deploy-production
 rebuild-catalog
 ```
 
-## Search and Languages
+## Search and languages
 
 ```{toctree}
 ---

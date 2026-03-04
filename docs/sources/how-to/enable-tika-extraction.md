@@ -1,6 +1,6 @@
 <!-- diataxis: how-to -->
 
-# Enable Tika Text Extraction
+# Enable Tika text extraction
 
 ## Overview
 
@@ -19,7 +19,7 @@ merges the extracted text into the object's `searchable_text` tsvector
 This feature is entirely opt-in. Without `PGCATALOG_TIKA_URL`, behavior
 is unchanged.
 
-## Step 1: Start Apache Tika
+## Step 1: start Apache Tika
 
 ### Docker (recommended)
 
@@ -54,7 +54,7 @@ multiple workers.
 Typical resource allocation: 512 MB–1 GB RAM. For OCR-heavy workloads
 (images, scanned PDFs), allocate more.
 
-## Step 2: Configure Environment Variables
+## Step 2: configure environment variables
 
 Set `PGCATALOG_TIKA_URL` before starting Zope:
 
@@ -69,7 +69,7 @@ This single variable enables the entire extraction pipeline:
 - The `CatalogStateProcessor` starts enqueuing extraction jobs for objects
   with extractable binary content
 
-### Optional: Customize Content Types
+### Optional: customize content types
 
 By default, the following MIME types are sent to Tika:
 
@@ -89,12 +89,12 @@ Override with a comma-separated list:
 export PGCATALOG_TIKA_CONTENT_TYPES=application/pdf,application/msword,image/jpeg
 ```
 
-## Step 3: Start the Extraction Worker
+## Step 3: start the extraction worker
 
 The worker dequeues jobs, fetches blobs, sends them to Tika, and writes
 extracted text back to PostgreSQL. There are two modes:
 
-### Option A: In-Process Worker (Development)
+### Option A: in-process worker (development)
 
 Add a second environment variable to run the worker as a daemon thread
 inside the Zope process:
@@ -112,7 +112,7 @@ down.
 This mode is convenient for development but uses Zope's process resources.
 For production, use the standalone worker.
 
-### Option B: Standalone Worker (Production)
+### Option B: standalone worker (production)
 
 Run the worker as a separate process or container:
 
@@ -141,7 +141,7 @@ export TIKA_WORKER_S3_REGION=us-east-1
 See {doc}`../reference/configuration` for the full list of worker
 environment variables.
 
-## Step 4: Rebuild the Catalog
+## Step 4: rebuild the catalog
 
 A full reindex is needed to enqueue extraction jobs for existing objects:
 
@@ -170,7 +170,7 @@ SELECT COUNT(*) FROM text_extraction_queue WHERE status = 'done';
 SELECT * FROM text_extraction_queue WHERE status = 'failed';
 ```
 
-## Step 5: Verify Extraction
+## Step 5: verify extraction
 
 Upload a PDF via Plone and wait a few seconds. Then query:
 
@@ -184,7 +184,7 @@ The tsvector should contain terms extracted from the PDF content (at
 weight `C`), alongside the synchronous Title/Description terms (at
 weights `A`/`B`).
 
-## How It Fits with BM25
+## How it fits with BM25
 
 When BM25 is active, the merge function also updates per-language BM25
 columns. Title gets 3x boosting (weight `A`), Description gets weight
@@ -196,7 +196,7 @@ the right behavior.
 See {doc}`../explanation/tika-extraction` for a detailed architecture
 explanation.
 
-## Disabling Extraction
+## Disabling extraction
 
 Remove `PGCATALOG_TIKA_URL` from the environment and restart Zope.
 The queue table remains but no new jobs are enqueued. Existing

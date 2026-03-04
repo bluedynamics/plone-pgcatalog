@@ -1,6 +1,6 @@
 <!-- diataxis: explanation -->
 
-# Security Hardening
+# Security hardening
 
 plone.pgcatalog constructs SQL queries from user-supplied search parameters. This
 makes SQL injection prevention, denial-of-service limits, and access control
