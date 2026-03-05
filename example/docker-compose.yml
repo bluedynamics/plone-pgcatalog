@@ -17,6 +17,39 @@ services:
       timeout: 3s
       retries: 5
 
+  minio:
+    image: minio/minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - miniodata:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    profiles:
+      - s3
+
+  createbucket:
+    image: minio/mc
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set myminio http://minio:9000 minioadmin minioadmin;
+      mc mb --ignore-existing myminio/zodb-blobs;
+      echo 'Bucket zodb-blobs created';
+      "
+    profiles:
+      - s3
+
   pgadmin:
     image: dpage/pgadmin4
     environment:
@@ -33,3 +66,4 @@ services:
 
 volumes:
   pgdata:
+  miniodata:

@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.0b16
+
+### Added
+
+- Add "Blob Storage" ZMI tab to portal_catalog showing blob statistics
+  (total count, size, per-tier breakdown for PG/S3), a logarithmic size
+  distribution histogram, and S3 tiering threshold visualization.
+
 ## 1.0.0b15
 
 ### Fixed

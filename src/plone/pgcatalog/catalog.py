@@ -62,6 +62,7 @@ from plone.pgcatalog.search import _PendingBrain
 from plone.pgcatalog.search import _run_search
 from Products.CMFCore.utils import UniqueObject
 from Products.ZCatalog.interfaces import IZCatalog
+from typing import ClassVar
 from zope.interface import implementer
 
 import logging
@@ -69,6 +70,19 @@ import warnings
 
 
 log = logging.getLogger(__name__)
+
+
+def _format_size(size_bytes):
+    """Format a byte count as a human-readable string."""
+    if size_bytes == 0:
+        return "0 B"
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if abs(size_bytes) < 1024:
+            if unit == "B":
+                return f"{size_bytes} B"
+            return f"{size_bytes:.1f} {unit}"
+        size_bytes /= 1024
+    return f"{size_bytes:.1f} PB"
 
 
 # ---------------------------------------------------------------------------
@@ -144,6 +158,9 @@ class PlonePGCatalogTool(UniqueObject, Folder):
     security.declareProtected(
         manage_zcatalog_entries, "manage_get_indexes_and_metadata"
     )
+    security.declareProtected(manage_zcatalog_entries, "manage_catalogBlobStats")
+    security.declareProtected(manage_zcatalog_entries, "manage_get_blob_stats")
+    security.declareProtected(manage_zcatalog_entries, "manage_get_blob_histogram")
 
     # -- Private methods (Python-only, no through-the-web access) ------------
     security.declarePrivate("unrestrictedSearchResults")
@@ -163,6 +180,7 @@ class PlonePGCatalogTool(UniqueObject, Folder):
         {"action": "manage_catalogView", "label": "Catalog"},
         {"action": "manage_catalogAdvanced", "label": "Advanced"},
         {"action": "manage_catalogIndexesAndMetadata", "label": "Indexes & Metadata"},
+        {"action": "manage_catalogBlobStats", "label": "Blob Storage"},
     )
 
     # Simplified Advanced tab: only Update Catalog and Clear and Rebuild.
@@ -177,6 +195,9 @@ class PlonePGCatalogTool(UniqueObject, Folder):
     manage_catalogIndexesAndMetadata = DTMLFile(
         "www/catalogIndexesAndMetadata", globals()
     )
+
+    # Blob Storage tab.
+    manage_catalogBlobStats = DTMLFile("www/catalogBlobStats", globals())
 
     # Wrap each index with PGIndex — provides PG-backed _index and uniqueValues().
     Indexes = PGCatalogIndexes()
@@ -976,6 +997,162 @@ class PlonePGCatalogTool(UniqueObject, Folder):
             "index_count": len(indexes),
             "metadata_count": len(metadata),
         }
+
+    def manage_get_blob_stats(self):
+        """Return blob storage statistics for the Blob Storage ZMI tab."""
+        conn = self._get_pg_read_connection()
+        with conn.cursor() as cur:
+            cur.execute("SELECT to_regclass('blob_state') IS NOT NULL AS exists")
+            if not cur.fetchone()["exists"]:
+                return {"available": False}
+
+            cur.execute(
+                "SELECT"
+                "  COUNT(*) AS total_blobs,"
+                "  COUNT(DISTINCT zoid) AS unique_objects,"
+                "  COALESCE(SUM(blob_size), 0) AS total_size,"
+                "  COUNT(*) FILTER (WHERE data IS NOT NULL) AS pg_count,"
+                "  COALESCE(SUM(blob_size) FILTER (WHERE data IS NOT NULL), 0)"
+                "    AS pg_size,"
+                "  COUNT(*) FILTER (WHERE s3_key IS NOT NULL AND data IS NULL)"
+                "    AS s3_count,"
+                "  COALESCE(SUM(blob_size)"
+                "    FILTER (WHERE s3_key IS NOT NULL AND data IS NULL), 0)"
+                "    AS s3_size,"
+                "  COALESCE(MAX(blob_size), 0) AS largest_blob,"
+                "  COALESCE(AVG(blob_size)::bigint, 0) AS avg_blob_size"
+                " FROM blob_state"
+            )
+            row = cur.fetchone()
+
+        total_blobs = row["total_blobs"]
+        unique_objects = row["unique_objects"]
+        avg_versions = (
+            round(total_blobs / unique_objects, 1) if unique_objects > 0 else 0
+        )
+
+        return {
+            "available": True,
+            "total_blobs": total_blobs,
+            "unique_objects": unique_objects,
+            "total_size": row["total_size"],
+            "total_size_display": _format_size(row["total_size"]),
+            "pg_count": row["pg_count"],
+            "pg_size": row["pg_size"],
+            "pg_size_display": _format_size(row["pg_size"]),
+            "s3_count": row["s3_count"],
+            "s3_size": row["s3_size"],
+            "s3_size_display": _format_size(row["s3_size"]),
+            "largest_blob": row["largest_blob"],
+            "largest_blob_display": _format_size(row["largest_blob"]),
+            "avg_blob_size": row["avg_blob_size"],
+            "avg_blob_size_display": _format_size(row["avg_blob_size"]),
+            "avg_versions": avg_versions,
+        }
+
+    # Logarithmic bucket boundaries: 10 KB, 100 KB, ... 1 GB
+    _HISTOGRAM_BOUNDARIES: ClassVar[list[int]] = [
+        10240,  # 10 KB
+        102400,  # 100 KB
+        1048576,  # 1 MB
+        10485760,  # 10 MB
+        104857600,  # 100 MB
+        1073741824,  # 1 GB
+    ]
+
+    def _get_blob_threshold(self):
+        """Return S3 blob threshold in bytes, or None if S3 is not configured."""
+        try:
+            storage = self._p_jar._storage
+            if getattr(storage, "_s3_client", None) is not None:
+                return getattr(storage, "_blob_threshold", None)
+        except (AttributeError, TypeError):
+            pass
+        return None
+
+    def manage_get_blob_histogram(self):
+        """Return size distribution histogram for the Blob Storage ZMI tab.
+
+        Uses logarithmic (power-of-ten) buckets: 0–10 KB, 10–100 KB, …
+        Only includes buckets that overlap the actual data range.
+        Returns a list of dicts with label, count, pct, and tier.
+        tier is 'pg', 's3', or 'mixed' based on the S3 blob threshold.
+        Empty list if no blobs exist.
+        """
+        conn = self._get_pg_read_connection()
+        with conn.cursor() as cur:
+            cur.execute("SELECT to_regclass('blob_state') IS NOT NULL AS exists")
+            if not cur.fetchone()["exists"]:
+                return []
+
+            cur.execute(
+                "SELECT MIN(blob_size) AS min_size,"
+                "  MAX(blob_size) AS max_size,"
+                "  COUNT(*) AS cnt"
+                " FROM blob_state"
+            )
+            info = cur.fetchone()
+            if info["cnt"] == 0:
+                return []
+
+            # Build boundaries that cover the actual data range
+            boundaries = [0]
+            for b in self._HISTOGRAM_BOUNDARIES:
+                boundaries.append(b)
+                if b > info["max_size"]:
+                    break
+            else:
+                # max_size exceeds all predefined boundaries
+                boundaries.append(info["max_size"] + 1)
+
+            # Single SQL: count per bucket using CASE/WHEN
+            cases = []
+            params = {}
+            for i in range(len(boundaries) - 1):
+                lo_key = f"lo_{i}"
+                hi_key = f"hi_{i}"
+                cases.append(
+                    f"COUNT(*) FILTER ("
+                    f"WHERE blob_size >= %({lo_key})s"
+                    f"  AND blob_size < %({hi_key})s"
+                    f") AS bucket_{i}"
+                )
+                params[lo_key] = boundaries[i]
+                params[hi_key] = boundaries[i + 1]
+
+            cur.execute(
+                f"SELECT {', '.join(cases)} FROM blob_state",
+                params,
+            )
+            row = cur.fetchone()
+
+        max_count = max(row[f"bucket_{i}"] for i in range(len(boundaries) - 1))
+        max_count = max_count or 1
+        threshold = self._get_blob_threshold()
+        buckets = []
+        for i in range(len(boundaries) - 1):
+            lo = boundaries[i]
+            hi = boundaries[i + 1]
+            count = row[f"bucket_{i}"]
+            pct = round(count / max_count * 100)
+            # Classify tier based on S3 threshold
+            if threshold is None:
+                tier = ""
+            elif hi <= threshold:
+                tier = "pg"
+            elif lo >= threshold:
+                tier = "s3"
+            else:
+                tier = "mixed"
+            buckets.append(
+                {
+                    "label": f"{_format_size(lo)} – {_format_size(hi)}",
+                    "count": count,
+                    "pct": pct,
+                    "tier": tier,
+                }
+            )
+        return buckets
 
     # -- Helpers (delegated to extraction.py) --------------------------------
 
