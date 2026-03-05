@@ -5,18 +5,22 @@
 ## Overview
 
 By default, Plone indexes text from rich-text fields (Title, Description,
-body) into `searchable_text`. Binary content — PDFs, Word documents, Excel
-spreadsheets, images — is not searchable because Plone cannot extract text
+body) into `searchable_text`.
+Binary content—PDFs, Word documents, Excel
+spreadsheets, images—is not searchable because Plone cannot extract text
 from them.
 
 Apache Tika is a stateless HTTP service that extracts text from over 1400
-file formats, including OCR for images via Tesseract. When enabled,
+file formats, including OCR for images via Tesseract.
+When enabled,
 plone.pgcatalog enqueues binary content for asynchronous extraction via a
-PostgreSQL job queue. A background worker sends each blob to Tika and
+PostgreSQL job queue.
+A background worker sends each blob to Tika and
 merges the extracted text into the object's `searchable_text` tsvector
 (and BM25 columns, if active).
 
-This feature is entirely opt-in. Without `PGCATALOG_TIKA_URL`, behavior
+This feature is entirely opt-in.
+Without `PGCATALOG_TIKA_URL`, behavior
 is unchanged.
 
 ## Step 1: start Apache Tika
@@ -47,11 +51,14 @@ docker compose --profile tika up -d tika
 ### Production
 
 In production, Tika should run as a separate service (or sidecar container)
-accessible from the Zope/worker processes. Tika is stateless and needs no
-persistent storage. A single Tika instance handles concurrent requests from
+accessible from the Zope/worker processes.
+Tika is stateless and needs no
+persistent storage.
+A single Tika instance handles concurrent requests from
 multiple workers.
 
-Typical resource allocation: 512 MB–1 GB RAM. For OCR-heavy workloads
+Typical resource allocation: 512 MB–1 GB RAM.
+For OCR-heavy workloads
 (images, scanned PDFs), allocate more.
 
 ## Step 2: configure environment variables
@@ -92,7 +99,8 @@ export PGCATALOG_TIKA_CONTENT_TYPES=application/pdf,application/msword,image/jpe
 ## Step 3: start the extraction worker
 
 The worker dequeues jobs, fetches blobs, sends them to Tika, and writes
-extracted text back to PostgreSQL. There are two modes:
+extracted text back to PostgreSQL.
+Two modes are available:
 
 ### Option A: in-process worker (development)
 
@@ -104,9 +112,11 @@ export PGCATALOG_TIKA_URL=http://localhost:9998
 export PGCATALOG_TIKA_INPROCESS=true
 ```
 
-The thread starts automatically on Zope startup. It shares nothing with
-Zope's ZODB connections — it opens its own PostgreSQL connection and HTTP
-client. The thread is marked `daemon=True`, so it stops when Zope shuts
+The thread starts automatically on Zope startup.
+It shares nothing with
+Zope's ZODB connections—it opens its own PostgreSQL connection and HTTP
+client.
+The thread is marked `daemon=True`, so it stops when Zope shuts
 down.
 
 This mode is convenient for development but uses Zope's process resources.
@@ -145,8 +155,10 @@ environment variables.
 
 A full reindex is needed to enqueue extraction jobs for existing objects:
 
-1. Go to ZMI > portal_catalog > Advanced tab
-2. Click "Clear and Rebuild"
+1.
+Go to ZMI > portal_catalog > Advanced tab
+2.
+Click "Clear and Rebuild"
 
 Or via script:
 
@@ -156,7 +168,8 @@ catalog.clearFindAndRebuild()
 import transaction; transaction.commit()
 ```
 
-After the rebuild, the worker processes enqueued jobs. You can monitor
+After the rebuild, the worker processes enqueued jobs.
+You can monitor
 progress:
 
 ```sql
@@ -172,7 +185,8 @@ SELECT * FROM text_extraction_queue WHERE status = 'failed';
 
 ## Step 5: verify extraction
 
-Upload a PDF via Plone and wait a few seconds. Then query:
+Upload a PDF via Plone and wait a few seconds.
+Then query:
 
 ```sql
 SELECT searchable_text::text
@@ -187,10 +201,12 @@ weights `A`/`B`).
 ## How it fits with BM25
 
 When BM25 is active, the merge function also updates per-language BM25
-columns. Title gets 3x boosting (weight `A`), Description gets weight
-`B`, and extracted blob text gets weight `C`. This means a search for
+columns.
+Title gets 3x boosting (weight `A`), Description gets weight
+`B`, and extracted blob text gets weight `C`.
+This means a search for
 "quantum computing" ranks a document with "quantum computing" in the
-title higher than one that only mentions it in an attached PDF — exactly
+title higher than one that only mentions it in an attached PDF—exactly
 the right behavior.
 
 See {doc}`../explanation/tika-extraction` for a detailed architecture
@@ -199,7 +215,8 @@ explanation.
 ## Disabling extraction
 
 Remove `PGCATALOG_TIKA_URL` from the environment and restart Zope.
-The queue table remains but no new jobs are enqueued. Existing
+The queue table remains but no new jobs are enqueued.
+Existing
 `searchable_text` values are preserved.
 
 To clean up the queue table:

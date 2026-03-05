@@ -5,8 +5,9 @@
 ## What you will build
 
 A Plone site with English, German, and Chinese content, where search results
-are ranked using language-specific stemming.  German "Vulkan" will match
-"Vulkane", English "running" will match "run", and Chinese text is properly
+are ranked using language-specific stemming.
+German "Vulkan" will match
+"Vulkane," English "running" will match "run," and Chinese text is properly
 segmented.
 
 By the end of this tutorial you will understand how plone.pgcatalog uses
@@ -21,7 +22,8 @@ that stemming is working correctly.
 
 :::{tip}
 The {doc}`quickstart-demo` tutorial sets up a multilingual site with ~800
-example articles in three languages.  Follow that first if you do not have a
+example articles in three languages.
+Follow that first if you do not have a
 multilingual site ready.
 :::
 
@@ -44,45 +46,49 @@ print(f"Available: {settings.available_languages}")
 print(f"Default:   {settings.default_language}")
 ```
 
-Every content object carries a `Language` field.  When plone.pgcatalog indexes
+Every content object carries a `Language` field.
+When plone.pgcatalog indexes
 an object, it uses this field to select the PostgreSQL text search
 configuration for stemming.
 
 ## Step 2: understand how stemming works
 
 plone.pgcatalog maps each object's `Language` field to a PostgreSQL text search
-configuration via the `pgcatalog_lang_to_regconfig()` SQL function.  Here are
+configuration via the `pgcatalog_lang_to_regconfig()` SQL function.
+Here are
 some common mappings:
 
 | Language | ISO Code | PG Configuration | What It Does |
 |---|---|---|---|
-| English | `en` | `english` | "running" -> "run", removes "the", "is" |
-| German | `de` | `german` | "Vulkane" -> "vulkan", removes "der", "die" |
-| French | `fr` | `french` | "coureurs" -> "coureur", removes "le", "la" |
-| Spanish | `es` | `spanish` | "corriendo" -> "corr", removes "el", "la" |
+| English | `en` | `english` | "running" -> "run," removes "the," "is" |
+| German | `de` | `german` | "Vulkane" -> "vulkan," removes "der," "die" |
+| French | `fr` | `french` | "coureurs" -> "coureur," removes "le," "la" |
+| Spanish | `es` | `spanish` | "corriendo" -> "corr," removes "el," "la" |
 | Chinese | `zh` | `simple` | Basic tokenization (BM25 adds jieba segmentation) |
 
-PostgreSQL ships with built-in support for about 30 languages.  The `simple`
+PostgreSQL ships with built-in support for about 30 languages.
+The `simple`
 configuration performs basic whitespace tokenization without stemming -- used as
 a fallback for languages without a dedicated stemmer.
 
 This means a German search for "Vulkan" will find articles containing
-"Vulkane", "Vulkans", or "vulkanisch" -- the stemmer reduces them all to the
+"Vulkane," "Vulkans," or "vulkanisch" -- the stemmer reduces them all to the
 same root form.
 
 ## Step 3: create test content
 
 If you followed the {doc}`quickstart-demo` tutorial, you already have
-multilingual content.  Otherwise, create a few test documents to see stemming
+multilingual content.
+Otherwise, create a few test documents to see stemming
 in action.
 
 In each language folder, create a Document with content that includes different
 word forms:
 
 - **English** (`/Plone/en/`): Create a Document titled "Volcanic Activity" with
-  body text mentioning "volcano", "volcanoes", "volcanic", and "volcanism".
+  body text mentioning "volcano," "volcanoes," "volcanic," and "volcanism."
 - **German** (`/Plone/de/`): Create a Document titled "Vulkanische Aktivitaet"
-  with body text mentioning "Vulkan", "Vulkane", "Vulkans", and "vulkanisch".
+  with body text mentioning "Vulkan," "Vulkane," "Vulkans," and "vulkanisch."
 
 Publish both documents so they appear in search results.
 
@@ -100,8 +106,9 @@ curl -s "http://localhost:8081/Plone/de/@search?SearchableText=Vulkan&sort_limit
   -H "Accept: application/json" -u admin:admin | python -m json.tool
 ```
 
-When searching within a language folder (e.g., `/Plone/de/`), Plone
-automatically restricts results to that path.  The `Language` index is also
+When searching within a language folder (for example, `/Plone/de/`), Plone
+automatically restricts results to that path.
+The `Language` index is also
 available as an explicit query parameter.
 
 ### Via Python
@@ -131,7 +138,8 @@ English stemmer reduces both to the same root.
 ## Step 5: enable BM25 for better CJK search (optional)
 
 PostgreSQL's `simple` text search configuration provides basic whitespace
-tokenization for Chinese, Japanese, and Korean.  This works for queries where
+tokenization for Chinese, Japanese, and Korean.
+This works for queries where
 the user types exact character sequences, but it cannot segment continuous text
 into words.
 
@@ -167,7 +175,7 @@ transaction.commit()
 :::{note}
 BM25 requires the `tensorchord/vchord-suite:pg17-latest` Docker image (or
 equivalent PostgreSQL installation with `pg_tokenizer` and `vchord_bm25`
-extensions).  plone.pgcatalog auto-detects these extensions at startup and
+extensions).  plone.pgcatalog autodetects these extensions at startup and
 falls back to tsvector ranking when they are not available.
 :::
 

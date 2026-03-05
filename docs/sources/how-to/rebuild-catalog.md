@@ -15,8 +15,10 @@ Clears all catalog data and re-indexes every object by traversing the site.
 
 Via ZMI:
 
-1. Navigate to portal_catalog > Advanced tab
-2. Click "Clear and Rebuild"
+1.
+Navigate to portal_catalog > Advanced tab
+2.
+Click "Clear and Rebuild"
 
 Via script:
 
@@ -41,7 +43,8 @@ Useful after changing an indexer or adding a new index.
 
 ## Partial reindex (automatic)
 
-When Plone calls `reindexObject(idxs=["review_state"])`, plone.pgcatalog uses a lightweight JSONB merge (`||` operator) instead of full re-extraction. This happens automatically and does not trigger ZODB serialization of the object.
+When Plone calls `reindexObject(idxs=["review_state"])`, plone.pgcatalog uses a lightweight JSONB merge (`||` operator) instead of full re-extraction.
+This happens automatically and does not trigger ZODB serialization of the object.
 
 ## Choosing the right operation
 
@@ -54,16 +57,19 @@ When Plone calls `reindexObject(idxs=["review_state"])`, plone.pgcatalog uses a 
 
 **`clearFindAndRebuild()`** NULLs all catalog columns (path, idx,
 searchable_text, backend extras), then traverses the entire portal tree
-and calls `catalog_object()` on every object found.  Use this when
+and calls `catalog_object()` on every object found.
+Use this when
 catalog data might be inconsistent with actual content.
 
 **`refreshCatalog(clear=0)`** reads all cataloged paths from PostgreSQL,
-resolves each from ZODB, and re-extracts index values.  It does not
+resolves each from ZODB, and re-extracts index values.
+It does not
 discover objects that were never cataloged.
 
 **`reindexIndex("name")`** is a PostgreSQL-only operation: it reads the
 existing `idx` JSONB for all objects that have the named key and
-re-applies it.  It does not re-extract values from the live Zope object.
+re-applies it.
+It does not re-extract values from the live Zope object.
 To re-extract from objects, use `refreshCatalog()`.
 
 ## Troubleshooting

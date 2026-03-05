@@ -5,7 +5,8 @@
 ## What you will do
 
 Take an existing Plone 6 site that uses the standard ZCatalog and migrate all
-catalog data to PostgreSQL.  After this tutorial, your site will use
+catalog data to PostgreSQL.
+After this tutorial, your site will use
 plone.pgcatalog for all catalog operations while the standard Plone API
 continues to work unchanged.
 
@@ -18,7 +19,8 @@ continues to work unchanged.
 
 :::{note}
 plone.pgcatalog requires zodb-pgjsonb because it stores catalog data as extra
-columns in the same `object_state` table that holds ZODB objects.  If your site
+columns in the same `object_state` table that holds ZODB objects.
+If your site
 uses FileStorage or RelStorage with MySQL, you will need to migrate to
 zodb-pgjsonb first.
 :::
@@ -40,19 +42,24 @@ Adjust the host, port, and credentials to match your environment.
 uv pip install plone.pgcatalog
 ```
 
-The package is auto-discovered by Plone via `z3c.autoinclude`.  No ZCML slug
+The package is autodiscovered by Plone via `z3c.autoinclude`.
+No ZCML slug
 or manual include is needed.
 
 ## Step 3: apply the GenericSetup profile
 
-You have two options: use the Plone web UI, or run a zconsole script.  The
+You have two options: use the Plone web UI, or run a zconsole script.
+The
 result is the same.
 
 ### Option A: via the Plone add-on installer
 
-1. Log in as a Manager user
-2. Go to **Site Setup** > **Add-ons**
-3. Find **plone.pgcatalog** in the list and click **Install**
+1.
+Log in as a Manager user
+2.
+Go to **Site Setup** > **Add-ons**
+3.
+Find **plone.pgcatalog** in the list and click **Install**
 
 ### Option B: via a zconsole script
 
@@ -105,12 +112,14 @@ The GenericSetup profile performs these changes:
 
 :::{tip}
 The old ZCatalog's BTree data (the actual indexed values) becomes unreferenced
-in ZODB after migration.  Run a ZODB pack after migration to reclaim the space.
+in ZODB after migration.
+Run a ZODB pack after migration to reclaim the space.
 :::
 
 ## Step 4: rebuild the catalog
 
-The old ZCatalog BTree data is now irrelevant.  You need to populate the
+The old ZCatalog BTree data is now irrelevant.
+You need to populate the
 PostgreSQL catalog columns from your existing content objects.
 
 Create a file called `rebuild.py`:
@@ -149,8 +158,10 @@ Run it:
 ```
 
 :::{note}
-Expected timing: approximately 15 ms per object.  A site with 10,000 objects
-takes about 2.5 minutes.  Large sites with 100,000+ objects may take 25 minutes
+Expected timing: approximately 15 ms per object.
+A site with 10,000 objects
+takes about 2.5 minutes.
+Large sites with 100,000+ objects may take 25 minutes
 or more.
 :::
 
@@ -237,20 +248,23 @@ and how to resolve them.
 
 Code that calls ZCatalog internal methods needs updating.
 `PlonePGCatalogTool` does not inherit from ZCatalog and blocks methods
-that have no PostgreSQL equivalent.  See {doc}`../reference/zcatalog-compat`
+that have no PostgreSQL equivalent.
+See {doc}`../reference/zcatalog-compat`
 for blocked methods and their replacements.
 
 ### Object count is zero after migration
 
 The GenericSetup profile replaces the catalog tool but does not populate
-PostgreSQL data.  We need to run `clearFindAndRebuild()` (Step 4 above)
+PostgreSQL data.
+We need to run `clearFindAndRebuild()` (Step 4 above)
 to traverse the site and index all content objects.
 
 ### Addon indexes are missing
 
 The install step snapshots existing indexes before replacing the catalog.
 If addons were installed *after* applying the plone.pgcatalog profile,
-their indexes will not be in the snapshot.  To fix this, either:
+their indexes will not be in the snapshot.
+To fix this, either:
 
 - Re-apply the addon's `catalog.xml` via GenericSetup, or
 - Restart Zope -- `sync_from_catalog()` runs at startup and discovers
@@ -264,13 +278,15 @@ See {doc}`../reference/zcatalog-compat` for all deprecated methods.
 ### Full-text search returns no results
 
 Run `clearFindAndRebuild()` to populate the `searchable_text` tsvector
-column.  Individual `reindexObject()` calls update the `idx` JSONB but
+column.
+Individual `reindexObject()` calls update the `idx` JSONB but
 only rebuild `searchable_text` when all indexes are reindexed.
 
 ### Permission errors after migration
 
 plone.pgcatalog declares the same permissions as ZCatalog, so existing
-role mappings carry over.  If you still see `Unauthorized`, check the
+role mappings carry over.
+If you still see `Unauthorized`, check the
 {doc}`../reference/permissions` page to verify which permission protects
 the method you are calling.
 

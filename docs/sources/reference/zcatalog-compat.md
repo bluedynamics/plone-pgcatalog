@@ -71,12 +71,14 @@ the minimal API that ZCatalog-aware code expects:
 
 For existing ZODB instances that were migrated from ZCatalog, the old
 `Catalog` object persists in ZODB and already has `.indexes` and `.schema`
-attributes.  The code only reads these attributes, so it works without
+attributes.
+The code only reads these attributes, so it works without
 an additional migration step.
 
 ## PGCatalogIndexes and PGIndex
 
-`catalog.Indexes` returns a `PGCatalogIndexes` wrapper.  Accessing an
+`catalog.Indexes` returns a `PGCatalogIndexes` wrapper.
+Accessing an
 index by name returns a `PGIndex` proxy:
 
 ```python
@@ -101,10 +103,12 @@ Non-JSON-native metadata values (Zope `DateTime`, `datetime`, `date`,
 etc.) are stored under `idx["@meta"]` at write time via the Rust codec
 (`pickle_to_dict`).  On first access, the `@meta` dict is decoded via
 `dict_to_pickle` + `pickle.loads` and cached per brain for the lifetime
-of the result set.  This ensures `brain.effective` returns a `DateTime`
+of the result set.
+This ensures `brain.effective` returns a `DateTime`
 object, not an ISO string.
 
 The `AttributeError` for unknown attributes is intentional:
 `CatalogContentListingObject.__getattr__()` catches it and falls back to
-`getObject()`, loading the real content object.  Returning `None` instead
+`getObject()`, loading the real content object.
+Returning `None` instead
 would cause `plone.restapi` and listing views to display `None` values.

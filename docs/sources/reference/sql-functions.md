@@ -27,7 +27,8 @@ pgcatalog_lang_to_regconfig(text) -> text
 ```
 
 Maps ISO 639-1 language codes to PostgreSQL text search configuration
-names. Used in the `searchable_text` tsvector generation to select a
+names.
+Used in the `searchable_text` tsvector generation to select a
 per-object language configuration.
 
 Returns `'simple'` for unrecognized codes or `NULL` input.
@@ -74,21 +75,25 @@ pgcatalog_merge_extracted_text(p_zoid BIGINT, p_text TEXT) -> void
 ```
 
 Merges Tika-extracted text into the `searchable_text` tsvector for a
-given object. Created when `PGCATALOG_TIKA_URL` is set.
+given object.
+Created when `PGCATALOG_TIKA_URL` is set.
 
 The exact implementation depends on the active search backend:
 
 - **TsvectorBackend**: Appends the extracted text as a tsvector at
-  weight `C` to the existing `searchable_text` column. Uses the
+  weight `C` to the existing `searchable_text` column.
+  Uses the
   object's `Language` from `idx` to select the appropriate regconfig.
 
 - **BM25Backend**: Same tsvector merge as above, plus rebuilds all
   per-language BM25 columns with a combined text of
-  Title (3x) + Description + extracted text. This preserves the BM25
+  Title (3x) + Description + extracted text.
+  This preserves the BM25
   weight hierarchy.
 
-Called by the `TikaWorker` after successful text extraction. The worker
-does not need to know which backend is active — it always calls the
+Called by the `TikaWorker` after successful text extraction.
+The worker
+does not need to know which backend is active—it always calls the
 same function name.
 
 ### notify_extraction_ready
@@ -98,7 +103,8 @@ notify_extraction_ready() -> trigger
 ```
 
 Trigger function that fires `pg_notify('text_extraction_ready', NEW.id::text)`
-on every INSERT into `text_extraction_queue`. Attached via the
+on every INSERT into `text_extraction_queue`.
+Attached via the
 `trg_notify_extraction` trigger.
 
 Used by the extraction worker's `LISTEN` loop for instant wakeup.
@@ -106,7 +112,8 @@ Used by the extraction worker's `LISTEN` loop for instant wakeup.
 ## rrule functions
 
 The `rrule` schema contains a pure PL/pgSQL implementation of RFC 5545
-RRULE expansion. These functions are installed automatically at startup
+RRULE expansion.
+These functions are installed automatically at startup
 and do not require any C extensions.
 
 The schema is created idempotently using `CREATE SCHEMA IF NOT EXISTS`
@@ -124,7 +131,8 @@ rrule."between"(
 ```
 
 Returns all occurrences of the recurrence rule between `range_start` and
-`range_end` (inclusive). The recurrence is computed from `dtstart` using
+`range_end` (inclusive).
+The recurrence is computed from `dtstart` using
 the RRULE string.
 
 Used by `DateRecurringIndex` and `DateRangeInRangeIndex` translators for
@@ -142,7 +150,8 @@ rrule."after"(
 ```
 
 Returns up to `count` occurrences of the recurrence rule that fall after
-the given timestamp. The recurrence is computed from `dtstart` using the
+the given timestamp.
+The recurrence is computed from `dtstart` using the
 RRULE string.
 
 Used by `DateRecurringIndex` for `range="min"` queries (finding future

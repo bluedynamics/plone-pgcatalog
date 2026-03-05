@@ -240,3 +240,4 @@ norwegian
 portuguese
 romanian
 pending
+[Aa]uto(detect(ed|s|ion)?|discover(ed|s|y)|creat(ed|es)|inject|appli(ed|es)|populat(ed|es))

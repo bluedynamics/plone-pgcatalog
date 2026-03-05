@@ -4,7 +4,9 @@
 
 ## Overview
 
-BM25 provides probabilistic relevance ranking, improving search quality over tsvector's `ts_rank_cd()`. It is auto-detected at startup -- no code changes are needed. When BM25 extensions are available, plone.pgcatalog switches from `TsvectorBackend` to `BM25Backend` automatically.
+BM25 provides probabilistic relevance ranking, improving search quality over tsvector's `ts_rank_cd()`.
+It is autodetected at startup -- no code changes are needed.
+When BM25 extensions are available, plone.pgcatalog switches from `TsvectorBackend` to `BM25Backend` automatically.
 
 ## Step 1: install VectorChord-BM25
 
@@ -22,7 +24,7 @@ docker run -d --name plone-pg-bm25 \
 ### Manual installation
 
 Install the `vchord_bm25` and `pg_tokenizer` PostgreSQL extensions.
-Both must appear in `pg_available_extensions` for auto-detection to succeed.
+Both must appear in `pg_available_extensions` for autodetection to succeed.
 See the [VectorChord-BM25 documentation](https://github.com/tensorchord/VectorChord-bm25) for build instructions.
 
 ## Step 2: configure languages
@@ -40,18 +42,23 @@ export PGCATALOG_BM25_LANGUAGES=auto
 export PGCATALOG_BM25_LANGUAGES=en
 ```
 
-Each language gets a dedicated `search_bm25_{lang}` column with a language-specific tokenizer (Snowball stemmer for Western languages, jieba/lindera for CJK). A fallback `search_bm25` column is always created for unmapped languages and cross-language search.
+Each language gets a dedicated `search_bm25_{lang}` column with a language-specific tokenizer (Snowball stemmer for Western languages, jieba/lindera for CJK).
+A fallback `search_bm25` column is always created for unmapped languages and cross-language search.
 
 See {doc}`../reference/search-backends` for the full `LANG_TOKENIZER_MAP`.
 
 ## Step 3: restart Zope
 
-On restart, plone.pgcatalog auto-detects the extensions and:
+On restart, plone.pgcatalog autodetects the extensions and:
 
-1. Creates per-language `search_bm25_{lang}` columns on `object_state`
-2. Sets up tokenizers via `pg_tokenizer` (`create_tokenizer()`)
-3. Creates BM25 indexes for each column
-4. Switches the active backend from `TsvectorBackend` to `BM25Backend`
+1.
+Creates per-language `search_bm25_{lang}` columns on `object_state`
+2.
+Sets up tokenizers via `pg_tokenizer` (`create_tokenizer()`)
+3.
+Creates BM25 indexes for each column
+4.
+Switches the active backend from `TsvectorBackend` to `BM25Backend`
 
 Check the log for:
 
@@ -63,8 +70,10 @@ BM25 search backend activated (languages=['en', 'de', 'fr'])
 
 A full reindex is required to populate the new BM25 columns:
 
-1. Go to ZMI > portal_catalog > Advanced tab
-2. Click "Clear and Rebuild"
+1.
+Go to ZMI > portal_catalog > Advanced tab
+2.
+Click "Clear and Rebuild"
 
 Or via script:
 

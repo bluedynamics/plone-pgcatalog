@@ -27,7 +27,7 @@ plone.pgcatalog discovers its PostgreSQL connection from the storage layer.
 </zodb_db>
 ```
 
-plone.pgcatalog is auto-discovered via `z3c.autoinclude` -- no `%import` needed for the catalog itself.
+plone.pgcatalog is autodiscovered via `z3c.autoinclude` -- no `%import` needed for the catalog itself.
 
 ## Apply the GenericSetup profile
 

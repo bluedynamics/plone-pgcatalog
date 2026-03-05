@@ -38,8 +38,8 @@ No special operator configuration is needed beyond the standard PostgreSQL image
 
 ## Performance tuning
 
-- Set ZODB `cache-size` high (e.g., 10000) -- no BTree pressure means more cache available for application objects.
-- PostgreSQL auto-creates all necessary indexes at startup via the `CatalogStateProcessor` DDL. No manual index creation is needed.
+- Set ZODB `cache-size` high (for example, 10000) -- no BTree pressure means more cache available for application objects.
+- PostgreSQL autocreates all necessary indexes at startup via the `CatalogStateProcessor` DDL. No manual index creation is needed.
 - Run `ANALYZE object_state` after large bulk imports to update planner statistics.
 - Configure `autovacuum` for the `object_state` table. With frequent catalog writes, increase `autovacuum_analyze_threshold`:
 
@@ -78,6 +78,11 @@ SELECT COUNT(*) FROM object_state WHERE idx IS NOT NULL;
 
 ## Upgrading plone.pgcatalog
 
-1. Install the new version of plone.pgcatalog.
-2. Restart Zope. Schema updates (new columns, functions, indexes) are applied automatically at startup by the `IDatabaseOpenedWithRoot` subscriber.
-3. If release notes mention schema changes that require reindexing: run `clearFindAndRebuild()` from the ZMI Advanced tab or via script. See {doc}`rebuild-catalog`.
+1.
+Install the new version of plone.pgcatalog.
+2.
+Restart Zope.
+Schema updates (new columns, functions, indexes) are applied automatically at startup by the `IDatabaseOpenedWithRoot` subscriber.
+3.
+If release notes mention schema changes that require reindexing: run `clearFindAndRebuild()` from the ZMI Advanced tab or via script.
+See {doc}`rebuild-catalog`.

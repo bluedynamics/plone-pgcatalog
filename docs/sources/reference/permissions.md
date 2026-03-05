@@ -3,7 +3,8 @@
 # Permissions
 
 `PlonePGCatalogTool` declares Zope `AccessControl` permissions on all
-public methods.  The permission model mirrors ZCatalog so existing role
+public methods.
+The permission model mirrors ZCatalog so existing role
 assignments carry over after migration.
 
 ## Permission tiers
@@ -89,6 +90,7 @@ through-the-web or via URL traversal:
 ## ZCatalog parity
 
 Permissions are identical to those declared by ZCatalog and CMFPlone's
-`CatalogTool`.  After migrating from ZCatalog, any custom role-permission
+`CatalogTool`.
+After migrating from ZCatalog, any custom role-permission
 mappings defined in your site's `portal_catalog` Security tab carry over
 unchanged.

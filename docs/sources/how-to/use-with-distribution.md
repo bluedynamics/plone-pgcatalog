@@ -38,7 +38,8 @@ pgcatalog-example-distribution/
           schema.json
 ```
 
-The `schema.json` defines the site creation form fields (site_id, title, language, timezone). The `profiles.json` lists the GenericSetup profiles to apply.
+The `schema.json` defines the site creation form fields (site_id, title, language, timezone).
+The `profiles.json` lists the GenericSetup profiles to apply.
 
 ## Site Creation via REST API
 

@@ -8,7 +8,8 @@ mapping, and backend detection.
 
 ## SearchBackend ABC
 
-Defined in `plone.pgcatalog.backends`. All search backends inherit
+Defined in `plone.pgcatalog.backends`.
+All search backends inherit
 from this abstract base class.
 
 | Method | Returns | Purpose |
@@ -29,7 +30,8 @@ from this abstract base class.
 
 ## TsvectorBackend
 
-Always available. Uses PostgreSQL's built-in full-text search.
+Always available.
+Uses PostgreSQL's built-in full-text search.
 
 **Ranking:** `ts_rank_cd()` with weighted tsvector.
 
@@ -51,13 +53,15 @@ Ranking weights array: `{0.1, 0.2, 0.4, 1.0}` (D, C, B, A).
 
 ## BM25Backend
 
-Optional. Requires VectorChord-BM25 (`vchord_bm25`) and pg_tokenizer
+Optional.
+Requires VectorChord-BM25 (`vchord_bm25`) and pg_tokenizer
 (`pg_tokenizer`) PostgreSQL extensions.
 
 **Ranking:** BM25 scoring via the `<&>` operator with `to_bm25query()`.
 
 **Pre-filter:** The tsvector GIN index eliminates non-matching rows
-before BM25 scoring is applied. Both the tsvector WHERE clause and
+before BM25 scoring is applied.
+Both the tsvector WHERE clause and
 the BM25 rank expression are generated together.
 
 **Title boost:** Title text is repeated 3x in the tokenized input for
@@ -70,16 +74,21 @@ field boosting.
 - `search_bm25` (BM25VECTOR) -- fallback column for unmapped languages
   (no stemmer).
 - `search_bm25_{lang}` (BM25VECTOR) -- per-language column with
-  language-specific tokenizer. One column per configured language.
+  language-specific tokenizer.
+  One column per configured language.
 
 **Schema DDL:** Creates extensions, columns, tokenizers, and BM25
-indexes. Tokenizer creation is wrapped in `DO $$ ... EXCEPTION ...$$`
-for idempotent execution. The `install_schema()` method executes each
+indexes.
+Tokenizer creation is wrapped in `DO $$ ...
+EXCEPTION ...$$`
+for idempotent execution.
+The `install_schema()` method executes each
 DDL statement individually (multi-statement strings fail silently in
 transactional connections).
 
 **Detection:** Checks `pg_available_extensions` for both `vchord_bm25`
-and `pg_tokenizer`. Uses `pg_available_extensions` (not `pg_extension`)
+and `pg_tokenizer`.
+Uses `pg_available_extensions` (not `pg_extension`)
 so detection works before `CREATE EXTENSION` has been executed.
 
 **Constructor:**
@@ -95,7 +104,8 @@ BM25Backend(languages=None, tokenizer_prefix="pgcatalog")
 
 ## LANG_TOKENIZER_MAP
 
-Maps ISO 639-1 language codes to pg_tokenizer configuration. Defined in
+Maps ISO 639-1 language codes to pg_tokenizer configuration.
+Defined in
 `plone.pgcatalog.backends`.
 
 ### Snowball stemmers
@@ -157,8 +167,10 @@ detect_and_set_backend(dsn, languages=["en", "de"])
 ```
 
 Detection checks `pg_available_extensions` for `vchord_bm25` and
-`pg_tokenizer`. If both are present, `BM25Backend` is activated with
-the configured languages. Otherwise, `TsvectorBackend` is activated.
+`pg_tokenizer`.
+If both are present, `BM25Backend` is activated with
+the configured languages.
+Otherwise, `TsvectorBackend` is activated.
 
 Language configuration is read from the `PGCATALOG_BM25_LANGUAGES`
 environment variable (see {doc}`configuration`).
@@ -171,7 +183,8 @@ from plone.pgcatalog.backends import get_backend
 backend = get_backend()  # Returns the active SearchBackend instance
 ```
 
-Returns the active backend singleton. Defaults to `TsvectorBackend`
+Returns the active backend singleton.
+Defaults to `TsvectorBackend`
 if `detect_and_set_backend()` has not been called.
 
 ### Manual override (testing)

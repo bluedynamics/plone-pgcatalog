@@ -80,7 +80,7 @@ class PriorityIndexTranslator:
 
 The utility **name** must match the ZCatalog index name.
 
-## Register programmatically (for auto-discovery)
+## Register programmatically (for autodiscovery)
 
 ```python
 from zope.component import provideUtility

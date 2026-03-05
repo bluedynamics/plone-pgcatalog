@@ -3,9 +3,11 @@
 # Architecture
 
 plone.pgcatalog replaces ZCatalog's BTree-based indexes with SQL queries against
-PostgreSQL. Rather than maintaining thousands of BTree objects in ZODB, catalog data
+PostgreSQL.
+Rather than maintaining thousands of BTree objects in ZODB, catalog data
 lives in columns on the `object_state` table -- the same table that zodb-pgjsonb
-uses to store ZODB object pickles. This means catalog writes are atomic with object
+uses to store ZODB object pickles.
+This means catalog writes are atomic with object
 writes: there is no window where an object is committed but its catalog entry is stale.
 
 This page explains how data flows through the system on writes and reads, how the
@@ -46,7 +48,8 @@ flowchart LR
 ```
 
 Plone content changes flow through the catalog tool, which extracts index values,
-stashes them in a thread-local store, and marks the object dirty. When ZODB commits,
+stashes them in a thread-local store, and marks the object dirty.
+When ZODB commits,
 the state processor picks up the pending data and writes it as extra columns on the
 same row in `object_state`.
 
@@ -61,28 +64,34 @@ same row in `object_state`.
 
 2. **Index data is extracted from the object.** `PlonePGCatalogTool._extract_idx()`
    iterates the dynamic `IndexRegistry` (populated at startup from each Plone site's
-   ZCatalog indexes). For each index, it reads the configured `source_attrs` from the
-   `plone.indexer`-wrapped object. Custom index types not in the registry are handled
+   ZCatalog indexes).
+   For each index, it reads the configured `source_attrs` from the
+   `plone.indexer`-wrapped object.
+   Custom index types not in the registry are handled
    by `IPGIndexTranslator` named utilities.
 
 3. **Data is stored in the thread-local pending store.** `set_pending(zoid, data)`
    writes the extracted index dict, path, and searchable text into a
-   `threading.local()` dict keyed by ZOID. This is the critical design choice -- see
+   `threading.local()` dict keyed by ZOID.
+   This is the critical design choice -- see
    "Why thread-local?" below.
 
 4. **The object is marked `_p_changed = True`.** This tells ZODB that the object
-   needs to be serialized and stored during the next transaction commit. Without this,
+   needs to be serialized and stored during the next transaction commit.
+   Without this,
    the state processor would never see the object.
 
 5. **During ZODB `tpc_vote`, `CatalogStateProcessor.process()` runs.** The zodb-pgjsonb
-   storage calls registered state processors for every object being stored. The
+   storage calls registered state processors for every object being stored.
+   The
    catalog processor pops the pending data for the object's ZOID and returns column
    values (path, idx JSONB, searchable_text tsvector, and any backend-specific
    columns like BM25 vectors).
 
 6. **zodb-pgjsonb writes catalog columns atomically.** The `ExtraColumn` values
    returned by the processor are included in the same `UPDATE object_state` statement
-   that writes the object's pickle. One SQL statement, one transaction, zero
+   that writes the object's pickle.
+   One SQL statement, one transaction, zero
    consistency gaps.
 
 ```{mermaid}
@@ -106,24 +115,31 @@ sequenceDiagram
 ### Why thread-local instead of object annotations?
 
 The original design stored pending catalog data as an annotation on the persistent
-object itself (its `__dict__`). This caused a real problem with CMFEditions: when
+object itself (its `__dict__`).
+This caused a real problem with CMFEditions: when
 Plone creates a version snapshot, it clones the object's state -- including any
-annotations. The cloned annotation would then be processed during commit,
+annotations.
+The cloned annotation would then be processed during commit,
 producing duplicate or incorrect catalog entries.
 
-Thread-local storage avoids this entirely. The pending data lives in
-`threading.local()` and is keyed by ZOID. Only the state processor reads it, and
-it pops each entry exactly once during `tpc_vote`. Cloned objects get a different
+Thread-local storage avoids this entirely.
+The pending data lives in
+`threading.local()` and is keyed by ZOID.
+Only the state processor reads it, and
+it pops each entry exactly once during `tpc_vote`.
+Cloned objects get a different
 ZOID and have no pending entry.
 
 The `PendingDataManager` joins the ZODB transaction to participate in savepoints
-and cleanup: if the transaction is aborted, pending data is cleared. If a
+and cleanup: if the transaction is aborted, pending data is cleared.
+If a
 savepoint is rolled back, pending data reverts to its snapshot.
 
 ### Partial reindex
 
 When `reindexObject(idxs=["review_state"])` is called with a specific list of
-indexes, plone.pgcatalog avoids the overhead of full re-extraction. Instead:
+indexes, plone.pgcatalog avoids the overhead of full re-extraction.
+Instead:
 
 - `_partial_reindex()` extracts only the requested index values.
 - `set_partial_pending(zoid, idx_updates)` registers a JSONB merge update.
@@ -136,33 +152,39 @@ This matters for frequent, targeted reindexes like workflow state changes, where
 re-serializing the entire object and re-extracting all 30+ indexes would be wasteful.
 
 Special indexes with `idx_key=None` (SearchableText, effectiveRange, path) cannot be
-partially updated because they use dedicated columns, not idx JSONB keys. When any
+partially updated because they use dedicated columns, not idx JSONB keys.
+When any
 requested index is special, `_partial_reindex()` returns False and the full write path
 runs instead.
 
 **Interaction with full pending:** If a full `set_pending()` already exists for a zoid
-(e.g., from a `catalog_object` call in the same transaction), the partial update merges
-into the full pending's `idx` dict. Conversely, a subsequent `set_pending()` removes any
+(for example, from a `catalog_object` call in the same transaction), the partial update merges
+into the full pending's `idx` dict.
+Conversely, a subsequent `set_pending()` removes any
 partial pending for the same zoid -- full always supersedes partial.
 
 **Savepoint safety:** `set_partial_pending()` uses non-mutating merges (`{**old, **new}`)
-because `PendingSavepoint` snapshots are shallow copies. Mutating shared dicts would
+because `PendingSavepoint` snapshots are shallow copies.
+Mutating shared dicts would
 corrupt rollback state.
 
 ### Uncataloging
 
 When an object is deleted, `uncatalog_object()` registers a `None` sentinel in the
-pending store. The state processor sees this sentinel and NULLs all catalog columns
+pending store.
+The state processor sees this sentinel and NULLs all catalog columns
 (path, idx, searchable_text, and any backend-specific columns). The base
 `object_state` row is preserved -- ZODB still tracks the object's lifecycle.
 
 ### Pending-store lookup for security reindex
 
 `unrestrictedSearchResults` extends PG results with objects from the thread-local
-pending store when the query includes a `path` filter. This is needed because
+pending store when the query includes a `path` filter.
+This is needed because
 `CMFCatalogAware.reindexObjectSecurity` searches
 `catalog.unrestrictedSearchResults(path=path)` to find all objects in a subtree and
-reindex their `allowedRolesAndUsers`. Newly created objects exist only in the pending
+reindex their `allowedRolesAndUsers`.
+Newly created objects exist only in the pending
 store (not yet committed to PG), so without this merging step security indexes would
 never be updated for new objects during workflow transitions.
 
@@ -180,14 +202,16 @@ query, and returns lightweight `_PendingBrain` instances with just enough interf
 
 2. **Security filters are injected.** `apply_security_filters()` adds
    `allowedRolesAndUsers` (the current user's roles) and `effectiveRange` (the
-   current timestamp for publication date filtering). These are added to the query
+   current timestamp for publication date filtering).
+   These are added to the query
    dict before SQL translation, ensuring every search respects Plone's security model.
 
 3. **`build_query()` translates the query dict to parameterized SQL.** Each key in
    the query dict is resolved against the `IndexRegistry` to determine its type
    (FieldIndex, KeywordIndex, DateIndex, etc.) and the corresponding SQL handler.
    Unknown indexes fall back to `IPGIndexTranslator` utilities, then to simple JSONB
-   field queries. The result is a WHERE clause, ORDER BY expression, LIMIT, OFFSET,
+   field queries.
+   The result is a WHERE clause, ORDER BY expression, LIMIT, OFFSET,
    and a params dict.
 
 4. **Each index key is routed to its handler.** The `_QueryBuilder` dispatches to
@@ -203,9 +227,11 @@ query, and returns lightweight `_PendingBrain` instances with just enough interf
    parse overhead when the same query shape is repeated within a connection.
 
 6. **Results are wrapped in `CatalogSearchResults` with `PGCatalogBrain` objects.**
-   Each brain is a lightweight wrapper around a PG row dict. It implements
+   Each brain is a lightweight wrapper around a PG row dict.
+   It implements
    `ICatalogBrain` for Plone compatibility and supports attribute access into the
-   `idx` JSONB for catalog metadata. Non-JSON-native metadata (such as Zope
+   `idx` JSONB for catalog metadata.
+   Non-JSON-native metadata (such as Zope
    `DateTime` objects) is stored under `idx["@meta"]` via the Rust codec and
    decoded on first access with per-brain caching (see {doc}`../reference/schema`
    for the `@meta` structure).
@@ -213,17 +239,19 @@ query, and returns lightweight `_PendingBrain` instances with just enough interf
 ## Lazy loading
 
 The initial catalog query selects only `zoid` and `path` -- not the full `idx`
-JSONB column. This is the biggest single performance optimization in the read path.
+JSONB column.
+This is the biggest single performance optimization in the read path.
 
-When brain attribute access first touches a metadata field (e.g., `brain.Title`,
+When brain attribute access first touches a metadata field (for example, `brain.Title`,
 `brain.portal_type`), the brain delegates to its parent `CatalogSearchResults`, which
-calls `_load_idx_batch()`. This issues a single `SELECT zoid, idx FROM object_state
+calls `_load_idx_batch()`.
+This issues a single `SELECT zoid, idx FROM object_state
 WHERE zoid = ANY(%(zoids)s)` for ALL brains in the result set, populating every
 brain's `idx` in one round-trip.
 
 Why this matters:
 
-- Many search results pages never access brain metadata at all (e.g., count-only
+- Many search results pages never access brain metadata at all (for example, count-only
   queries, batched listings where only the first page is rendered).
 - When metadata IS accessed, a single batch query is far cheaper than selecting idx
   for every row in the initial query (JSONB decompression is expensive for wide rows).
@@ -237,15 +265,19 @@ order:
 
 1. **Storage connection (preferred).** `get_storage_connection()` reads
    `context._p_jar._storage.pg_connection` -- the same connection that the
-   zodb-pgjsonb storage instance uses for ZODB object loads. Since this connection
+   zodb-pgjsonb storage instance uses for ZODB object loads.
+   Since this connection
    is inside a REPEATABLE READ transaction, catalog queries see exactly the same
-   data snapshot as object traversals. No phantom reads, no inconsistencies.
+   data snapshot as object traversals.
+   No phantom reads, no inconsistencies.
 
 2. **Request-scoped pool connection (fallback).** When no storage connection is
-   available (e.g., the catalog tool has not yet been traversed through a ZODB
+   available (for example, the catalog tool has not yet been traversed through a ZODB
    connection), `get_request_connection()` borrows a connection from the pool and
-   stores it in `threading.local()`. Subsequent catalog queries within the same
-   Zope request reuse this connection, avoiding pool lock overhead. The connection
+   stores it in `threading.local()`.
+   Subsequent catalog queries within the same
+   Zope request reuse this connection, avoiding pool lock overhead.
+   The connection
    is returned by an `IPubEnd` subscriber when the request ends.
 
 3. **Pool borrow (last resort).** For scripts, tests, and maintenance operations
@@ -255,33 +287,44 @@ order:
 ## Dynamic index registration
 
 The `IndexRegistry` is the bridge between ZCatalog's index definitions and
-plone.pgcatalog's SQL query builder. Here is how it gets populated:
+plone.pgcatalog's SQL query builder.
+Here is how it gets populated:
 
-1. At Zope startup, the `IDatabaseOpenedWithRoot` subscriber fires.
+1.
+At Zope startup, the `IDatabaseOpenedWithRoot` subscriber fires.
 2. `_sync_registry_from_db()` opens a temporary ZODB connection and traverses the
    root to find Plone sites.
-3. For each `portal_catalog`, `registry.sync_from_catalog(catalog)` reads
+3.
+For each `portal_catalog`, `registry.sync_from_catalog(catalog)` reads
    `catalog._catalog.indexes` and maps each index's `meta_type` to an `IndexType`
-   enum value. The `getIndexSourceNames()` method provides the attribute names to
+   enum value.
+   The `getIndexSourceNames()` method provides the attribute names to
    extract at indexing time.
-4. DateRecurringIndex and DateRangeInRangeIndex instances are auto-discovered and
+4.
+DateRecurringIndex and DateRangeInRangeIndex instances are autodiscovered and
    registered as `IPGIndexTranslator` utilities.
-5. For each TEXT-type index with a JSONB key (e.g., Title, Description, addon
+5.
+For each TEXT-type index with a JSONB key (for example, Title, Description, addon
    ZCTextIndex fields), `_ensure_text_indexes()` creates GIN expression indexes
    using `to_tsvector('simple', idx->>'{key}')`.
 
-The registry is a module-level singleton. Once populated, it is used by both the
+The registry is a module-level singleton.
+Once populated, it is used by both the
 write path (`_extract_idx()`) and the read path (`build_query()`).
 
 ### Runtime registration
 
 Addons can register new indexes after startup -- either by calling
-`catalog.addIndex("my_field", "FieldIndex")` directly or, more commonly, via
-GenericSetup profile import (``catalog.xml``).  When `addIndex()` is called:
+`catalog.addIndex("my_field," "FieldIndex")` directly or, more commonly, via
+GenericSetup profile import (``catalog.xml``).
+When `addIndex()` is called:
 
-1. The index object is created and stored in `_catalog.indexes` (a
+1.
+The index object is created and stored in `_catalog.indexes` (a
    `PersistentMapping`), persisting it across restarts.
-2. The index's `meta_type` is looked up in `META_TYPE_MAP`.  If found, the
+2.
+The index's `meta_type` is looked up in `META_TYPE_MAP`.
+If found, the
    in-memory `IndexRegistry` singleton is updated immediately via
    `registry.register()`.
 
@@ -299,11 +342,14 @@ Similarly, `addColumn()` calls `registry.add_metadata()` inline.
 **What requires a Zope restart:**
 
 - **GIN expression indexes for TEXT types.** `_ensure_text_indexes()` only runs
-  during the startup subscriber.  A new ZCTextIndex added at runtime will not
-  have a GIN index until the next restart.  Queries still work (PG falls back
+  during the startup subscriber.
+  A new ZCTextIndex added at runtime will not
+  have a GIN index until the next restart.
+  Queries still work (PG falls back
   to a sequential scan), just without GIN acceleration.
 - **IPGIndexTranslator utilities for DRI / DRIRI.** `_register_dri_translators()`
-  and `_register_driri_translators()` only run at startup.  A
+  and `_register_driri_translators()` only run at startup.
+  A
   DateRecurringIndex or DateRangeInRangeIndex added at runtime will fall through
   to the generic JSONB containment fallback, which does not handle
   range/recurrence semantics.
@@ -311,11 +357,13 @@ Similarly, `addColumn()` calls `registry.add_metadata()` inline.
 **What requires a manual reindex:**
 
 - **Existing objects.** Objects already in the catalog do not have the new field
-  in their `idx` JSONB.  A `clearFindAndRebuild()` or `refreshCatalog()` is
-  needed to backfill.  This matches ZCatalog's behavior -- adding a new index
-  never auto-populates it.
+  in their `idx` JSONB.
+  A `clearFindAndRebuild()` or `refreshCatalog()` is
+  needed to backfill.
+  This matches ZCatalog's behavior -- adding a new index
+  never autopopulates it.
 
-**No DDL needed** for standard indexes.  Since all index data lives in the
+**No DDL needed** for standard indexes. Since all index data lives in the
 single `idx` JSONB column, no `ALTER TABLE` is required -- a key benefit of
 the JSONB design.
 
@@ -325,7 +373,8 @@ the JSONB design.
 This deliberate "clean break" eliminates the deep inheritance chain
 (`CatalogTool -> ZCatalog -> ObjectManager -> ...`, roughly 15 classes) and the
 associated overhead from attribute lookups, security checks, and Acquisition
-wrapping in the query and write hot paths.  Benchmarks show ~2x improvement in
+wrapping in the query and write hot paths.
+Benchmarks show ~2x improvement in
 query latency after the clean break.
 
 `Folder` provides `ObjectManager` containment for ZCatalog index objects and
@@ -334,7 +383,8 @@ lexicons (needed by `PGCatalogIndexes._getOb()` and GenericSetup's
 
 A `_CatalogCompat(Persistent)` shim provides `_catalog.indexes` and
 `_catalog.schema` for backward compatibility with code that reads ZCatalog
-internal data structures.  Existing ZODB instances with the old `_catalog` (a
+internal data structures.
+Existing ZODB instances with the old `_catalog` (a
 full `Catalog` object from before the clean break) continue to work without
 migration because the code only reads `.indexes` and `.schema` attributes.
 
@@ -350,7 +400,8 @@ with PG-backed implementations:
 
 - **`PGIndex`** wraps each ZCatalog index and overrides `_index` with a
   `_PGIndexMapping` that translates `_index.get(value)` into a PG query on the `idx`
-  JSONB column. It also overrides `uniqueValues()` with a `SELECT DISTINCT` query.
+  JSONB column.
+  It also overrides `uniqueValues()` with a `SELECT DISTINCT` query.
 
 - **`getpath(rid)` / `getrid(path)`** use ZOID as the record ID. ZCatalog assigns
   sequential integer record IDs; plone.pgcatalog uses the object's ZODB OID (already
@@ -360,8 +411,10 @@ with PG-backed implementations:
 - **Brain attribute resolution** distinguishes known from unknown fields. Known
   catalog fields (registered indexes or metadata) are resolved first from the
   `idx["@meta"]` dict (for non-JSON-native types like `DateTime`), then from the
-  top-level `idx` JSONB.  Fields missing from both return `None` -- matching
-  ZCatalog's Missing Value behavior.  Unknown fields raise `AttributeError`,
+  top-level `idx` JSONB.
+  Fields missing from both return `None` -- matching
+  ZCatalog's Missing Value behavior.
+  Unknown fields raise `AttributeError`,
   which triggers the `getObject()` fallback in
   `CatalogContentListingObject.__getattr__()`.
 

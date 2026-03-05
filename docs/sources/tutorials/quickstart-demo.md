@@ -28,7 +28,8 @@ All remaining commands assume you are inside the `example/` directory.
 
 ## Step 2: start PostgreSQL
 
-Choose one of two variants.  Both expose PostgreSQL on **port 5433**.
+Choose one of two variants.
+Both expose PostgreSQL on **port 5433**.
 
 ### Standard variant (tsvector ranking)
 
@@ -43,11 +44,12 @@ PG_IMAGE=tensorchord/vchord-suite:pg17-latest docker compose up -d
 ```
 
 The BM25 image ships the `pg_tokenizer` and `vchord_bm25` extensions.
-plone.pgcatalog auto-detects them at startup -- no configuration changes needed.
+plone.pgcatalog autodetects them at startup -- no configuration changes needed.
 
 :::{tip}
 You can switch variants later by running `docker compose down -v` and starting
-again with the other image.  A full catalog reindex is required after switching.
+again with the other image.
+A full catalog reindex is required after switching.
 :::
 
 ## Step 3: install Python dependencies
@@ -59,7 +61,8 @@ uv pip install -r requirements.txt
 ```
 
 This installs Plone 6, plone.pgcatalog, zodb-pgjsonb, and the example
-distribution in one step.  The `constraints.txt` file pins known-good versions.
+distribution in one step.
+The `constraints.txt` file pins known-good versions.
 
 ## Step 4: generate a Zope instance
 
@@ -89,11 +92,16 @@ The `zope.conf` shipped in the example directory configures zodb-pgjsonb
 
 This single command:
 
-1. Creates a Plone Classic UI site (`/Plone`)
-2. Installs the **plone.pgcatalog** add-on (catalog columns and indexes)
-3. Installs **plone.app.multilingual** with EN, DE, and ZH language folders
-4. Imports ~800 Wikipedia geography articles as published Documents
-5. Links translations via PAM's `ITranslationManager`
+1.
+Creates a Plone Classic UI site (`/Plone`)
+2.
+Installs the **plone.pgcatalog** add-on (catalog columns and indexes)
+3.
+Installs **plone.app.multilingual** with EN, DE, and ZH language folders
+4.
+Imports ~800 Wikipedia geography articles as published Documents
+5.
+Links translations via PAM's `ITranslationManager`
 
 The import takes about one to two minutes depending on your hardware.
 
@@ -103,21 +111,23 @@ The import takes about one to two minutes depending on your hardware.
 .venv/bin/runwsgi instance/etc/zope.ini
 ```
 
-Visit <http://localhost:8081/Plone> in your browser.  Log in with
+Visit <http://localhost:8081/Plone> in your browser.
+Log in with
 **admin / admin**.
 
 ## Step 7: explore search
 
 ### Search in the browser
 
-Type "volcano" into the Plone search box.  You should see English articles
+Type "volcano" into the Plone search box.
+You should see English articles
 about volcanoes, ranked by relevance.
 
 Try different languages:
 
-- **English:** "volcano", "Mount Everest", "Amazon River"
-- **German:** "Vulkan", "Amazonas", "Mount Everest"
-- **Chinese:** "火山", "亚马逊河", "珠穆朗玛峰"
+- **English:** "volcano," "Mount Everest," "Amazon River"
+- **German:** "Vulkan," "Amazonas," "Mount Everest"
+- **Chinese:** "火山," "亚马逊河," "珠穆朗玛峰"
 
 ### Search via the REST API
 
@@ -173,7 +183,8 @@ LIMIT 20;
 docker compose down -v
 ```
 
-This removes the PostgreSQL container and its data volume.  Omit `-v` if you
+This removes the PostgreSQL container and its data volume.
+Omit `-v` if you
 want to keep the data for next time.
 
 ## What you learned

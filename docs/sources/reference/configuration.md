@@ -24,7 +24,8 @@ The storage is configured in `zope.conf`:
 ### Using environment variables in zope.conf
 
 ZConfig supports variable substitution via the `%define` directive and the
-`${}` syntax. Combined with environment variables, this keeps secrets out
+`${}` syntax.
+Combined with environment variables, this keeps secrets out
 of the configuration file:
 
 ```ini
@@ -39,12 +40,14 @@ of the configuration file:
 ```
 
 The `${VAR:default}` syntax falls back to the value after the colon when
-the environment variable is not set. This works for any ZConfig directive,
-not just `dsn`. See the
+the environment variable is not set.
+This works for any ZConfig directive,
+not just `dsn`.
+See the
 [ZConfig documentation](https://zconfig.readthedocs.io/en/latest/using-zconfig.html#variable-substitution)
 for details.
 
-plone.pgcatalog itself is auto-discovered via `z3c.autoinclude` and does not
+plone.pgcatalog itself is autodiscovered via `z3c.autoinclude` and does not
 need a separate `%import` directive.
 
 ## Environment variables
@@ -52,7 +55,7 @@ need a separate `%import` directive.
 | Variable | Default | Description |
 |---|---|---|
 | `PGCATALOG_BM25_LANGUAGES` | (none) | Comma-separated ISO 639-1 codes, or `"auto"` to detect from `portal_languages`. Controls which per-language BM25 columns are created. Only relevant when VectorChord-BM25 extensions are installed. |
-| `PGCATALOG_TIKA_URL` | (none) | Tika server URL, e.g. `http://localhost:9998`. Enables async text extraction from binary content (PDFs, Office docs, images). When set, the queue table and merge function are created at startup. See {doc}`../how-to/enable-tika-extraction`. |
+| `PGCATALOG_TIKA_URL` | (none) | Tika server URL, for example `http://localhost:9998`. Enables async text extraction from binary content (PDFs, Office docs, images). When set, the queue table and merge function are created at startup. See {doc}`../how-to/enable-tika-extraction`. |
 | `PGCATALOG_TIKA_CONTENT_TYPES` | common office/PDF/image types | Comma-separated MIME types to send to Tika. Default includes PDF, MS Office, OpenDocument, RTF, and common image formats. |
 | `PGCATALOG_TIKA_INPROCESS` | (none) | Set to `true`, `1`, or `yes` to start the extraction worker as a daemon thread inside the Zope process. Requires `PGCATALOG_TIKA_URL`. |
 | `ZODB_TEST_DSN` | `dbname=zodb_test host=localhost port=5433 user=zodb password=zodb` | DSN for test database (tests only). |
@@ -108,8 +111,8 @@ The following registrations are made:
 
 | Package | Extra | Purpose |
 |---|---|---|
-| VectorChord-BM25 (`vchord_bm25`) | — | BM25 ranking extension for PostgreSQL. Enables relevance-ranked full-text search as an alternative to tsvector ranking. |
-| pg_tokenizer | — | Text tokenization for BM25 (language-specific stemmers and vocabulary mapping). |
+| VectorChord-BM25 (`vchord_bm25`) |—| BM25 ranking extension for PostgreSQL. Enables relevance-ranked full-text search as an alternative to tsvector ranking. |
+| pg_tokenizer |—| Text tokenization for BM25 (language-specific stemmers and vocabulary mapping). |
 | `httpx>=0.24` | `tika` | HTTP client for Tika communication. Required for text extraction. |
 | `boto3>=1.26` | `tika-s3` | AWS SDK for S3-tiered blob access. Only needed when blobs are stored in S3. |
 

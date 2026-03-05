@@ -15,12 +15,14 @@ which reads each Plone site's `portal_catalog._catalog.indexes` and
 populates the `IndexRegistry`.
 
 Because the discovery is dynamic, addons that follow the standard
-`catalog.xml` pattern require no special configuration.  Their index values
+`catalog.xml` pattern require no special configuration.
+Their index values
 are extracted during `catalog_object()` and stored in the `idx` JSONB
 column alongside all other indexes.
 
 Addons that bypass the public catalog API and call ZCatalog internals
-directly (e.g., `_apply_index()`) need compatibility adapters.  These
+directly (for example, `_apply_index()`) need compatibility adapters.
+These
 live in the `addons_compat/` package.
 
 ## eea.facetednavigation
@@ -34,11 +36,11 @@ It dispatches by `IndexType` from the `IndexRegistry`:
 
 | IndexType | SQL |
 |---|---|
-| FIELD, GOPIP, UUID | `idx @> '{"key": "value"}'::jsonb` |
-| KEYWORD (single) | `idx @> '{"key": ["value"]}'::jsonb` |
+| FIELD, GOPIP, UUID | `idx @> '{"key:" "value"}'::jsonb` |
+| KEYWORD (single) | `idx @> '{"key:" ["value"]}'::jsonb` |
 | KEYWORD (multi) | `idx->'{key}' ?| array` |
-| BOOLEAN | `idx @> '{"key": true}'::jsonb` |
-| DATE | `idx @> '{"key": "iso-date"}'::jsonb` |
+| BOOLEAN | `idx @> '{"key:" true}'::jsonb` |
+| DATE | `idx @> '{"key:" "iso-date"}'::jsonb` |
 | Special/unknown | `frozenset()` |
 
 Falls back to `IPGIndexTranslator` utilities, then to the original
@@ -62,20 +64,23 @@ The adapter is registered via `overrides.zcml` (loaded by
 
 Special indexes (`SearchableText`, `effectiveRange`, `path`) are not
 handled by `apply_index()` because they use dedicated PostgreSQL columns
-and query patterns.  For these, the adapter returns `frozenset()` --
+and query patterns.
+For these, the adapter returns `frozenset()` --
 eea.facetednavigation then falls back to its own handling.
 
 ### Error recovery
 
 If a PostgreSQL query fails, the adapter catches the exception, logs it
 via `log.exception()`, and falls back to the original BTree-based
-`FacetedCatalog.apply_index()`.  This ensures the site remains functional
+`FacetedCatalog.apply_index()`.
+This ensures the site remains functional
 even if the PG connection is temporarily unavailable.
 
 ## plone.app.multilingual
 
 `plone.app.multilingual` adds `Language` and `TranslationGroup` indexes
-to the catalog.  These are not standard ZCatalog index types, so they are
+to the catalog.
+These are not standard ZCatalog index types, so they are
 not present in `META_TYPE_MAP`.
 
 plone.pgcatalog handles them via the unregistered-index fallback path in
@@ -87,15 +92,17 @@ named utility, then falls back to a JSONB containment query:
 SELECT zoid FROM object_state WHERE idx @> '{"Language": "en"}'::jsonb
 ```
 
-No special configuration is needed.  The index values are extracted
+No special configuration is needed.
+The index values are extracted
 during the standard `_extract_idx()` path because
 `plone.app.multilingual` registers a plone.indexer adapter.
 
 ## collective.taxonomy
 
 `collective.taxonomy` registers custom `FieldIndex` instances via
-`catalog.xml` (e.g., `taxonomy_topic`, `taxonomy_region`).  These are
-auto-discovered at startup by `sync_from_catalog()` and stored as
+`catalog.xml` (for example, `taxonomy_topic`, `taxonomy_region`).
+These are
+autodiscovered at startup by `sync_from_catalog()` and stored as
 standard `FIELD` type entries in the `IndexRegistry`.
 
 Queries work out of the box:
@@ -104,7 +111,7 @@ Queries work out of the box:
 catalog(taxonomy_topic="science")
 ```
 
-## Products.DateRangeInRangeIndex
+## `Products.DateRangeInRangeIndex`
 
 The `DateRangeInRangeIndex` (from `collective.DateRangeInRangeIndex` or
 `plone.app.event`) tests whether an object's `[start, end]` date range
@@ -112,7 +119,8 @@ overlaps a query range.
 
 plone.pgcatalog provides native support via the
 `DateRangeInRangeIndexTranslator` (`IPGIndexTranslator` utility),
-auto-discovered at startup.  The translator reads the `startindex` and
+autodiscovered at startup.
+The translator reads the `startindex` and
 `endindex` configuration from each `DateRangeInRangeIndex` object and
 generates an overlap SQL query.
 

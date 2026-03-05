@@ -8,7 +8,8 @@ the `idx` JSONB column, and the index registry API.
 
 ## IndexType enum
 
-Defined in `plone.pgcatalog.columns`. Each value represents a category
+Defined in `plone.pgcatalog.columns`.
+Each value represents a category
 of index behavior that determines how queries are translated to SQL.
 
 | Enum Value | Description |
@@ -43,7 +44,8 @@ Defined in `plone.pgcatalog.columns`.
 ## Special indexes
 
 These indexes are stored in dedicated columns on the `object_state` table
-rather than inside the `idx` JSONB column. They have `idx_key=None` in the
+rather than inside the `idx` JSONB column.
+They have `idx_key=None` in the
 index registry.
 
 | Index Name | Storage | Notes |
@@ -55,7 +57,8 @@ index registry.
 ## Index registry
 
 The `IndexRegistry` is a singleton that maps index names to their type
-information. It is populated at startup by `sync_from_catalog()`, which
+information.
+It is populated at startup by `sync_from_catalog()`, which
 reads the indexes defined on the Plone `ZCatalog` instance.
 
 Each registry entry is a 3-tuple:
@@ -71,7 +74,8 @@ Each registry entry is a 3-tuple:
   `getIndexSourceNames()` on the ZCatalog index object.
 
 Unknown ZCatalog `meta_type` values not present in `META_TYPE_MAP` are
-skipped during sync. These are expected to be handled by
+skipped during sync.
+These are expected to be handled by
 `IPGIndexTranslator` named utilities instead.
 
 Access the registry:
@@ -86,7 +90,8 @@ registry = get_registry()
 
 Index types not listed in `META_TYPE_MAP` (such as `DateRecurringIndex`,
 `DateRangeInRangeIndex`, or composite indexes) are supported via
-`IPGIndexTranslator` named utilities. Each translator provides query
+`IPGIndexTranslator` named utilities.
+Each translator provides query
 generation and index data extraction for its index type.
 
 See {doc}`ipgindextranslator` for the interface specification and

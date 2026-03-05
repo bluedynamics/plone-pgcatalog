@@ -5,12 +5,15 @@
 ## The problem
 
 Plone's default search indexes text from rich-text fields: Title,
-Description, and the HTML body of a Page or News Item. This works
+Description, and the HTML body of a Page or News Item.
+This works
 because these fields contain plain text that Plone can read directly.
 
-Binary files — PDFs, Word documents, spreadsheets, images — contain
-text that is locked inside proprietary or compressed formats. Plone
-cannot extract it natively. Without extraction, uploading a PDF titled
+Binary files—PDFs, Word documents, spreadsheets, images—contain
+text that is locked inside proprietary or compressed formats.
+Plone
+cannot extract it natively.
+Without extraction, uploading a PDF titled
 "Q4 Financial Report" makes it findable by title, but the 50 pages of
 content inside the PDF are invisible to search.
 
@@ -22,39 +25,50 @@ brings the same capability to PostgreSQL.
 ### Why Apache Tika?
 
 Tika extracts text from over 1400 file formats via a single stateless
-HTTP API. It handles PDFs (including scanned ones via Tesseract OCR),
-Office documents, OpenDocument formats, images, and more. It is the
+HTTP API.
+It handles PDFs (including scanned ones via Tesseract OCR),
+Office documents, OpenDocument formats, images, and more.
+It is the
 same technology Elasticsearch uses internally.
 
 ### Why PostgreSQL as the job queue?
 
-Redis or RabbitMQ would add operational complexity. Since plone.pgcatalog
+Redis or RabbitMQ would add operational complexity.
+Since plone.pgcatalog
 already depends on PostgreSQL, we use it as the queue too:
 
 - **Transactional enqueue**: Jobs are inserted in the same transaction
-  as the ZODB commit. If the transaction rolls back, the job disappears
-  too. No orphaned jobs.
+  as the ZODB commit.
+  If the transaction rolls back, the job disappears
+  too.
+  No orphaned jobs.
 - **LISTEN/NOTIFY**: PostgreSQL's built-in pub/sub wakes the worker
-  instantly when a new job arrives. No polling delay.
+  instantly when a new job arrives.
+  No polling delay.
 - **SKIP LOCKED**: Multiple workers can dequeue safely without
-  contention. Each worker claims one job at a time; others skip locked
+  contention.
+  Each worker claims one job at a time; others skip locked
   rows.
 - **Visibility**: Queue state is queryable via standard SQL. No
   separate monitoring infrastructure needed.
 
 ### Why asynchronous?
 
-Text extraction is slow — a large PDF can take seconds. Running it
+Text extraction is slow—a large PDF can take seconds.
+Running it
 synchronously during `catalog_object()` would block the Zope request
-thread, making content saves unacceptably slow. The asynchronous
+thread, making content saves unacceptably slow.
+The asynchronous
 approach keeps the synchronous path fast (Title/Description/body are
 indexed immediately) while extraction runs in the background.
 
 ### Why not store the full extracted text?
 
-The extracted text is not stored as a column. Instead, it is
+The extracted text is not stored as a column.
+Instead, it is
 transformed into a tsvector (and optionally BM25 vectors) and merged
-into the existing `searchable_text` column. This is more space-efficient
+into the existing `searchable_text` column.
+This is more space-efficient
 and matches how PostgreSQL full-text search works: the search engine
 operates on tsvectors, not raw text.
 
@@ -91,40 +105,56 @@ sequenceDiagram
 
 1. **catalog_object()** extracts the object's MIME content type via
    `extract_content_type()` (tries `IPrimaryFieldInfo` first, then
-   `content_type` attribute). The content type is included in the
+   `content_type` attribute).
+   The content type is included in the
    pending annotation.
 
 2. **CatalogStateProcessor.process()** checks if `PGCATALOG_TIKA_URL`
-   is set and the content type is in the extractable set. If so, the
+   is set and the content type is in the extractable set.
+   If so, the
    zoid is added to `self._tika_candidates`.
 
 3. **CatalogStateProcessor.finalize()** runs in the same PostgreSQL
-   transaction as the ZODB commit. It queries `blob_state` to find which
+   transaction as the ZODB commit.
+   It queries `blob_state` to find which
    candidates actually have blobs, then inserts jobs into
-   `text_extraction_queue`. An `ON CONFLICT DO NOTHING` clause makes
+   `text_extraction_queue`.
+   An `ON CONFLICT DO NOTHING` clause makes
    this idempotent.
 
-4. The **NOTIFY trigger** on the queue table fires, sending a
+4.
+The **NOTIFY trigger** on the queue table fires, sending a
    `text_extraction_ready` notification with the job ID.
 
-5. The **TikaWorker** receives the notification (or wakes up on its
-   poll interval). It dequeues one job using
-   `UPDATE ... FOR UPDATE SKIP LOCKED RETURNING`, which atomically
-   claims the job. Other workers skip this row.
+5.
+The **TikaWorker** receives the notification (or wakes up on its
+   poll interval).
+   It dequeues one job using
+   `UPDATE ...
+   FOR UPDATE SKIP LOCKED RETURNING`, which atomically
+   claims the job.
+   Other workers skip this row.
 
-6. The worker **fetches the blob** from `blob_state` (PG bytea) or S3
+6.
+The worker **fetches the blob** from `blob_state` (PG bytea) or S3
    (for S3-tiered blobs above the size threshold).
 
-7. The worker sends the blob to **Tika** via `PUT /tika` with the
-   content type header. Tika returns plain text.
+7.
+The worker sends the blob to **Tika** via `PUT /tika` with the
+   content type header.
+   Tika returns plain text.
 
-8. The worker calls **`pgcatalog_merge_extracted_text(zoid, text)`**,
+8.
+The worker calls **`pgcatalog_merge_extracted_text(zoid, text)`**,
    a PL/pgSQL function that appends the extracted text to the
-   existing `searchable_text` tsvector at weight `C`. When BM25 is
+   existing `searchable_text` tsvector at weight `C`.
+   When BM25 is
    active, the function also rebuilds BM25 vectors with the
    Title/Description/extracted text combined.
 
-9. The job status is updated to `done`. On failure, the job returns
+9.
+The job status is updated to `done`.
+On failure, the job returns
    to `pending` (up to `max_attempts` retries).
 
 ## Weight hierarchy
@@ -147,7 +177,8 @@ automatically.
 ## Queue table
 
 The `text_extraction_queue` table is created when `PGCATALOG_TIKA_URL`
-is set. See {doc}`../reference/schema` for the full schema.
+is set.
+See {doc}`../reference/schema` for the full schema.
 
 Key design choices:
 
@@ -165,23 +196,29 @@ Key design choices:
 ### In-process (development)
 
 When `PGCATALOG_TIKA_INPROCESS=true`, the worker runs as a daemon
-thread inside the Zope process. It opens its own PostgreSQL connection
-and HTTP client — it shares nothing with Zope's ZODB connections or
+thread inside the Zope process.
+It opens its own PostgreSQL connection
+and HTTP client—it shares nothing with Zope's ZODB connections or
 transaction machinery.
 
 The thread is marked `daemon=True`, meaning it dies automatically when
-the Zope process exits. No separate shutdown handling is needed.
+the Zope process exits.
+No separate shutdown handling is needed.
 
-This mode is convenient for development and small deployments. The
+This mode is convenient for development and small deployments.
+The
 trade-off is that extraction work competes with Zope for CPU and memory.
 
 ### Standalone (production)
 
 The `pgcatalog-tika-worker` CLI runs as a separate process (or
-container). It depends only on `psycopg` and `httpx` — no Zope, no
-Plone, no ZODB. This makes it lightweight and easy to deploy.
+container).
+It depends only on `psycopg` and `httpx`—no Zope, no
+Plone, no ZODB.
+This makes it lightweight and easy to deploy.
 
-Multiple workers can run concurrently. The `SKIP LOCKED` dequeue
+Multiple workers can run concurrently.
+The `SKIP LOCKED` dequeue
 pattern ensures each job is processed exactly once, even under
 concurrent load.
 
@@ -198,7 +235,8 @@ This means that after enabling Tika:
 - An infographic becomes searchable by its labels and annotations
 
 Plone does not make image blobs searchable by default (there was no
-extraction mechanism). With Tika, this happens automatically for all
+extraction mechanism).
+With Tika, this happens automatically for all
 Image content types that have blobs.
 
 ## Interaction with existing search
@@ -210,9 +248,10 @@ Enabling Tika does not change how existing search works:
 - **Rich-text body** (SearchableText from `portal_transforms`) is
   still indexed synchronously.
 - **Tika extraction** adds to the existing tsvector asynchronously.
-  There is a brief window (seconds to minutes, depending on queue
-  depth and Tika processing time) where the blob content is not yet
+  A brief window (seconds to minutes, depending on queue
+  depth and Tika processing time) exists where the blob content is not yet
   searchable.
 
 Sites that do not set `PGCATALOG_TIKA_URL` see no change in behavior,
-schema, or performance. The queue table is not even created.
+schema, or performance.
+The queue table is not even created.

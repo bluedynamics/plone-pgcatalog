@@ -3,7 +3,8 @@
 # Full-text search deep dive
 
 plone.pgcatalog supports four tiers of text search, from basic word matching to
-probabilistic relevance ranking. Each tier builds on the previous one, and the system
+probabilistic relevance ranking.
+Each tier builds on the previous one, and the system
 automatically selects the best available tier at startup.
 
 This page explains how PostgreSQL full-text search works under the hood, how
@@ -15,7 +16,8 @@ relevance ranking fit together.
 PostgreSQL's full-text search is built on two data types and a matching operator:
 
 - **`tsvector`**: A sorted list of normalized tokens (lexemes) with position
-  information. Created from text via `to_tsvector()`, which applies language-specific
+  information.
+  Created from text via `to_tsvector()`, which applies language-specific
   rules: lowercasing, stop word removal, and stemming (reducing "running" to "run").
 
 - **`tsquery`**: A boolean expression of tokens, created from user input via
@@ -31,13 +33,15 @@ A search for "security policy" looks up both tokens in the GIN index and interse
 the row sets -- no table scan required.
 
 **Language configurations** (called `regconfig` in PostgreSQL) control how text is
-tokenized and stemmed. The `english` configuration knows that "running", "runs", and
-"ran" are forms of "run". The `simple` configuration performs no stemming -- it
+tokenized and stemmed.
+The `english` configuration knows that "running," "runs," and
+"ran" are forms of "run." The `simple` configuration performs no stemming -- it
 matches exact word forms only.
 
 ## Four tiers of text search
 
-plone.pgcatalog implements a layered search architecture. Each tier adds
+plone.pgcatalog implements a layered search architecture.
+Each tier adds
 capabilities without removing the previous tier's functionality.
 
 | Tier | Scope | Mechanism | Requires |
@@ -45,10 +49,11 @@ capabilities without removing the previous tier's functionality.
 | **1** | SearchableText | Dedicated `tsvector` column, language-aware stemming, weighted A/B/D ranking | PostgreSQL (built-in) |
 | **2** | SearchableText | BM25 probabilistic scoring via per-language columns | VectorChord-BM25 extension |
 | **3** | Title / Description | GIN expression indexes on `idx` JSONB, `simple` config, word-level matching | PostgreSQL (built-in) |
-| **4** | Addon ZCTextIndex | GIN expression indexes, `simple` config, auto-discovered at startup | PostgreSQL (built-in) |
+| **4** | Addon ZCTextIndex | GIN expression indexes, `simple` config, autodiscovered at startup | PostgreSQL (built-in) |
 
 Tiers 1 and 2 are alternatives for SearchableText -- tier 2 upgrades tier 1 when the
-BM25 extension is available. Tiers 3 and 4 are independent and always active alongside
+BM25 extension is available.
+Tiers 3 and 4 are independent and always active alongside
 whichever SearchableText tier is in use.
 
 ### Tier 1: SearchableText (language-aware)
@@ -56,7 +61,8 @@ whichever SearchableText tier is in use.
 This is the primary search mechanism, always available on vanilla PostgreSQL.
 
 **Storage:** A dedicated `searchable_text` column of type `tsvector` on the
-`object_state` table. This column stores a pre-computed, language-aware token list
+`object_state` table.
+This column stores a pre-computed, language-aware token list
 with weight labels.
 
 **Indexing:** At write time, the `CatalogStateProcessor` builds a weighted tsvector
@@ -80,8 +86,9 @@ setweight(to_tsvector(
 ```
 
 Title and Description use the `simple` configuration (no stemming) so their exact
-word forms are preserved. The body text uses the object's language for stemming --
-so a German document's body is stemmed with the German stemmer, while its title
+word forms are preserved.
+The body text uses the object's language for stemming --
+a German document's body is stemmed with the German stemmer, while its title
 retains exact words.
 
 **Querying:** When `SearchableText` appears in the query dict without an explicit
@@ -96,9 +103,11 @@ ts_rank_cd(
 )
 ```
 
-The weight array `{0.1, 0.2, 0.4, 1.0}` maps to weights D, C, B, A. This means a
+The weight array `{0.1, 0.2, 0.4, 1.0}` maps to weights D, C, B, A.
+This means a
 token match at weight A (Title) contributes 10x more to the score than a match at
-weight D (body). The `ts_rank_cd` function uses cover density ranking, which
+weight D (body).
+The `ts_rank_cd` function uses cover density ranking, which
 additionally rewards term proximity -- documents where the search terms appear close
 together score higher.
 
@@ -108,12 +117,14 @@ The ranking computation runs only on the rows that pass the `@@` filter.
 ### Tier 2: SearchableText with BM25
 
 When VectorChord-BM25 is installed, plone.pgcatalog upgrades from `ts_rank_cd` to
-true BM25 scoring. The tsvector infrastructure is kept for GIN-indexed boolean
+true BM25 scoring.
+The tsvector infrastructure is kept for GIN-indexed boolean
 pre-filtering; BM25 provides the ranking.
 
 **Storage:** Per-language `search_bm25_{lang}` columns of type `bm25vector`. Each
 column uses a language-specific tokenizer (stemmer and optional pre-tokenizer for
-CJK scripts). A fallback `search_bm25` column handles unconfigured languages.
+CJK scripts).
+A fallback `search_bm25` column handles unconfigured languages.
 
 **Indexing:** The `BM25Backend.process_search_data()` method combines title (repeated
 3x for field boosting), description, and body text into a single string, then stores
@@ -121,8 +132,10 @@ it in the appropriate language column via `tokenize()`.
 
 **Querying:** The query path uses a two-stage approach:
 
-1. GIN pre-filter via `searchable_text @@ plainto_tsquery(...)` (same as Tier 1).
-2. BM25 ranking via `search_bm25_{lang} <&> to_bm25query(index, tokenize(text, tokenizer))`.
+1.
+GIN pre-filter via `searchable_text @@ plainto_tsquery(...)` (same as Tier 1).
+2.
+BM25 ranking via `search_bm25_{lang} <&> to_bm25query(index, tokenize(text, tokenizer))`.
 
 BM25 scoring considers three factors that `ts_rank_cd` ignores:
 
@@ -131,7 +144,8 @@ BM25 scoring considers three factors that `ts_rank_cd` ignores:
   a match on "policy" contributes more to the score.
 
 - **Term saturation:** A document mentioning "security" 50 times does not score 50x
-  higher than one mentioning it once. BM25's k1 parameter controls the saturation
+  higher than one mentioning it once.
+  BM25's k1 parameter controls the saturation
   curve -- after a few occurrences, additional matches have diminishing returns.
 
 - **Length normalization:** Shorter documents are boosted relative to longer ones. A
@@ -140,8 +154,9 @@ BM25 scoring considers three factors that `ts_rank_cd` ignores:
 
 ### Tier 3: Title/Description (word-level)
 
-Title and Description have their own search path, independent of SearchableText. This
-is used when Plone searches specifically for Title or Description content (e.g., the
+Title and Description have their own search path, independent of SearchableText.
+This
+is used when Plone searches specifically for Title or Description content (for example, the
 "Title" field in a collection criterion).
 
 **Storage:** Values are stored in the `idx` JSONB column under the `Title` and
@@ -155,10 +170,12 @@ USING gin (to_tsvector('simple'::regconfig, COALESCE(idx->>'Title', '')))
 WHERE idx IS NOT NULL;
 ```
 
-These use the `simple` configuration (no stemming, no stop words). This is a
+These use the `simple` configuration (no stemming, no stop words).
+This is a
 deliberate choice: Title and Description searches should match exact word forms.
 Searching for "Run" should match documents titled "Run" but not "Running" -- the
-user is looking for a specific word. SearchableText provides the stemmed search
+user is looking for a specific word.
+SearchableText provides the stemmed search
 when broader matching is desired.
 
 **Querying:** The query builder generates:
@@ -172,12 +189,13 @@ This expression matches the GIN expression index, so PostgreSQL uses an index sc
 
 ### Tier 4: addon ZCTextIndex fields
 
-Plone add-ons can register additional ZCTextIndex indexes (e.g., for custom content
-types that need field-specific search). plone.pgcatalog auto-discovers these at
+Plone add-ons can register additional ZCTextIndex indexes (for example, for custom content
+types that need field-specific search). plone.pgcatalog autodiscovers these at
 startup.
 
 **Discovery:** During `_sync_registry_from_db()`, the startup subscriber reads all
-ZCatalog indexes. Those with `meta_type="ZCTextIndex"` and a JSONB key (not
+ZCatalog indexes.
+Those with `meta_type="ZCTextIndex"` and a JSONB key (not
 SearchableText) are registered in the `IndexRegistry` as TEXT-type indexes.
 
 **Index creation:** `_ensure_text_indexes()` creates GIN expression indexes for each
@@ -215,7 +233,8 @@ through pg_tokenizer:
 - **Japanese:** Lindera segmenter
 - **Korean:** Lindera segmenter
 
-These are configured as per-language BM25 columns with dedicated tokenizers. The
+These are configured as per-language BM25 columns with dedicated tokenizers.
+The
 tsvector tier still uses `simple` for CJK (since PostgreSQL's built-in tokenizers
 do not support CJK segmentation), but the BM25 tier provides proper word-level
 matching.
@@ -231,7 +250,8 @@ applies the corresponding language configuration:
 - At query time: `plainto_tsquery(pgcatalog_lang_to_regconfig(Language), search_text)`
 
 If the `Language` field in the query differs from the object's language, the stemmer
-mismatch may produce suboptimal results. This is inherent to language-specific
+mismatch may produce suboptimal results.
+This is inherent to language-specific
 stemming -- searching for German words with an English stemmer produces poor matches.
 The BM25 fallback column (no stemmer, basic tokenization) provides a safety net for
 cross-language searches.
@@ -256,26 +276,31 @@ A match in the Title contributes 10x the score of the same match in the body.
 Combined with cover density (proximity bonus), this produces good relevance ordering
 for most searches without any extensions.
 
-Relevance ranking is auto-applied when `SearchableText` is queried without an
-explicit `sort_on`. If `sort_on` is set (e.g., `sort_on="modified"`), the explicit
+Relevance ranking is autoapplied when `SearchableText` is queried without an
+explicit `sort_on`.
+If `sort_on` is set (for example, `sort_on="modified"`), the explicit
 sort takes priority and relevance ranking is not applied.
 
 ### BM25 ranking (optional)
 
 When the BM25 backend is active, the ranking expression changes from `ts_rank_cd`
-to the `<&>` operator, which computes a BM25 score. Lower scores indicate higher
+to the `<&>` operator, which computes a BM25 score.
+Lower scores indicate higher
 relevance (the operator returns a distance metric).
 
 BM25's parameters are controlled by the VectorChord-BM25 extension:
 
 - **k1** (term saturation): Controls how quickly additional term occurrences
-  saturate. Default is 1.2 -- after 3-4 occurrences, additional matches contribute
+  saturate.
+  Default is 1.2 -- after 3-4 occurrences, additional matches contribute
   very little.
 - **b** (length normalization): Controls how much shorter documents are boosted.
   Default is 0.75 -- a document half the average length gets a meaningful boost.
 
 Field-level boosting in BM25 is achieved by repeating the title text 3x in the
-combined input string. This is crude but effective: BM25 sees the title terms as
+combined input string.
+This is crude but effective: BM25 sees the title terms as
 more frequent relative to the document length, which increases their contribution
-to the score. Future versions may adopt VectorChord-BM25's field boosting API if
+to the score.
+Future versions may adopt VectorChord-BM25's field boosting API if
 one is added.

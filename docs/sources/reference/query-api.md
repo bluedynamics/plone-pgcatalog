@@ -22,7 +22,7 @@ results = catalog.searchResults(portal_type="Document")
 results = catalog.unrestrictedSearchResults(portal_type="Document")
 ```
 
-`searchResults()` and `__call__` auto-inject `allowedRolesAndUsers` and
+`searchResults()` and `__call__` autoinject `allowedRolesAndUsers` and
 `effectiveRange` filters based on the current user's roles.
 `unrestrictedSearchResults()` bypasses all security filtering.
 
@@ -30,7 +30,7 @@ results = catalog.unrestrictedSearchResults(portal_type="Document")
 
 ### FieldIndex
 
-Single-value indexes (e.g., `portal_type`, `review_state`, `Creator`).
+Single-value indexes (for example, `portal_type`, `review_state`, `Creator`).
 
 ```python
 # Exact match
@@ -58,7 +58,7 @@ catalog(modified={"query": [DateTime("2025-01-01"), DateTime("2025-12-31")], "ra
 ### KeywordIndex
 
 Multi-value indexes where each object can have multiple values
-(e.g., `Subject`, `allowedRolesAndUsers`).
+(for example, `Subject`, `allowedRolesAndUsers`).
 
 ```python
 # Has keyword
@@ -75,7 +75,7 @@ The default `operator` is `"or"`.
 
 ### DateIndex
 
-Timestamp indexes with range support (e.g., `created`, `modified`,
+Timestamp indexes with range support (for example, `created`, `modified`,
 `effective`, `expires`).
 
 ```python
@@ -95,7 +95,7 @@ indexes (see {doc}`sql-functions`).
 
 ### BooleanIndex
 
-True/false indexes (e.g., `is_folderish`, `is_default_page`).
+True/false indexes (for example, `is_folderish`, `is_default_page`).
 
 ```python
 catalog(is_folderish=True)
@@ -115,7 +115,7 @@ catalog(effectiveRange=DateTime())
 
 ### UUIDIndex
 
-UUID equality lookup (e.g., `UID`).
+UUID equality lookup (for example, `UID`).
 
 ```python
 catalog(UID="abc123-def456")
@@ -140,8 +140,9 @@ catalog(Title="Quick Fox")
 catalog(Description="introduction")
 ```
 
-Relevance ranking is auto-applied when `SearchableText` is queried
-without an explicit `sort_on`. The active search backend determines
+Relevance ranking is autoapplied when `SearchableText` is queried
+without an explicit `sort_on`.
+The active search backend determines
 the ranking strategy (see {doc}`search-backends`).
 
 ### ExtendedPathIndex
@@ -170,8 +171,9 @@ catalog(path={"query": ["/plone/a", "/plone/b"]})
 
 ### Unregistered indexes
 
-Index names not in `META_TYPE_MAP` (e.g., `Language`, `TranslationGroup`
-from `plone.app.multilingual`) are not silently skipped. The query
+Index names not in `META_TYPE_MAP` (for example, `Language`, `TranslationGroup`
+from `plone.app.multilingual`) are not silently skipped.
+The query
 builder first checks for an `IPGIndexTranslator` named utility, then
 falls back to a simple JSONB containment query:
 
@@ -187,7 +189,8 @@ extraction path).
 
 ### GopipIndex
 
-Integer ordering index (`getObjPositionInParent`). Used for sorting,
+Integer ordering index (`getObjPositionInParent`).
+Used for sorting,
 not typically queried directly.
 
 ```python
@@ -196,7 +199,8 @@ catalog(sort_on="getObjPositionInParent")
 
 ### DateRecurringIndex (via IPGIndexTranslator)
 
-Recurring event date queries. Recurring events (with RRULE) are
+Recurring event date queries.
+Recurring events (with RRULE) are
 expanded at query time via `rrule."between"()` and `rrule."after"()`
 PL/pgSQL functions.
 
@@ -216,7 +220,8 @@ See {doc}`ipgindextranslator` for implementation details.
 ### DateRangeInRangeIndex (via IPGIndexTranslator)
 
 Overlap query for objects whose `[start, end]` date range overlaps
-a query range. Supports recurring events.
+a query range.
+Supports recurring events.
 
 ```python
 catalog(event_dates={"start": DateTime("2025-03-01"), "end": DateTime("2025-03-31")})
@@ -231,7 +236,7 @@ See {doc}`ipgindextranslator` for implementation details.
 
 | Parameter | Type | Description |
 |---|---|---|
-| `sort_on` | `str` or `list[str]` | Index name(s) to sort by |
+| `sort_on` | `str` or `list[str]` | Index names to sort by |
 | `sort_order` | `str` or `list[str]` | `"ascending"` (default) or `"descending"` |
 | `sort_limit` | `int` | Maximum results (capped at 10,000) |
 
@@ -242,7 +247,8 @@ catalog(sort_on=["modified", "sortable_title"], sort_order=["descending", "ascen
 ```
 
 When `sort_order` is shorter than `sort_on`, the last order value is
-reused for remaining sort keys.  A single `sort_order` string applies to
+reused for remaining sort keys.
+A single `sort_order` string applies to
 all sort keys:
 
 ```python
@@ -268,12 +274,13 @@ Sort expressions by index type:
 | `b_size` | `int` | Page size | Max 10,000 |
 
 When a `LIMIT` is present (via `sort_limit` or `b_size`), a single query
-is executed using `COUNT(*) OVER()` as a window function. The total
+is executed using `COUNT(*) OVER()` as a window function.
+The total
 matching count is available via `results.actual_result_count`.
 
 ## Security
 
-- `searchResults()` auto-applies `allowedRolesAndUsers` and
+- `searchResults()` autoapplies `allowedRolesAndUsers` and
   `effectiveRange` filters based on the current user's roles and
   permissions.
 - `unrestrictedSearchResults()` bypasses all security filtering.
@@ -313,14 +320,15 @@ Wraps a list of `PGCatalogBrain` objects.
 
 ### PGCatalogBrain
 
-Lightweight result object backed by a PostgreSQL row. Implements
+Lightweight result object backed by a PostgreSQL row.
+Implements
 `ICatalogBrain`.
 
 **Methods:**
 
 | Method | Returns | Description |
 |---|---|---|
-| `getPath()` | `str` | Physical path (e.g., `"/plone/folder/doc"`) |
+| `getPath()` | `str` | Physical path (for example, `"/plone/folder/doc"`) |
 | `getURL(relative=False)` | `str` | URL via request, or path in standalone mode |
 | `getObject()` | object or `None` | Restricted traversal to the actual content object |
 | `_unrestrictedGetObject()` | object or `None` | Unrestricted traversal |
@@ -336,12 +344,14 @@ Lightweight result object backed by a PostgreSQL row. Implements
 **Attribute access:**
 
 All registered indexes and metadata columns are accessible as
-attributes (e.g., `brain.portal_type`, `brain.Title`, `brain.Subject`).
+attributes (for example, `brain.portal_type`, `brain.Title`, `brain.Subject`).
 
 - Non-JSON-native metadata (Zope `DateTime`, `datetime`, `date`, etc.)
   is stored in `idx["@meta"]` via the Rust codec and decoded on first
-  access with per-brain caching. This means `brain.effective` returns
-  a `DateTime` object, not an ISO string. See {doc}`schema` for the
+  access with per-brain caching.
+  This means `brain.effective` returns
+  a `DateTime` object, not an ISO string.
+  See {doc}`schema` for the
   `@meta` JSONB structure.
 - JSON-native metadata (str, int, float, bool, None, lists/dicts of
   these) is stored directly in the top-level `idx` JSONB.
@@ -352,13 +362,15 @@ attributes (e.g., `brain.portal_type`, `brain.Title`, `brain.Subject`).
   `CatalogContentListingObject.__getattr__()` catches `AttributeError`
   and falls back to `getObject()`, loading the real content object.
   Returning `None` would cause `plone.restapi` and listing views to
-  display `None` values instead.  See {doc}`zcatalog-compat` for
+  display `None` values instead.
+  See {doc}`zcatalog-compat` for
   details.
 
 **Lazy loading:**
 
 When a request-scoped connection is available, brains are created in
-lazy mode (without `idx` data). On first attribute access, all brains
+lazy mode (without `idx` data).
+On first attribute access, all brains
 in the result set have their `idx` loaded in a single batch query via
 `CatalogSearchResults._load_idx_batch()`, using the same REPEATABLE
 READ snapshot as the original search.
@@ -367,7 +379,8 @@ READ snapshot as the original search.
 
 **Accessing non-catalog attributes on brains.**
 `brain.some_field` only works for fields in the `IndexRegistry` (indexes
-and metadata).  For other object attributes, call `brain.getObject()` to
+and metadata).
+For other object attributes, call `brain.getObject()` to
 load the real content object.
 
 **Querying by unregistered index names.**
@@ -377,6 +390,8 @@ negation, and operator-based queries are not supported for unregistered
 indexes.
 
 **Mixing `sort_limit` and `b_size`.**
-Both result in a SQL `LIMIT`.  When both are present, the effective limit
-is `min(sort_limit, b_size)`.  Use `results.actual_result_count` to get
+Both result in a SQL `LIMIT`.
+When both are present, the effective limit
+is `min(sort_limit, b_size)`.
+Use `results.actual_result_count` to get
 the total matching count.

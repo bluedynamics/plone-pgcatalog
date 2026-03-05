@@ -4,7 +4,8 @@
 
 ## How language detection works
 
-plone.pgcatalog reads the `Language` field from each object during indexing. This field is set by `plone.app.multilingual` for multilingual sites, or can be set manually on content types.
+plone.pgcatalog reads the `Language` field from each object during indexing.
+This field is set by `plone.app.multilingual` for multilingual sites, or can be set manually on content types.
 
 The language code is mapped via `pgcatalog_lang_to_regconfig()` (a PL/pgSQL function) to select the correct PostgreSQL text search configuration (stemmer) at both index time and query time.
 
@@ -51,7 +52,9 @@ Objects with unmapped or empty `Language` fall back to `'simple'` config (no ste
 
 ## Tsvector (default, no configuration)
 
-Language-aware stemming works automatically for the `searchable_text` column. No configuration is needed beyond installing `plone.app.multilingual`. The tsvector is built with per-object language detection:
+Language-aware stemming works automatically for the `searchable_text` column.
+No configuration is needed beyond installing `plone.app.multilingual`.
+The tsvector is built with per-object language detection:
 
 - **Title** and **Description** use `'simple'` config (no stemming, weight A/B)
 - **SearchableText** body uses the object's `Language` field mapped to the appropriate regconfig (weight D)
@@ -68,12 +71,17 @@ export PGCATALOG_BM25_LANGUAGES=en,de,fr,zh
 export PGCATALOG_BM25_LANGUAGES=auto
 ```
 
-Requires VectorChord-BM25 extensions. See {doc}`enable-bm25`.
+Requires VectorChord-BM25 extensions.
+See {doc}`enable-bm25`.
 
-Each configured language gets a dedicated `search_bm25_{lang}` column. At query time, the search language determines which column is used for BM25 scoring. The fallback `search_bm25` column handles unconfigured languages and cross-language search.
+Each configured language gets a dedicated `search_bm25_{lang}` column.
+At query time, the search language determines which column is used for BM25 scoring.
+The fallback `search_bm25` column handles unconfigured languages and cross-language search.
 
 ## CJK languages
 
-Chinese, Japanese, and Korean use specialized segmenters (jieba/lindera) instead of Snowball stemmers. These are provided by `pg_tokenizer` and work automatically with `BM25Backend`.
+Chinese, Japanese, and Korean use specialized segmenters (jieba/lindera) instead of Snowball stemmers.
+These are provided by `pg_tokenizer` and work automatically with `BM25Backend`.
 
-For tsvector (without BM25), CJK languages fall back to `'simple'` config, which provides basic whitespace tokenization. For better CJK search quality, enable BM25.
+For tsvector (without BM25), CJK languages fall back to `'simple'` config, which provides basic whitespace tokenization.
+For better CJK search quality, enable BM25.

@@ -2,8 +2,9 @@
 
 # BM25 design decisions
 
-plone.pgcatalog's BM25 integration is optional, auto-detected, and layered on top
-of vanilla PostgreSQL's tsvector infrastructure. This page explains the goals and
+plone.pgcatalog's BM25 integration is optional, autodetected, and layered on top
+of vanilla PostgreSQL's tsvector infrastructure.
+This page explains the goals and
 constraints that shaped the design, why VectorChord-BM25 was chosen over
 alternatives, and how the per-language column strategy works.
 
@@ -26,7 +27,8 @@ to get it by installing extensions.
 ## Progressive enhancement architecture
 
 Rather than requiring a specific extension, plone.pgcatalog implements a four-level
-enhancement stack. Each level adds capabilities; no level removes previous
+enhancement stack.
+Each level adds capabilities; no level removes previous
 functionality.
 
 ```{mermaid}
@@ -42,29 +44,38 @@ flowchart TB
 ```
 
 **Level 0: Boolean matching.** The GIN index on `searchable_text` provides fast
-yes/no matching. This is the filter stage -- it determines which documents contain
+yes/no matching.
+This is the filter stage -- it determines which documents contain
 the search terms.
 
 **Level 1: Weighted ts_rank_cd with field boosting.** Always available on vanilla
-PostgreSQL. Title matches weighted 10x higher than body matches. Cover density
-ranking rewards term proximity. This is the default ranking when no BM25 extension
+PostgreSQL.
+Title matches weighted 10x higher than body matches.
+Cover density
+ranking rewards term proximity.
+This is the default ranking when no BM25 extension
 is detected.
 
 **Level 2: BM25 ranking.** When VectorChord-BM25 is detected at startup, ranking
-switches from `ts_rank_cd` to true BM25 scoring. The tsvector GIN index is kept as
+switches from `ts_rank_cd` to true BM25 scoring.
+The tsvector GIN index is kept as
 a pre-filter; BM25 provides the final score.
 
 **Level 3: Per-language BM25 columns.** Each configured language gets its own
-`bm25vector` column with a language-specific tokenizer. This enables proper stemming
+`bm25vector` column with a language-specific tokenizer.
+This enables proper stemming
 and CJK word segmentation at the BM25 level.
 
 Levels 2 and 3 are activated together by the `BM25Backend` class -- there is no
-separate configuration step. If the extensions are present, they are used. If not,
+separate configuration step.
+If the extensions are present, they are used.
+If not,
 the system falls back gracefully to Level 1.
 
 ## Why VectorChord-BM25?
 
-Three PostgreSQL BM25 extensions were evaluated for plone.pgcatalog. The evaluation
+Three PostgreSQL BM25 extensions were evaluated for plone.pgcatalog.
+The evaluation
 considered license compatibility, language support, cloud-native deployment, maturity,
 and feature completeness.
 
@@ -80,7 +91,8 @@ CloudNativePG deployments where read replicas must have working search indexes.
 ### pg_search (ParadeDB)
 
 The most mature option with production-ready BM25, arbitrary field boosting, and
-strong CJK support. However, two factors weighed against it:
+strong CJK support.
+However, two factors weighed against it:
 
 - **AGPL-3.0 license.** While server-side PostgreSQL extensions are arguably not
   "linked" into the application (and thus may not trigger AGPL's copyleft
@@ -88,7 +100,8 @@ strong CJK support. However, two factors weighed against it:
   Plone should not create friction for these users.
 
 - **WAL replication requires Enterprise license.** The Community edition's BM25
-  indexes do not replicate to standbys. For CloudNativePG clusters, this means search
+  indexes do not replicate to standbys.
+  For CloudNativePG clusters, this means search
   only works on the primary, or indexes must be rebuilt after failover.
 
 ### VectorChord-BM25
@@ -100,8 +113,10 @@ VectorChord-BM25 scored highest in the evaluation (102/130 weighted points):
 
 - **WAL replication confirmed.** Source code analysis shows that all writes use
   PostgreSQL's `GenericXLogStart()`/`GenericXLogFinish()` API, and storage goes
-  through the native buffer manager. BM25 indexes replicate to standbys without
-  additional configuration. This was confirmed by the TensorChord team.
+  through the native buffer manager.
+  BM25 indexes replicate to standbys without
+  additional configuration.
+  This was confirmed by the TensorChord team.
 
 - **30+ stemmer languages.** The most comprehensive language coverage of any
   evaluated extension, matching PostgreSQL's full set of built-in text search
@@ -111,7 +126,8 @@ VectorChord-BM25 scored highest in the evaluation (102/130 weighted points):
   segmenters via pg_tokenizer.
 
 - **Write-path alignment.** The explicit tokenization step (`text -> bm25vector`)
-  maps directly to plone.pgcatalog's `CatalogStateProcessor` pattern. The processor
+  maps directly to plone.pgcatalog's `CatalogStateProcessor` pattern.
+  The processor
   already transforms text at write time; adding a `bm25vector` column is the same
   pattern with a different output type.
 
@@ -132,18 +148,22 @@ VectorChord-BM25 scored highest in the evaluation (102/130 weighted points):
 
 ### The problem with a single multilingual column
 
-Different languages need different stemmers. The German stemmer reduces "Sicherheit"
-to its root; the English stemmer reduces "security" to its root. Applying a German
+Different languages need different stemmers.
+The German stemmer reduces "Sicherheit"
+to its root; the English stemmer reduces "security" to its root.
+Applying a German
 stemmer to English text produces incorrect stems, and vice versa.
 
 A single `bm25vector` column with one tokenizer cannot serve a multilingual site
-well. The tokenizer must choose one stemmer, and every other language gets suboptimal
+well.
+The tokenizer must choose one stemmer, and every other language gets suboptimal
 tokenization.
 
 ### One column per language
 
 plone.pgcatalog creates a separate `search_bm25_{lang}` column for each configured
-language. A site configured for English, German, and French gets three columns:
+language.
+A site configured for English, German, and French gets three columns:
 
 - `search_bm25_en` -- English Porter2 stemmer
 - `search_bm25_de` -- German stemmer
@@ -159,7 +179,8 @@ Each column has its own BM25 index and its own tokenizer (created via
 ### Write path
 
 When an object is indexed, the `BM25Backend.process_search_data()` method reads the
-object's `Language` field and populates the matching column. All other language
+object's `Language` field and populates the matching column.
+All other language
 columns for that row are set to NULL.
 
 An English document populates `search_bm25_en` and `search_bm25` (the fallback).
@@ -175,11 +196,13 @@ At query time, the search backend checks the query's `Language` parameter:
 
 ### Storage efficiency
 
-NULL columns consume zero storage in PostgreSQL thanks to TOAST optimization. A row
+NULL columns consume zero storage in PostgreSQL thanks to TOAST optimization.
+A row
 for an English document with three language columns only stores data in
 `search_bm25_en` and `search_bm25` -- the German and French columns add zero bytes.
 
-BM25 indexes are sparse: they only index non-NULL rows. The English BM25 index
+BM25 indexes are sparse: they only index non-NULL rows.
+The English BM25 index
 contains only English documents; the German index contains only German documents.
 This keeps each index small and fast.
 
@@ -188,17 +211,19 @@ This keeps each index small and fast.
 Languages are configured via the `PGCATALOG_BM25_LANGUAGES` environment variable:
 
 - `PGCATALOG_BM25_LANGUAGES=en,de,fr` -- explicit language list
-- `PGCATALOG_BM25_LANGUAGES=auto` -- auto-detect from `portal_languages` at startup
+- `PGCATALOG_BM25_LANGUAGES=auto` -- autodetect from `portal_languages` at startup
 - Default (unset): `en` only
 
 Each language code is validated against the `LANG_TOKENIZER_MAP` allowlist in
-`backends.py`. Unknown language codes are rejected at startup with a clear error
+`backends.py`.
+Unknown language codes are rejected at startup with a clear error
 message, preventing DDL injection via crafted language strings.
 
 ## SearchBackend abstraction
 
 The `SearchBackend` abstract base class allows swapping ranking strategies without
-changing query or indexing code. It has exactly five abstract methods plus two
+changing query or indexing code.
+It has exactly five abstract methods plus two
 optional hooks:
 
 | Method | Purpose |
@@ -211,30 +236,38 @@ optional hooks:
 | `uncatalog_extra()` | Column:None pairs for uncatalog (optional) |
 | `install_schema(conn)` | Per-statement DDL execution (optional override) |
 
-This is deliberately minimal. There is no plugin registry, no entry points, no
-dynamic loading. Two concrete classes (`TsvectorBackend` and `BM25Backend`)
+This is deliberately minimal.
+No plugin registry, entry points, or
+dynamic loading exists.
+Two concrete classes (`TsvectorBackend` and `BM25Backend`)
 implement the interface, and a module-level singleton pattern (`get_backend()` /
 `set_backend()`) provides the active instance.
 
-### Auto-detection at startup
+### Autodetection at startup
 
 During the `IDatabaseOpenedWithRoot` subscriber, `detect_and_set_backend()` is called:
 
-1. It tries `BM25Backend.detect(dsn)`, which queries `pg_available_extensions` for
+1.
+It tries `BM25Backend.detect(dsn)`, which queries `pg_available_extensions` for
    `vchord_bm25` and `pg_tokenizer`.
-2. If both extensions are available, `BM25Backend` is activated with the configured
+2.
+If both extensions are available, `BM25Backend` is activated with the configured
    languages.
-3. If either extension is missing, `TsvectorBackend` is activated.
+3.
+If either extension is missing, `TsvectorBackend` is activated.
 
 Detection checks `pg_available_extensions` (not `pg_extension`) so that it works
-before `CREATE EXTENSION` has been executed. The BM25 backend's `get_schema_sql()`
+before `CREATE EXTENSION` has been executed.
+The BM25 backend's `get_schema_sql()`
 includes the `CREATE EXTENSION` statements, which are applied when the state processor
 is registered.
 
 ### Future extensibility
 
 The thin abstraction makes it straightforward to add new backends if the PostgreSQL
-BM25 landscape changes. If pg_textsearch ships WAL support and leaves preview, a
+BM25 landscape changes.
+If pg_textsearch ships WAL support and leaves preview, a
 `PgTextsearchBackend` could be added without modifying any existing code outside the
-backend module. The rest of plone.pgcatalog (security filters, path queries, field
+backend module.
+The rest of plone.pgcatalog (security filters, path queries, field
 indexes, keyword indexes, pagination, brain loading) is backend-agnostic.
