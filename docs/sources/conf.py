@@ -3,7 +3,7 @@
 # -- Project information -----------------------------------------------------
 
 project = "plone.pgcatalog"
-copyright = "2024-2026, BlueDynamics Alliance"  # noqa: A001
+copyright = "2026, BlueDynamics Alliance"  # noqa: A001
 author = "Jens Klein and contributors"
 release = "1.0"
 
