@@ -130,7 +130,7 @@ def extract_idx(wrapper, idxs=None):
             else:
                 idx[idx_key] = convert_value(value)
         except Exception:
-            pass  # indexer raised — skip this field
+            log.debug("Extraction failed for index %r", name, exc_info=True)
 
     # Extract metadata columns.
     # JSON-native values (str, int, float, bool, None) go into top-level idx.
@@ -155,7 +155,7 @@ def extract_idx(wrapper, idxs=None):
             else:
                 meta_nonstandard[meta_name] = value
         except Exception:
-            pass  # indexer raised — skip this field
+            log.debug("Extraction failed for metadata %r", meta_name, exc_info=True)
 
     if meta_nonstandard:
         try:
@@ -164,7 +164,7 @@ def extract_idx(wrapper, idxs=None):
             pickled = pickle.dumps(meta_nonstandard, protocol=3)
             idx["@meta"] = pickle_to_dict(pickled)
         except Exception:
-            pass  # unpicklable metadata — skip @meta encoding
+            log.debug("Failed to encode @meta for pickle", exc_info=True)
 
     # IPGIndexTranslator fallback: custom extractors
     extract_from_translators(wrapper, idx, idxs=idxs)
@@ -189,7 +189,7 @@ def extract_from_translators(wrapper, idx, idxs=None):
                 if extra and isinstance(extra, dict):
                     idx.update(extra)
             except Exception:
-                pass  # translator raised — skip
+                log.debug("Translator %r extraction failed", name, exc_info=True)
     except Exception:
         pass  # no component architecture available
 

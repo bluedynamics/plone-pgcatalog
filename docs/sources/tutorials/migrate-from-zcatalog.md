@@ -109,6 +109,8 @@ The GenericSetup profile performs these changes:
    full-text search is handled by PostgreSQL tsvector
 5. **Applies DDL schema** -- creates the necessary columns, GIN indexes, and
    PostgreSQL functions on the `object_state` table
+6. **Rebuilds the catalog** -- runs `clearFindAndRebuild()` to traverse the
+   site and index all existing content into PostgreSQL
 
 :::{tip}
 The old ZCatalog's BTree data (the actual indexed values) becomes unreferenced
@@ -116,11 +118,12 @@ in ZODB after migration.
 Run a ZODB pack after migration to reclaim the space.
 :::
 
-## Step 4: rebuild the catalog
+## Step 4: verify the rebuild
 
-The old ZCatalog BTree data is now irrelevant.
-You need to populate the
-PostgreSQL catalog columns from your existing content objects.
+The install step automatically runs `clearFindAndRebuild()`, so all existing
+content should already be indexed in PostgreSQL.
+If the automatic rebuild
+failed (check the Zope log for warnings), you can run it manually.
 
 Create a file called `rebuild.py`:
 
@@ -254,10 +257,8 @@ for blocked methods and their replacements.
 
 ### Object count is zero after migration
 
-The GenericSetup profile replaces the catalog tool but does not populate
-PostgreSQL data.
-We need to run `clearFindAndRebuild()` (Step 4 above)
-to traverse the site and index all content objects.
+The install step runs `clearFindAndRebuild()` automatically, but if that
+failed (check the Zope log), run it manually as described in Step 4 above.
 
 ### Addon indexes are missing
 

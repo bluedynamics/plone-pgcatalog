@@ -157,6 +157,8 @@ def _pool_from_env():
     from psycopg.rows import dict_row
     from psycopg_pool import ConnectionPool
 
+    import atexit
+
     _fallback_pool = ConnectionPool(
         dsn,
         min_size=1,
@@ -164,6 +166,7 @@ def _pool_from_env():
         kwargs={"row_factory": dict_row},
         open=True,
     )
+    atexit.register(_fallback_pool.close)
     return _fallback_pool
 
 

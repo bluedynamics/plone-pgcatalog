@@ -166,6 +166,25 @@ def install(context):
     # Clean up lexicons (unused — pgcatalog uses PG tsvector)
     _remove_lexicons(site)
 
+    # Rebuild: index all existing content objects into PG.
+    # Content created before pgcatalog was installed was indexed by the
+    # old ZCatalog BTree catalog.  That data is lost when the catalog is
+    # replaced.  A full rebuild traverses the portal tree and calls
+    # _set_pg_annotation() for every content object, ensuring path/idx
+    # are populated in object_state.  Without this, navigation and
+    # search return empty results.
+    new_catalog = getattr(site, "portal_catalog", None)
+    if new_catalog is not None and hasattr(new_catalog, "clearFindAndRebuild"):
+        try:
+            new_catalog.clearFindAndRebuild()
+            log.info("Rebuilt catalog: indexed all existing content into PG")
+        except Exception:
+            log.warning(
+                "Could not rebuild catalog after replacement — "
+                "run portal_catalog.clearFindAndRebuild() manually",
+                exc_info=True,
+            )
+
 
 def _snapshot_catalog(catalog):
     """Snapshot index definitions and metadata columns before replacement.

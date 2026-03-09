@@ -17,29 +17,39 @@ import logging
 log = logging.getLogger(__name__)
 
 
-def reindex_index(conn, name):
+_REINDEX_BATCH_SIZE = 500
+
+
+def reindex_index(conn, name, batch_size=_REINDEX_BATCH_SIZE):
     """Re-apply a specific idx key across all cataloged objects.
+
+    Uses server-side cursor with batched updates for memory efficiency
+    on large catalogs.
 
     Args:
         conn: psycopg connection
         name: index name (idx JSONB key) to refresh
+        batch_size: number of rows per batch (default 500)
     """
-    with conn.cursor() as cur:
+    count = 0
+    with conn.cursor(name="reindex_cursor") as cur:
+        cur.itersize = batch_size
         cur.execute(
             "SELECT zoid, idx FROM object_state "
             "WHERE idx IS NOT NULL AND idx ? %(key)s",
             {"key": name},
         )
-        rows = cur.fetchall()
+        batch = cur.fetchmany(batch_size)
+        while batch:
+            for row in batch:
+                value = row["idx"].get(name)
+                if value is not None:
+                    _sql_reindex(conn, zoid=row["zoid"], idx_updates={name: value})
+                    count += 1
+            log.info("reindex_index(%r): processed %d objects so far", name, count)
+            batch = cur.fetchmany(batch_size)
 
-    count = 0
-    for row in rows:
-        value = row["idx"].get(name)
-        if value is not None:
-            _sql_reindex(conn, zoid=row["zoid"], idx_updates={name: value})
-            count += 1
-
-    log.info("reindex_index(%r): updated %d objects", name, count)
+    log.info("reindex_index(%r): updated %d objects total", name, count)
     return count
 
 

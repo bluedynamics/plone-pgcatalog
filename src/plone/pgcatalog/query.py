@@ -12,6 +12,7 @@ from datetime import UTC
 from plone.pgcatalog.columns import ensure_date_param as _ensure_date_param
 from plone.pgcatalog.columns import get_registry
 from plone.pgcatalog.columns import IndexType
+from plone.pgcatalog.columns import validate_identifier
 from psycopg.types.json import Json
 from typing import ClassVar
 
@@ -248,6 +249,7 @@ class _QueryBuilder:
                 return
             # Fall back to simple JSONB field query for unregistered indexes
             # (e.g. Language, TranslationGroup from plone.app.multilingual).
+            validate_identifier(name)
             spec = _normalize_query(raw)
             self._handle_field(name, name, spec)
             return

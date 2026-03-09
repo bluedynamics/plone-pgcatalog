@@ -1,5 +1,43 @@
 # Changelog
 
+## 1.0.0b17
+
+### Security
+
+- **CAT-Q1:** Validate unknown query keys before SQL interpolation in
+  `_process_index()` fallback path.  Unregistered index names are now
+  checked with `validate_identifier()` before being interpolated into
+  JSONB field query expressions, preventing potential SQL injection via
+  crafted query dict keys.
+
+- **CAT-S1:** Replace f-string DDL in `_ensure_text_indexes()` with
+  `psycopg.sql.SQL`/`Identifier`/`Literal` composition for defense-in-depth.
+
+### Changed
+
+- **CAT-P1:** `reindex_index()` now uses a server-side cursor with batched
+  fetches instead of loading all rows into memory at once.  Progress is
+  logged after each batch.
+
+### Fixed
+
+- **CAT-O1:** Index/metadata extraction failures in `extraction.py` now
+  emit `log.debug()` messages with field name and exception info instead
+  of silently passing.  Translator extraction failures are also logged.
+
+- **CAT-O2:** Startup degradation (failed registry sync, failed text index
+  creation) now logs at `ERROR` level with actionable context messages
+  instead of `WARNING`/`DEBUG`.
+
+- **CAT-L1:** Fallback connection pool (`_fallback_pool` from
+  `PGCATALOG_DSN` env var) now registers an `atexit` close hook for
+  clean shutdown.
+
+- Install step now runs `clearFindAndRebuild()` after catalog replacement
+  to index all existing content into PostgreSQL. Previously, content
+  created before pgcatalog was installed (e.g. during Plone site creation)
+  had no `path`/`idx` data, causing empty navigation and search results.
+
 ## 1.0.0b16
 
 ### Added

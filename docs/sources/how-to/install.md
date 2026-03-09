@@ -47,6 +47,7 @@ The install step automatically:
 - **Restores** addon-provided indexes from the snapshot
 - Removes orphaned ZCTextIndex lexicons (no longer needed with PG-backed search)
 - Applies DDL schema to PostgreSQL (columns, functions, indexes)
+- **Rebuilds the catalog** by running `clearFindAndRebuild()` to index all existing content into PostgreSQL
 
 ## Verify installation
 

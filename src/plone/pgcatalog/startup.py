@@ -159,20 +159,30 @@ def _ensure_text_indexes(storage):  # pragma: no cover
         return
 
     try:
+        from psycopg import sql as pgsql
+
         with psycopg.connect(dsn, autocommit=True) as conn:
             for name, idx_key in text_indexes:
                 validate_identifier(idx_key)
                 idx_name = f"idx_os_cat_{idx_key.lower()}_tsv"
-                conn.execute(
-                    f"CREATE INDEX IF NOT EXISTS {idx_name} "
-                    f"ON object_state USING gin ("
-                    f"to_tsvector('simple'::regconfig, "
-                    f"COALESCE(idx->>'{idx_key}', ''))) "
-                    f"WHERE idx IS NOT NULL"
+                stmt = pgsql.SQL(
+                    "CREATE INDEX IF NOT EXISTS {idx_name} "
+                    "ON object_state USING gin ("
+                    "to_tsvector('simple'::regconfig, "
+                    "COALESCE(idx->>{idx_key}, ''))) "
+                    "WHERE idx IS NOT NULL"
+                ).format(
+                    idx_name=pgsql.Identifier(idx_name),
+                    idx_key=pgsql.Literal(idx_key),
                 )
+                conn.execute(stmt)
                 log.info("Ensured GIN text index %s for %s", idx_name, name)
     except Exception:
-        log.warning("Failed to create text expression indexes", exc_info=True)
+        log.error(
+            "Failed to create text expression indexes — "
+            "text field queries may be slow until indexes are created",
+            exc_info=True,
+        )
 
 
 def _register_dri_translators(catalog):  # pragma: no cover
@@ -265,12 +275,17 @@ def _sync_registry_from_db(db):  # pragma: no cover
                         len(registry.metadata),
                     )
                 except Exception:
-                    log.warning(
-                        "Failed to sync IndexRegistry from portal_catalog",
+                    log.error(
+                        "Failed to sync IndexRegistry from portal_catalog — "
+                        "catalog queries may return incorrect results until next restart",
                         exc_info=True,
                     )
     except Exception:
-        log.debug("Could not sync IndexRegistry from ZODB", exc_info=True)
+        log.error(
+            "Could not sync IndexRegistry from ZODB — "
+            "catalog queries may return incorrect results until next restart",
+            exc_info=True,
+        )
     finally:
         # Abort the implicit transaction before closing -- traversal
         # may have joined the connection to a transaction, and ZODB
