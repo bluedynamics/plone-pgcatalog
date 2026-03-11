@@ -1,9 +1,9 @@
 """Tests for plone.pgcatalog.interfaces — ensure importability and structure."""
 
+from plone.base.interfaces import IPloneCatalogTool
 from plone.pgcatalog.dri import DateRecurringIndexTranslator
 from plone.pgcatalog.interfaces import IPGCatalogTool
 from plone.pgcatalog.interfaces import IPGIndexTranslator
-from Products.CMFCore.interfaces import ICatalogTool
 from zope.interface import Interface
 from zope.interface.verify import verifyClass
 from zope.interface.verify import verifyObject
@@ -13,8 +13,8 @@ def test_ipgcatalogtool_is_interface():
     assert IPGCatalogTool.isOrExtends(Interface)
 
 
-def test_ipgcatalogtool_extends_icatalogtool():
-    assert IPGCatalogTool.isOrExtends(ICatalogTool)
+def test_ipgcatalogtool_extends_iplonecatalogtool():
+    assert IPGCatalogTool.isOrExtends(IPloneCatalogTool)
 
 
 def test_ipgindextranslator_is_interface():
