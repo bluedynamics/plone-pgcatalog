@@ -1,15 +1,22 @@
 """Interfaces for plone.pgcatalog."""
 
 from plone.base.interfaces import IPloneCatalogTool
-from Products.CMFCore.interfaces import ICatalogTool
 from zope.interface import Interface
 
 
 __all__ = ["IPGCatalogTool", "IPGIndexTranslator"]
 
 
-class IPGCatalogTool(ICatalogTool, IPloneCatalogTool):
-    """Interface for the PostgreSQL-backed catalog tool."""
+class IPGCatalogTool(IPloneCatalogTool):
+    """Interface for the PostgreSQL-backed catalog tool.
+
+    Extends IPloneCatalogTool (not ICatalogTool directly) so that
+    IPloneCatalogTool comes before ICatalogTool in the interface
+    resolution order.  This ensures the plone.indexer wrapper wins
+    over CMFCore's broken wrapper in the IIndexableObject adapter
+    lookup.  ICatalogTool is still provided via IZCatalog on the
+    class declaration.
+    """
 
 
 class IPGIndexTranslator(Interface):

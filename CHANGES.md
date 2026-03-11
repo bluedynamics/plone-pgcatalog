@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.0.0b18
+
+### Fixed
+
+- Fix computed index extraction (`is_folderish`, `is_default_page`,
+  `sortable_title`, etc.) always returning `null`.  `IPGCatalogTool`
+  extended both `ICatalogTool` and `IPloneCatalogTool`, causing
+  `ICatalogTool` to come first in the interface resolution order.
+  CMFCore's `IndexableObjectWrapper` (which does not resolve
+  plone.indexer adapters) won over the plone.indexer wrapper.
+  Fixed by extending `IPloneCatalogTool` only — `ICatalogTool` is
+  already provided via `IZCatalog`.
+
 ## 1.0.0b17
 
 ### Security
