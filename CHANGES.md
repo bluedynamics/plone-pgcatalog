@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.0b19
+
+### Removed
+
+- Remove "Blob Storage" ZMI tab from portal_catalog. Blob storage
+  statistics are now provided by zodb-pgjsonb >= 1.5.2 in the Zope
+  Control Panel under Database management.
+
 ## 1.0.0b18
 
 ### Fixed
