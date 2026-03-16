@@ -120,7 +120,10 @@ CREATE INDEX IF NOT EXISTS idx_os_cat_portal_type
 CREATE INDEX IF NOT EXISTS idx_os_cat_review_state
     ON object_state ((idx->>'review_state')) WHERE idx IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_os_cat_uid
-    ON object_state ((idx->>'uid')) WHERE idx IS NOT NULL;
+    ON object_state ((idx->>'UID')) WHERE idx IS NOT NULL;
+
+-- Extended statistics for UID selectivity (helps planner pick the right index)
+CREATE STATISTICS IF NOT EXISTS stts_os_uid ON (idx->>'UID') FROM object_state;
 
 -- Full-text search (GIN on tsvector)
 CREATE INDEX IF NOT EXISTS idx_os_searchable_text
@@ -242,6 +245,13 @@ def install_catalog_schema(conn):
     Args:
         conn: psycopg connection (autocommit or in a transaction block)
     """
+    # Migration: drop old wrong-case UID index (idx->>'uid' instead of 'UID').
+    # The old expression never matched actual JSONB keys (stored as 'UID').
+    # Must drop before CREATE INDEX IF NOT EXISTS, because the old index has
+    # the same name but a different expression.
+    conn.execute(
+        "DROP INDEX IF EXISTS idx_os_cat_uid; DROP STATISTICS IF EXISTS stts_os_uid"
+    )
     conn.execute(CATALOG_COLUMNS)
     conn.execute(CATALOG_FUNCTIONS)
     conn.execute(CATALOG_LANG_FUNCTION)

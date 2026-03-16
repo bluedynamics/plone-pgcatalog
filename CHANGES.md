@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.0.0b20
+
+### Fixed
+
+- Fix UID expression index using wrong case (`idx->>'uid'` instead of
+  `idx->>'UID'`). JSONB keys are case-sensitive, so the old index was
+  never used. Also add `CREATE STATISTICS` for UID selectivity so the
+  query planner picks the correct index on large tables. Existing
+  databases are migrated automatically on next startup. Fixes #28.
+
 ## 1.0.0b19
 
 ### Removed
