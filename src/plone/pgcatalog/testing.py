@@ -125,11 +125,14 @@ class PGCatalogPGFixture(Layer):
         # 4. Load pgcatalog components + install move handlers
         self._setup_zcml()
 
-        # 5. Fire IDatabaseOpenedWithRoot to register CatalogStateProcessor
-        from zope.event import notify
+        # 5. Register CatalogStateProcessor on the storage.
+        #    PGCatalogLayer loads configure.zcml which registers an
+        #    IDatabaseOpenedWithRoot subscriber for this, but PGCatalogPGFixture
+        #    doesn't load ZCML — call the handler directly.
+        from plone.pgcatalog.startup import register_catalog_processor
         from zope.processlifetime import DatabaseOpenedWithRoot
 
-        notify(DatabaseOpenedWithRoot(self._db))
+        register_catalog_processor(DatabaseOpenedWithRoot(self._db))
 
         # 6. Create Plone site in PG
         self._setup_plone_site()
