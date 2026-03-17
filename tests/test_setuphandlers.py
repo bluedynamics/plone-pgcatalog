@@ -254,7 +254,9 @@ class TestReplaceCatalog:
     def test_replaces_existing_catalog(self):
         site = mock.Mock()
         site.objectIds.return_value = ["portal_catalog"]
-        _replace_catalog(site)
+        with mock.patch("zope.component.getSiteManager") as gsm:
+            gsm.return_value = mock.Mock()
+            _replace_catalog(site)
         site._delObject.assert_called_once_with("portal_catalog")
         site._setObject.assert_called_once()
         args = site._setObject.call_args[0]
@@ -263,7 +265,9 @@ class TestReplaceCatalog:
     def test_creates_catalog_when_none_exists(self):
         site = mock.Mock()
         site.objectIds.return_value = []
-        _replace_catalog(site)
+        with mock.patch("zope.component.getSiteManager") as gsm:
+            gsm.return_value = mock.Mock()
+            _replace_catalog(site)
         site._delObject.assert_not_called()
         site._setObject.assert_called_once()
 
@@ -272,7 +276,9 @@ class TestReplaceCatalog:
 
         site = mock.Mock()
         site.objectIds.return_value = []
-        _replace_catalog(site)
+        with mock.patch("zope.component.getSiteManager") as gsm:
+            gsm.return_value = mock.Mock()
+            _replace_catalog(site)
         new_tool = site._setObject.call_args[0][1]
         assert isinstance(new_tool, PlonePGCatalogTool)
 

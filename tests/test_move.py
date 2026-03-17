@@ -7,6 +7,7 @@ Written TDD-style: these tests are written BEFORE the implementation.
 from plone.pgcatalog.indexing import catalog_object
 from plone.pgcatalog.pending import _local
 from tests.conftest import insert_object
+from unittest import mock
 
 import transaction
 
@@ -387,3 +388,142 @@ class TestPendingMovesTransactionClear:
 
         result = pop_all_pending_moves()
         assert result == []
+
+
+# ===========================================================================
+# B1.7 _pop_move_context edge case
+# ===========================================================================
+
+
+class TestPopMoveContextEmpty:
+    """Test pop from empty stack returns None."""
+
+    def setup_method(self):
+        try:
+            del _local.move_context_stack
+        except AttributeError:
+            pass
+
+    def test_pop_empty_returns_none(self):
+        from plone.pgcatalog.move import _pop_move_context
+
+        result = _pop_move_context()
+        assert result is None
+
+
+# ===========================================================================
+# B1.8 _reindex_security_for_move tests
+# ===========================================================================
+
+
+class TestReindexSecurityForMove:
+    """Test the security reindex function for cross-container moves."""
+
+    def test_reindexes_descendants_security(self):
+        """_reindex_security_for_move calls reindexObject with security indexes."""
+        from plone.pgcatalog.move import _reindex_security_for_move
+
+        # Create mock objects
+        child1 = mock.Mock()
+        child1._p_changed = False
+
+        brain1 = mock.Mock()
+        brain1.getPath.return_value = "/plone/source/child1"
+        brain1._unrestrictedGetObject.return_value = child1
+
+        # The parent brain (same as old_prefix) — should be skipped
+        parent_brain = mock.Mock()
+        parent_brain.getPath.return_value = "/plone/source"
+
+        catalog = mock.Mock()
+        catalog.unrestrictedSearchResults.return_value = [parent_brain, brain1]
+
+        ob = mock.Mock()
+        ob._cmf_security_indexes = ("allowedRolesAndUsers",)
+
+        with mock.patch("Products.CMFCore.utils.getToolByName", return_value=catalog):
+            _reindex_security_for_move(ob, "/plone/source")
+
+        # Parent brain skipped, child reindexed
+        catalog.reindexObject.assert_called_once_with(
+            child1, idxs=["allowedRolesAndUsers"], update_metadata=0
+        )
+
+    def test_skips_when_no_catalog(self):
+        """_reindex_security_for_move returns early when no catalog."""
+        from plone.pgcatalog.move import _reindex_security_for_move
+
+        ob = mock.Mock()
+        with mock.patch("Products.CMFCore.utils.getToolByName", return_value=None):
+            _reindex_security_for_move(ob, "/plone/source")
+        # No error raised
+
+    def test_handles_search_failure(self):
+        """_reindex_security_for_move handles catalog search failure gracefully."""
+        from plone.pgcatalog.move import _reindex_security_for_move
+
+        catalog = mock.Mock()
+        catalog.unrestrictedSearchResults.side_effect = RuntimeError("DB error")
+
+        ob = mock.Mock()
+        ob._cmf_security_indexes = ("allowedRolesAndUsers",)
+        with mock.patch("Products.CMFCore.utils.getToolByName", return_value=catalog):
+            _reindex_security_for_move(ob, "/plone/source")
+        # No error raised, logged warning
+
+    def test_handles_missing_object(self):
+        """_reindex_security_for_move handles missing objects gracefully."""
+        from plone.pgcatalog.move import _reindex_security_for_move
+
+        brain = mock.Mock()
+        brain.getPath.return_value = "/plone/source/child"
+        brain._unrestrictedGetObject.return_value = None  # object gone
+
+        catalog = mock.Mock()
+        catalog.unrestrictedSearchResults.return_value = [brain]
+
+        ob = mock.Mock()
+        ob._cmf_security_indexes = ("allowedRolesAndUsers",)
+        with mock.patch("Products.CMFCore.utils.getToolByName", return_value=catalog):
+            _reindex_security_for_move(ob, "/plone/source")
+
+        catalog.reindexObject.assert_not_called()
+
+    def test_deactivates_unchanged_objects(self):
+        """_reindex_security_for_move deactivates objects that were not changed."""
+        from plone.pgcatalog.move import _reindex_security_for_move
+
+        child = mock.Mock()
+        child._p_changed = None  # Was deactivated (ghost)
+
+        brain = mock.Mock()
+        brain.getPath.return_value = "/plone/source/child"
+        brain._unrestrictedGetObject.return_value = child
+
+        catalog = mock.Mock()
+        catalog.unrestrictedSearchResults.return_value = [brain]
+
+        ob = mock.Mock()
+        ob._cmf_security_indexes = ("allowedRolesAndUsers",)
+        with mock.patch("Products.CMFCore.utils.getToolByName", return_value=catalog):
+            _reindex_security_for_move(ob, "/plone/source")
+
+        child._p_deactivate.assert_called_once()
+
+    def test_handles_unrestricted_get_object_error(self):
+        """_reindex_security_for_move handles _unrestrictedGetObject errors."""
+        from plone.pgcatalog.move import _reindex_security_for_move
+
+        brain = mock.Mock()
+        brain.getPath.return_value = "/plone/source/child"
+        brain._unrestrictedGetObject.side_effect = KeyError("missing")
+
+        catalog = mock.Mock()
+        catalog.unrestrictedSearchResults.return_value = [brain]
+
+        ob = mock.Mock()
+        ob._cmf_security_indexes = ("allowedRolesAndUsers",)
+        with mock.patch("Products.CMFCore.utils.getToolByName", return_value=catalog):
+            _reindex_security_for_move(ob, "/plone/source")
+
+        catalog.reindexObject.assert_not_called()
