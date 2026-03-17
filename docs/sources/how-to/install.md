@@ -10,7 +10,7 @@ pip install plone.pgcatalog
 uv pip install plone.pgcatalog
 ```
 
-Requirements: Python 3.12+, PostgreSQL 14+ (tested with 17), zodb-pgjsonb >= 1.1.
+Requirements: Python 3.12+, PostgreSQL 15+ (tested with 17), zodb-pgjsonb >= 1.1.
 
 ## Configure Zope
 
