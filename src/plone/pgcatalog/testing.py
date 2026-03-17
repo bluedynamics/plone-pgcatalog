@@ -231,6 +231,25 @@ class PGCatalogPGFixture(Layer):
             for role in TEST_USER_ROLES:
                 pas.portal_role_manager.doAssignRoleToPrincipal(TEST_USER_ID, role)
 
+            # Replace standard CatalogTool with PlonePGCatalogTool so that
+            # catalog_object() routes through PG annotation pipeline.
+            # Must happen AFTER addPloneSite (portal_catalog must exist).
+            from plone.pgcatalog.setuphandlers import _replace_catalog
+
+            portal = app[PLONE_SITE_ID]
+
+            from zope.component.hooks import setSite
+
+            setSite(portal)
+            _replace_catalog(portal)
+
+            # Re-import catalog indexes on the fresh PlonePGCatalogTool
+            # (UID, portal_type, etc. — needed for ZCatalog compatibility)
+            from plone.pgcatalog.setuphandlers import _ensure_catalog_indexes
+
+            _ensure_catalog_indexes(portal)
+            setSite(None)
+
             zope_testing.logout()
 
     def testSetUp(self):
