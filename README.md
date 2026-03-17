@@ -19,7 +19,7 @@ Requires [zodb-pgjsonb](https://github.com/bluedynamics/zodb-pgjsonb) as the ZOD
 ## Requirements
 
 - Python 3.12+
-- PostgreSQL 14+ (tested with 17)
+- PostgreSQL 15+ (tested with 17)
 - [zodb-pgjsonb](https://github.com/bluedynamics/zodb-pgjsonb)
 - Plone 6
 

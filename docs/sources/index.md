@@ -21,7 +21,7 @@ PostgreSQL-backed catalog for Plone, replacing ZCatalog BTrees with SQL queries 
 - Transactional writes atomically alongside ZODB commit
 - Catalog data queryable from any PostgreSQL client
 
-**Requirements:** Python 3.12+, PostgreSQL 14+ (tested with 17), Plone 6, [zodb-pgjsonb](https://github.com/bluedynamics/zodb-pgjsonb)
+**Requirements:** Python 3.12+, PostgreSQL 15+ (tested with 17), Plone 6, [zodb-pgjsonb](https://github.com/bluedynamics/zodb-pgjsonb)
 
 ## Documentation
 

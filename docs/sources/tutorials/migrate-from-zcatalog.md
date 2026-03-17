@@ -14,7 +14,7 @@ continues to work unchanged.
 
 - An existing Plone 6 site
 - The site must already use [zodb-pgjsonb](https://github.com/bluedynamics/zodb-pgjsonb) as its ZODB storage backend
-- PostgreSQL 14+ accessible (tested with 17)
+- PostgreSQL 15+ accessible (tested with 17)
 - Admin access to the Plone site
 
 :::{note}
