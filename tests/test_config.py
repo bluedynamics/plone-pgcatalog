@@ -410,7 +410,7 @@ class TestPendingSavepoint:
 
         dm = PendingDataManager(transaction.get())
         assert verifyObject(ISavepointDataManager, dm)
-        sp = PendingSavepoint({}, {})
+        sp = PendingSavepoint({}, {}, [])
         assert verifyObject(IDataManagerSavepoint, sp)
 
 

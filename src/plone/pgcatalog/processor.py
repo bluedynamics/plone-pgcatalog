@@ -8,6 +8,7 @@ state during tpc_vote.
 from plone.pgcatalog.backends import get_backend
 from plone.pgcatalog.pending import _MISSING
 from plone.pgcatalog.pending import pop_all_partial_pending
+from plone.pgcatalog.pending import pop_all_pending_moves
 from plone.pgcatalog.pending import pop_pending
 from plone.pgcatalog.schema import CATALOG_COLUMNS
 from plone.pgcatalog.schema import CATALOG_FUNCTIONS
@@ -154,12 +155,16 @@ class CatalogStateProcessor:
         return result
 
     def finalize(self, cursor):
-        """Execute partial idx updates and enqueue Tika extraction jobs.
+        """Execute partial idx updates, bulk path moves, and enqueue Tika jobs.
 
         Called by zodb-pgjsonb after batch object writes, using the
         same cursor (same PG transaction).  Partial updates are
         registered by ``reindexObject(idxs=[...])`` for objects that
         don't need full ZODB serialization.
+
+        Bulk path moves are registered by the move optimization wrappers
+        (``plone.pgcatalog.move``) and executed here as single SQL UPDATEs
+        per moved subtree.
 
         When Tika is configured, also checks which committed zoids have
         associated blobs and enqueues them for text extraction.
@@ -173,6 +178,40 @@ class CatalogStateProcessor:
                     "WHERE zoid = %(zoid)s AND idx IS NOT NULL",
                     {"zoid": zoid, "patch": Json(idx_updates)},
                 )
+
+        # Execute bulk path moves (one SQL per moved subtree)
+        moves = pop_all_pending_moves()
+        for old_prefix, new_prefix, depth_delta in moves:
+            cursor.execute(
+                """
+                UPDATE object_state SET
+                    path = %(new)s || substring(path FROM length(%(old)s) + 1),
+                    parent_path = %(new)s || substring(parent_path FROM length(%(old)s) + 1),
+                    path_depth = path_depth + %(dd)s,
+                    idx = idx || jsonb_build_object(
+                        'path',
+                        %(new)s || substring(idx->>'path' FROM length(%(old)s) + 1),
+                        'path_parent',
+                        %(new)s || substring(idx->>'path_parent' FROM length(%(old)s) + 1),
+                        'path_depth',
+                        (idx->>'path_depth')::int + %(dd)s
+                    )
+                WHERE path LIKE %(like)s
+                  AND idx IS NOT NULL
+                """,
+                {
+                    "old": old_prefix,
+                    "new": new_prefix,
+                    "dd": depth_delta,
+                    "like": old_prefix + "/%",
+                },
+            )
+            log.info(
+                "Bulk path update: %s -> %s (%+d depth)",
+                old_prefix,
+                new_prefix,
+                depth_delta,
+            )
 
         # Enqueue Tika extraction jobs for blobs in this transaction
         if TIKA_URL and self._tika_candidates:

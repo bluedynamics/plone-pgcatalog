@@ -18,7 +18,9 @@ import transaction
 
 
 __all__ = [
+    "add_pending_move",
     "pop_all_partial_pending",
+    "pop_all_pending_moves",
     "pop_pending",
     "set_partial_pending",
     "set_pending",
@@ -26,7 +28,7 @@ __all__ = [
 
 
 # Shared thread-local for all plone.pgcatalog state.
-# Pending store uses: .pending, .partial_pending, ._pending_dm
+# Pending store uses: .pending, .partial_pending, .pending_moves, ._pending_dm
 # Pool module uses: .pgcat_conn, .pgcat_pool
 _local = threading.local()
 
@@ -115,13 +117,51 @@ def pop_all_partial_pending():
     return result
 
 
+def _get_pending_moves():
+    """Return the thread-local pending moves list."""
+    try:
+        return _local.pending_moves
+    except AttributeError:
+        _local.pending_moves = []
+        return _local.pending_moves
+
+
+def add_pending_move(old_prefix, new_prefix, depth_delta):
+    """Register a pending bulk path move for finalize().
+
+    Called by the move wrapper after OFS dispatch completes.
+    The bulk SQL UPDATE is deferred to processor.finalize() so it
+    runs in the same PG transaction as ZODB commit.
+
+    Args:
+        old_prefix: old path prefix (e.g., "/plone/source")
+        new_prefix: new path prefix (e.g., "/plone/target/source")
+        depth_delta: change in path depth (new - old)
+    """
+    _get_pending_moves().append((old_prefix, new_prefix, depth_delta))
+    _ensure_joined()
+
+
+def pop_all_pending_moves():
+    """Pop all pending moves, returning and clearing the list.
+
+    Returns:
+        list of (old_prefix, new_prefix, depth_delta) tuples
+    """
+    moves = _get_pending_moves()
+    result = list(moves)
+    moves.clear()
+    return result
+
+
 @implementer(IDataManagerSavepoint)
 class PendingSavepoint:
     """Snapshot of pending catalog data for savepoint rollback."""
 
-    def __init__(self, snapshot, partial_snapshot):
+    def __init__(self, snapshot, partial_snapshot, moves_snapshot):
         self._snapshot = snapshot
         self._partial_snapshot = partial_snapshot
+        self._moves_snapshot = moves_snapshot
 
     def rollback(self):
         pending = _get_pending()
@@ -130,6 +170,9 @@ class PendingSavepoint:
         partial = _get_partial_pending()
         partial.clear()
         partial.update(self._partial_snapshot)
+        moves = _get_pending_moves()
+        moves.clear()
+        moves.extend(self._moves_snapshot)
 
 
 @implementer(ISavepointDataManager)
@@ -147,11 +190,16 @@ class PendingDataManager:
         self._joined = True
 
     def savepoint(self):
-        return PendingSavepoint(dict(_get_pending()), dict(_get_partial_pending()))
+        return PendingSavepoint(
+            dict(_get_pending()),
+            dict(_get_partial_pending()),
+            list(_get_pending_moves()),
+        )
 
     def abort(self, transaction):
         _get_pending().clear()
         _get_partial_pending().clear()
+        _get_pending_moves().clear()
         self._joined = False  # AbortSavepoint may have unjoined us
 
     def tpc_begin(self, transaction):
@@ -166,10 +214,12 @@ class PendingDataManager:
     def tpc_finish(self, transaction):
         _get_pending().clear()
         _get_partial_pending().clear()
+        _get_pending_moves().clear()
 
     def tpc_abort(self, transaction):
         _get_pending().clear()
         _get_partial_pending().clear()
+        _get_pending_moves().clear()
 
     def sortKey(self):
         return "~plone.pgcatalog.pending"

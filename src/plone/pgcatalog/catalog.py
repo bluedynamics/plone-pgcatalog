@@ -527,11 +527,26 @@ class PlonePGCatalogTool(UniqueObject, Folder):
 
         Does NOT delegate to ZCatalog — all catalog data flows to
         PostgreSQL via CatalogStateProcessor during tpc_vote.
+
+        During move operations, returns immediately — descendants' paths
+        will be fixed by a single bulk SQL UPDATE in finalize().
         """
+        from plone.pgcatalog.move import is_move_in_progress
+
+        if is_move_in_progress():
+            return
         self._set_pg_annotation(object)
 
     def unindexObject(self, object):  # noqa: A002
-        """Queue-aware: enqueue unindex request."""
+        """Queue-aware: enqueue unindex request.
+
+        During move operations, returns immediately — no need to NULL
+        paths that will be bulk-updated.
+        """
+        from plone.pgcatalog.move import is_move_in_progress
+
+        if is_move_in_progress():
+            return
         url = self.__url(object)
         self.uncatalog_object(url)
 
