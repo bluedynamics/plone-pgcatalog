@@ -21,6 +21,15 @@ with the following columns:
 | `search_bm25_{lang}` | `BM25VECTOR` | Per-language BM25 column (when BM25 active) |
 
 The first five columns are always present.
+
+`parent_path` and `path_depth` are derived from `path` (the parent is
+the path with its last segment removed; the depth is the number of
+segments).  They are stored as separate columns because the most
+frequent path queries—direct children (`depth=1`) and navigation
+trees—become simple equality checks (`parent_path = X` or
+`parent_path = ANY(...)`) instead of `LIKE` prefix scans combined
+with depth filtering.
+
 The `search_bm25` and
 per-language `search_bm25_{lang}` columns are created only when
 VectorChord-BM25 extensions are detected at startup.
