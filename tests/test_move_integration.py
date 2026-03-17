@@ -18,32 +18,29 @@ import pytest
 import transaction
 
 
-# Try to set up Plone layer fixtures — skip Plone tests gracefully if
-# the layer can't be loaded (e.g. missing pkg_resources in CI with
-# setuptools ≥82, or ZODB DemoStorage incompatibility).
-_PLONE_LAYER_AVAILABLE = False
+# Plone layer setup — may fail in CI due to missing pkg_resources
+# (setuptools >=82) or ZODB DemoStorage incompatibility.
+# Try to create fixtures; if layer setup fails, tests using pgcatalog_layer skip.
+_PLONE_LAYER_ERROR = None
 try:
     from plone.app.testing import setRoles
     from plone.app.testing import TEST_USER_ID
     from plone.pgcatalog.testing import PGCATALOG_INTEGRATION_TESTING
     from zope.pytestlayer import fixture
 
-    globals().update(
-        fixture.create(
-            PGCATALOG_INTEGRATION_TESTING,
-            session_fixture_name="pgcatalog_layer_session",
-            class_fixture_name="pgcatalog_layer_class",
-            function_fixture_name="pgcatalog_layer",
-        )
+    _layer_fixtures = fixture.create(
+        PGCATALOG_INTEGRATION_TESTING,
+        session_fixture_name="pgcatalog_layer_session",
+        class_fixture_name="pgcatalog_layer_class",
+        function_fixture_name="pgcatalog_layer",
     )
-    _PLONE_LAYER_AVAILABLE = True
-except Exception:
-    pass
+    globals().update(_layer_fixtures)
+except Exception as exc:
+    _PLONE_LAYER_ERROR = str(exc)
 
-requires_plone_layer = pytest.mark.skipif(
-    not _PLONE_LAYER_AVAILABLE,
-    reason="Plone test layer not available (pkg_resources or ZODB compat issue)",
-)
+    @pytest.fixture
+    def pgcatalog_layer():
+        pytest.skip(f"Plone layer unavailable: {_PLONE_LAYER_ERROR}")
 
 
 # ---------------------------------------------------------------------------
@@ -220,7 +217,6 @@ def _simulate_move(conn, old_prefix, new_prefix, parent_zoid, parent_new_path):
 # ===========================================================================
 
 
-@requires_plone_layer
 class TestMoveHandlerInstallation:
     """Test that move handlers are properly installed in the Plone layer."""
 
@@ -259,7 +255,6 @@ class TestMoveHandlerInstallation:
         assert result is False
 
 
-@requires_plone_layer
 class TestMoveContextWithPlone:
     """Test move context stack using the Plone layer."""
 
@@ -283,7 +278,6 @@ class TestMoveContextWithPlone:
         assert is_move_in_progress() is False
 
 
-@requires_plone_layer
 class TestOFSRenameWithWrappers:
     """Test actual OFS rename operations with our wrappers installed.
 
@@ -350,7 +344,6 @@ class TestOFSRenameWithWrappers:
         assert "child-doc" in target["source-folder"].objectIds()
 
 
-@requires_plone_layer
 class TestWrapperWithPGCatalogActive:
     """Test wrapper behavior when _is_pgcatalog_active() is patched to True.
 
