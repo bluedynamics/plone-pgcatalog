@@ -57,6 +57,7 @@ test = [
     "httpx>=0.24",
     "plone.app.testing",
     "zope.pytestlayer",
+    "horse-with-no-namespace",
 ]
 
 [tool.hatch.build.targets.sdist]

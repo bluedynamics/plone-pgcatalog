@@ -59,6 +59,9 @@ jobs:
           enable-cache: true
           cache-dependency-glob: "pyproject.toml"
 
+      - name: Install system dependencies
+        run: sudo apt-get install -y libxml2-dev libxslt-dev
+
       - name: Set up Python ${{ matrix.python-version }}
         run: uv python install ${{ matrix.python-version }}
 
