@@ -1,15 +1,25 @@
 """Shared test configuration for plone.pgcatalog tests."""
 
+from plone.app.testing import PLONE_FIXTURE
 from plone.pgcatalog.columns import get_registry
 from plone.pgcatalog.columns import IndexType
 from plone.pgcatalog.schema import install_catalog_schema
 from psycopg.rows import dict_row
 from psycopg.types.json import Json
 from zodb_pgjsonb.schema import HISTORY_FREE_SCHEMA
+from zope.pytestlayer import fixture
 
 import os
 import psycopg
 import pytest
+
+
+# Register PLONE_FIXTURE layer fixtures globally so they are available
+# to ALL test files.  Without this, zope.pytestlayer's internal LAYERS
+# cache causes ordering-dependent failures: whichever test file first
+# calls fixture.create() for a layer depending on PLONE_FIXTURE gets
+# the base fixtures in its module globals, but other files don't.
+globals().update(fixture.create(PLONE_FIXTURE))
 
 
 # Standard Plone indexes — used to populate the registry for tests.
