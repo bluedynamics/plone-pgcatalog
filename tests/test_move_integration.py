@@ -13,23 +13,10 @@ from plone.pgcatalog.indexing import catalog_object
 from plone.pgcatalog.pending import _local
 from plone.pgcatalog.pending import add_pending_move
 from plone.pgcatalog.pending import pop_all_pending_moves
-from plone.pgcatalog.testing import PGCATALOG_INTEGRATION_TESTING
 from psycopg.types.json import Json
 from tests.conftest import insert_object
-from zope.pytestlayer import fixture
 
 import transaction
-
-
-# Generate pytest fixtures from the Plone integration layer.
-globals().update(
-    fixture.create(
-        PGCATALOG_INTEGRATION_TESTING,
-        session_fixture_name="pgcatalog_layer_session",
-        class_fixture_name="pgcatalog_layer_class",
-        function_fixture_name="pgcatalog_layer",
-    )
-)
 
 
 # ---------------------------------------------------------------------------
