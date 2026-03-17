@@ -1,0 +1,31 @@
+{
+    "name": "plone.pgcatalog",
+    "short_name": "pgcatalog",
+    "description": "PostgreSQL-backed catalog for Plone, replacing ZCatalog BTrees with SQL queries on JSONB.",
+    "start_url": "/plone-pgcatalog/",
+    "display": "browser",
+    "background_color": "#1a1a2e",
+    "theme_color": "#06b6d4",
+    "icons": [
+        {
+            "src": "logo-web.png",
+            "sizes": "200x200",
+            "type": "image/png"
+        },
+        {
+            "src": "apple-touch-icon.png",
+            "sizes": "180x180",
+            "type": "image/png"
+        },
+        {
+            "src": "logo-400.png",
+            "sizes": "400x400",
+            "type": "image/png"
+        },
+        {
+            "src": "logo.png",
+            "sizes": "1024x1024",
+            "type": "image/png"
+        }
+    ]
+}

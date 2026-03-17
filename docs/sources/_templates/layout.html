@@ -1,9 +1,10 @@
-{# Extend the theme's layout to inject apple-touch-icon and Open Graph meta #}
+{# Extend the theme's layout to inject icons, manifest, and Open Graph meta #}
 {% extends "!layout.html" %}
 
 {% block metatags %}
 {{ super() }}
 <link rel="apple-touch-icon" sizes="180x180" href="{{ pathto('_static/apple-touch-icon.png', 1) }}">
+<link rel="manifest" href="{{ pathto('_static/site.webmanifest', 1) }}">
 <meta property="og:type" content="website">
 <meta property="og:title" content="{{ title }}">
 <meta property="og:description" content="PostgreSQL-backed catalog for Plone, replacing ZCatalog BTrees with SQL queries on JSONB.">
