@@ -128,6 +128,11 @@ def register_catalog_processor(event):
         _sync_registry_from_db(db)
         _ensure_text_indexes(storage)
 
+        # Install move/rename optimization handlers
+        from plone.pgcatalog.move import install_move_handlers
+
+        install_move_handlers()
+
         # Optionally start in-process Tika extraction worker
         tika_url = os.environ.get("PGCATALOG_TIKA_URL", "").strip()
         tika_inprocess = os.environ.get("PGCATALOG_TIKA_INPROCESS", "").strip().lower()
