@@ -63,7 +63,9 @@ jobs:
         run: uv python install ${{ matrix.python-version }}
 
       - name: Install dependencies
-        run: uv venv && uv pip install -e ".[test]"
+        run: |
+          uv venv
+          uv pip install -c https://dist.plone.org/release/6.1-latest/constraints.txt -e ".[test]"
 
       - name: Run tests with coverage
         run: uv run pytest --cov --cov-report=
@@ -94,7 +96,9 @@ jobs:
           cache-dependency-glob: "pyproject.toml"
 
       - name: Install dependencies
-        run: uv venv && uv pip install -e ".[test]"
+        run: |
+          uv venv
+          uv pip install -c https://dist.plone.org/release/6.1-latest/constraints.txt -e ".[test]"
 
       - uses: actions/download-artifact@v4
         with:

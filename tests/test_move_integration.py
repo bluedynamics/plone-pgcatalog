@@ -7,40 +7,29 @@ Uses plone.app.testing with a real Plone site and actual OFS move/rename
 operations to exercise the complete code path.
 """
 
+from plone.app.testing import setRoles
+from plone.app.testing import TEST_USER_ID
 from plone.pgcatalog.indexing import catalog_object
 from plone.pgcatalog.pending import _local
 from plone.pgcatalog.pending import add_pending_move
 from plone.pgcatalog.pending import pop_all_pending_moves
+from plone.pgcatalog.testing import PGCATALOG_INTEGRATION_TESTING
 from psycopg.types.json import Json
 from tests.conftest import insert_object
+from zope.pytestlayer import fixture
 
-import pytest
 import transaction
 
 
-# Plone layer setup — may fail in CI due to missing pkg_resources
-# (setuptools >=82) or ZODB DemoStorage incompatibility.
-# Try to create fixtures; if layer setup fails, tests using pgcatalog_layer skip.
-_PLONE_LAYER_ERROR = None
-try:
-    from plone.app.testing import setRoles
-    from plone.app.testing import TEST_USER_ID
-    from plone.pgcatalog.testing import PGCATALOG_INTEGRATION_TESTING
-    from zope.pytestlayer import fixture
-
-    _layer_fixtures = fixture.create(
+# Generate pytest fixtures from the Plone integration layer.
+globals().update(
+    fixture.create(
         PGCATALOG_INTEGRATION_TESTING,
         session_fixture_name="pgcatalog_layer_session",
         class_fixture_name="pgcatalog_layer_class",
         function_fixture_name="pgcatalog_layer",
     )
-    globals().update(_layer_fixtures)
-except Exception as exc:
-    _PLONE_LAYER_ERROR = str(exc)
-
-    @pytest.fixture
-    def pgcatalog_layer():
-        pytest.skip(f"Plone layer unavailable: {_PLONE_LAYER_ERROR}")
+)
 
 
 # ---------------------------------------------------------------------------
