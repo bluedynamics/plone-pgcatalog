@@ -4,6 +4,7 @@ from plone.app.testing import PLONE_FIXTURE
 from plone.pgcatalog.columns import get_registry
 from plone.pgcatalog.columns import IndexType
 from plone.pgcatalog.schema import install_catalog_schema
+from plone.pgcatalog.testing import PGCATALOG_INTEGRATION_TESTING
 from psycopg.rows import dict_row
 from psycopg.types.json import Json
 from zodb_pgjsonb.schema import HISTORY_FREE_SCHEMA
@@ -20,6 +21,17 @@ import pytest
 # calls fixture.create() for a layer depending on PLONE_FIXTURE gets
 # the base fixtures in its module globals, but other files don't.
 globals().update(fixture.create(PLONE_FIXTURE))
+
+# Generate pytest fixtures from the Plone integration layer.
+# Shared by test_plone_integration.py and test_move_integration.py.
+globals().update(
+    fixture.create(
+        PGCATALOG_INTEGRATION_TESTING,
+        session_fixture_name="pgcatalog_layer_session",
+        class_fixture_name="pgcatalog_layer_class",
+        function_fixture_name="pgcatalog_layer",
+    )
+)
 
 
 # Standard Plone indexes — used to populate the registry for tests.
