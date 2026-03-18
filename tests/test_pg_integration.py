@@ -9,11 +9,10 @@ actually arrives in PostgreSQL with correct catalog columns, paths,
 and searchable text.
 """
 
-from plone.app.testing import login
+from datetime import UTC
 from plone.app.testing import logout
 from plone.app.testing import setRoles
 from plone.app.testing import TEST_USER_ID
-from plone.app.testing import TEST_USER_NAME
 from plone.pgcatalog.testing import PGCATALOG_PG_FIXTURE
 from zope.pytestlayer import fixture
 
@@ -1033,7 +1032,13 @@ class TestBrainAttributes:
 
 
 class TestSecurityFiltering:
-    """Test that searchResults respects security (allowedRolesAndUsers)."""
+    """Test that searchResults applies security filters.
+
+    Uses effective_date (publication date) to test visibility:
+    - Content with future effective_date is hidden from anonymous
+      (effectiveRange filter) but visible to Managers who have
+      AccessInactivePortalContent permission.
+    """
 
     def test_manager_finds_all_content(self, pg_functional):
         """Manager user finds content via searchResults."""
@@ -1049,92 +1054,99 @@ class TestSecurityFiltering:
         paths = [b.getPath() for b in results]
         assert any(p.endswith("/sec-doc") for p in paths)
 
-    def test_anonymous_cannot_see_restricted_content(self, pg_functional):
-        """Anonymous user cannot see content restricted to Manager."""
+    def test_anonymous_cannot_see_future_content(self, pg_functional):
+        """Anonymous cannot see content with future effective date."""
+        from datetime import datetime
+
         portal = pg_functional["portal"]
         setRoles(portal, TEST_USER_ID, ["Manager"])
         catalog = portal["portal_catalog"]
 
-        # First commit: create content
-        portal.invokeFactory("Document", "priv-doc", title="Private")
+        portal.invokeFactory("Document", "future-doc", title="Future")
         transaction.commit()
 
-        # Second commit: restrict permissions and reindex
-        doc = portal["priv-doc"]
-        doc.manage_permission("View", roles=["Manager"], acquire=False)
+        # Set effective date far in the future
+        doc = portal["future-doc"]
+        doc.effective_date = datetime(2099, 1, 1, tzinfo=UTC)
         doc.reindexObject()
         transaction.commit()
 
-        # Search as anonymous
+        # Anonymous cannot see future-dated content (effectiveRange)
         logout()
         results = catalog.searchResults(portal_type="Document")
         paths = [b.getPath() for b in results]
-        assert not any(p.endswith("/priv-doc") for p in paths)
+        assert not any(p.endswith("/future-doc") for p in paths)
 
-    def test_anonymous_can_see_public_content(self, pg_functional):
-        """Anonymous user can see content with View granted to Anonymous."""
+    def test_manager_sees_future_content(self, pg_functional):
+        """Manager sees content with future effective date."""
+        from datetime import datetime
+
         portal = pg_functional["portal"]
         setRoles(portal, TEST_USER_ID, ["Manager"])
         catalog = portal["portal_catalog"]
 
-        portal.invokeFactory("Document", "pub-doc", title="Public")
+        portal.invokeFactory("Document", "mgr-future", title="Manager Future")
         transaction.commit()
 
-        # Default Plone grants View to Anonymous (no workflow)
-        logout()
+        doc = portal["mgr-future"]
+        doc.effective_date = datetime(2099, 1, 1, tzinfo=UTC)
+        doc.reindexObject()
+        transaction.commit()
+
+        # Manager has AccessInactivePortalContent → sees it
         results = catalog.searchResults(portal_type="Document")
         paths = [b.getPath() for b in results]
-        assert any(p.endswith("/pub-doc") for p in paths)
+        assert any(p.endswith("/mgr-future") for p in paths)
 
     def test_mixed_visibility(self, pg_functional):
-        """Manager sees both; anonymous sees only public content."""
+        """Manager sees all; anonymous sees only currently effective content."""
+        from datetime import datetime
+
         portal = pg_functional["portal"]
         setRoles(portal, TEST_USER_ID, ["Manager"])
         catalog = portal["portal_catalog"]
 
-        # First commit: create both docs
+        # Public content (no effective date restriction)
         portal.invokeFactory("Document", "mix-pub", title="Public Mix")
-        portal.invokeFactory("Document", "mix-priv", title="Private Mix")
+        # Future content (not yet effective)
+        portal.invokeFactory("Document", "mix-future", title="Future Mix")
         transaction.commit()
 
-        # Second commit: restrict one doc
-        doc = portal["mix-priv"]
-        doc.manage_permission("View", roles=["Manager"], acquire=False)
+        doc = portal["mix-future"]
+        doc.effective_date = datetime(2099, 1, 1, tzinfo=UTC)
         doc.reindexObject()
         transaction.commit()
 
         # Manager sees both
-        login(portal, TEST_USER_NAME)
-        setRoles(portal, TEST_USER_ID, ["Manager"])
         results = catalog.searchResults(portal_type="Document")
         manager_paths = [b.getPath() for b in results]
         assert any(p.endswith("/mix-pub") for p in manager_paths)
-        assert any(p.endswith("/mix-priv") for p in manager_paths)
+        assert any(p.endswith("/mix-future") for p in manager_paths)
 
-        # Anonymous sees only public
+        # Anonymous sees only public (effective now or unset)
         logout()
         results = catalog.searchResults(portal_type="Document")
         anon_paths = [b.getPath() for b in results]
         assert any(p.endswith("/mix-pub") for p in anon_paths)
-        assert not any(p.endswith("/mix-priv") for p in anon_paths)
+        assert not any(p.endswith("/mix-future") for p in anon_paths)
 
     def test_unrestricted_bypasses_security(self, pg_functional):
-        """unrestrictedSearchResults ignores security filters."""
+        """unrestrictedSearchResults ignores all security filters."""
+        from datetime import datetime
+
         portal = pg_functional["portal"]
         setRoles(portal, TEST_USER_ID, ["Manager"])
         catalog = portal["portal_catalog"]
 
-        # First commit: create content
         portal.invokeFactory("Document", "unr-doc", title="Unrestricted")
         transaction.commit()
 
-        # Second commit: restrict
         doc = portal["unr-doc"]
-        doc.manage_permission("View", roles=["Manager"], acquire=False)
+        doc.effective_date = datetime(2099, 1, 1, tzinfo=UTC)
         doc.reindexObject()
         transaction.commit()
 
-        # Even as anonymous, unrestricted search finds it
+        # Even as anonymous, unrestricted search finds future content
         logout()
         results = catalog.unrestrictedSearchResults(portal_type="Document")
         paths = [b.getPath() for b in results]
