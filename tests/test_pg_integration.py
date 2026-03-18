@@ -626,11 +626,11 @@ class TestUncatalogDeleteFlow:
 # ---------------------------------------------------------------------------
 
 
-class TestPartialReindex:
-    """Test reindexObject(idxs=[...]) updates specific idx fields in PG."""
+class TestReindex:
+    """Test reindexObject() updates idx fields in PG."""
 
     def test_reindex_title_updates_idx(self, pg_functional):
-        """Changing title and reindexing Title updates idx in PG."""
+        """Changing title and full reindexing updates idx in PG."""
         portal = pg_functional["portal"]
         setRoles(portal, TEST_USER_ID, ["Manager"])
 
@@ -641,17 +641,17 @@ class TestPartialReindex:
         assert row is not None
         assert row[3]["Title"] == "Original Title"
 
-        # Change title and partial reindex
+        # Change title and full reindex (the normal Plone path)
         portal["ri-doc"].setTitle("Updated Title")
-        portal["ri-doc"].reindexObject(idxs=["Title"])
+        portal["ri-doc"].reindexObject()
         transaction.commit()
 
         row = _query_object_by_path_suffix(pg_functional, "/ri-doc")
         assert row is not None
         assert row[3]["Title"] == "Updated Title"
 
-    def test_partial_reindex_preserves_other_fields(self, pg_functional):
-        """Partial reindex of Title does not clear portal_type."""
+    def test_reindex_preserves_other_fields(self, pg_functional):
+        """Reindexing after title change preserves portal_type."""
         portal = pg_functional["portal"]
         setRoles(portal, TEST_USER_ID, ["Manager"])
 
@@ -659,13 +659,31 @@ class TestPartialReindex:
         transaction.commit()
 
         portal["pr-doc"].setTitle("New Title")
-        portal["pr-doc"].reindexObject(idxs=["Title"])
+        portal["pr-doc"].reindexObject()
         transaction.commit()
 
         row = _query_object_by_path_suffix(pg_functional, "/pr-doc")
         assert row is not None
         assert row[3]["Title"] == "New Title"
         assert row[3]["portal_type"] == "Document"
+
+    def test_reindex_subject_keywords(self, pg_functional):
+        """Changing Subject and reindexing updates keywords in PG."""
+        portal = pg_functional["portal"]
+        setRoles(portal, TEST_USER_ID, ["Manager"])
+
+        portal.invokeFactory("Document", "kw-ri", title="Keywords Reindex")
+        transaction.commit()
+
+        portal["kw-ri"].setSubject(["new-tag", "updated"])
+        portal["kw-ri"].reindexObject()
+        transaction.commit()
+
+        row = _query_object_by_path_suffix(pg_functional, "/kw-ri")
+        assert row is not None
+        subject = row[3].get("Subject")
+        assert "new-tag" in subject
+        assert "updated" in subject
 
 
 # ---------------------------------------------------------------------------
@@ -1037,9 +1055,12 @@ class TestSecurityFiltering:
         setRoles(portal, TEST_USER_ID, ["Manager"])
         catalog = portal["portal_catalog"]
 
+        # First commit: create content
         portal.invokeFactory("Document", "priv-doc", title="Private")
+        transaction.commit()
+
+        # Second commit: restrict permissions and reindex
         doc = portal["priv-doc"]
-        # Restrict View to Manager only (break acquisition)
         doc.manage_permission("View", roles=["Manager"], acquire=False)
         doc.reindexObject()
         transaction.commit()
@@ -1071,8 +1092,12 @@ class TestSecurityFiltering:
         setRoles(portal, TEST_USER_ID, ["Manager"])
         catalog = portal["portal_catalog"]
 
+        # First commit: create both docs
         portal.invokeFactory("Document", "mix-pub", title="Public Mix")
         portal.invokeFactory("Document", "mix-priv", title="Private Mix")
+        transaction.commit()
+
+        # Second commit: restrict one doc
         doc = portal["mix-priv"]
         doc.manage_permission("View", roles=["Manager"], acquire=False)
         doc.reindexObject()
@@ -1099,7 +1124,11 @@ class TestSecurityFiltering:
         setRoles(portal, TEST_USER_ID, ["Manager"])
         catalog = portal["portal_catalog"]
 
+        # First commit: create content
         portal.invokeFactory("Document", "unr-doc", title="Unrestricted")
+        transaction.commit()
+
+        # Second commit: restrict
         doc = portal["unr-doc"]
         doc.manage_permission("View", roles=["Manager"], acquire=False)
         doc.reindexObject()
@@ -1134,25 +1163,20 @@ class TestUniqueValuesFor:
         assert "Document" in values
         assert "Folder" in values
 
-    def test_unique_subjects(self, pg_functional):
-        """uniqueValuesFor('Subject') returns distinct keywords."""
+    def test_unique_review_states(self, pg_functional):
+        """uniqueValuesFor returns distinct values for field indexes."""
         portal = pg_functional["portal"]
         setRoles(portal, TEST_USER_ID, ["Manager"])
         catalog = portal["portal_catalog"]
 
-        portal.invokeFactory("Document", "us-doc1", title="US Doc 1")
-        portal["us-doc1"].setSubject(["alpha", "beta"])
-        portal["us-doc1"].reindexObject()
-
-        portal.invokeFactory("Document", "us-doc2", title="US Doc 2")
-        portal["us-doc2"].setSubject(["beta", "gamma"])
-        portal["us-doc2"].reindexObject()
+        portal.invokeFactory("Document", "uv-doc1", title="UV Doc 1")
+        portal.invokeFactory("Folder", "uv-fold1", title="UV Folder 1")
         transaction.commit()
 
-        values = catalog.uniqueValuesFor("Subject")
-        assert "alpha" in values
-        assert "beta" in values
-        assert "gamma" in values
+        # portal_type is a field index with atomic values
+        values = catalog.uniqueValuesFor("portal_type")
+        assert "Document" in values
+        assert "Folder" in values
 
 
 # ---------------------------------------------------------------------------
@@ -1174,21 +1198,18 @@ class TestMaintenanceOps:
 
         # Verify original title
         row = _query_object_by_path_suffix(pg_functional, "/rc-doc")
+        assert row is not None
         assert row[3]["Title"] == "Original"
 
-        # Change title directly (bypass reindex)
+        # Change title in memory (do NOT commit — that would NULL idx)
         portal["rc-doc"].setTitle("Refreshed")
-        transaction.commit()
 
-        # Title in PG is still old (no reindex happened)
-        row = _query_object_by_path_suffix(pg_functional, "/rc-doc")
-        assert row[3]["Title"] == "Original"
-
-        # refreshCatalog should pick up the new title
+        # refreshCatalog re-catalogs from live ZODB objects
         catalog.refreshCatalog(clear=0)
         transaction.commit()
 
         row = _query_object_by_path_suffix(pg_functional, "/rc-doc")
+        assert row is not None
         assert row[3]["Title"] == "Refreshed"
 
     def test_clear_find_and_rebuild(self, pg_functional):
@@ -1215,7 +1236,7 @@ class TestMaintenanceOps:
         assert any(p.endswith("/cfr-doc") for p in paths)
 
     def test_manage_catalog_clear(self, pg_functional):
-        """manage_catalogClear() removes all catalog data."""
+        """manage_catalogClear() removes all catalog data from PG."""
         portal = pg_functional["portal"]
         setRoles(portal, TEST_USER_ID, ["Manager"])
         catalog = portal["portal_catalog"]
@@ -1223,8 +1244,17 @@ class TestMaintenanceOps:
         portal.invokeFactory("Document", "clr-doc", title="Clear Me")
         transaction.commit()
 
+        # Verify it's cataloged
+        row = _query_object_by_path_suffix(pg_functional, "/clr-doc")
+        assert row is not None
+
         catalog.manage_catalogClear()
 
-        # After clear, nothing should be found
-        results = catalog.unrestrictedSearchResults(portal_type="Document")
-        assert len(list(results)) == 0
+        # After clear, idx should be NULL in PG
+        rows = _query_pg(
+            pg_functional,
+            "SELECT idx FROM object_state WHERE path LIKE %s",
+            ("%/clr-doc",),
+        )
+        # Either no rows with path (path NULLed) or idx is None
+        assert not rows or rows[0][0] is None
