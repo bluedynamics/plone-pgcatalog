@@ -9,8 +9,11 @@ actually arrives in PostgreSQL with correct catalog columns, paths,
 and searchable text.
 """
 
+from plone.app.testing import login
+from plone.app.testing import logout
 from plone.app.testing import setRoles
 from plone.app.testing import TEST_USER_ID
+from plone.app.testing import TEST_USER_NAME
 from plone.pgcatalog.testing import PGCATALOG_PG_FIXTURE
 from zope.pytestlayer import fixture
 
@@ -505,3 +508,723 @@ class TestSQLQueryability:
         paths = {r[0] for r in rows}
         assert any(p.endswith("/d1") for p in paths)
         assert any(p.endswith("/d2") for p in paths)
+
+
+# ---------------------------------------------------------------------------
+# Catalog searchResults() end-to-end
+# ---------------------------------------------------------------------------
+
+
+class TestSearchResultsEndToEnd:
+    """Test searchResults() through the Plone catalog API."""
+
+    def test_search_by_portal_type(self, pg_functional):
+        """searchResults(portal_type=...) returns matching content."""
+        portal = pg_functional["portal"]
+        setRoles(portal, TEST_USER_ID, ["Manager"])
+        catalog = portal["portal_catalog"]
+
+        portal.invokeFactory("Document", "sr-doc", title="SR Doc")
+        portal.invokeFactory("Folder", "sr-folder", title="SR Folder")
+        transaction.commit()
+
+        results = catalog.unrestrictedSearchResults(portal_type="Document")
+        paths = [b.getPath() for b in results]
+        assert any(p.endswith("/sr-doc") for p in paths)
+        assert not any(p.endswith("/sr-folder") for p in paths)
+
+    def test_search_by_multiple_types(self, pg_functional):
+        """searchResults with list of portal_types."""
+        portal = pg_functional["portal"]
+        setRoles(portal, TEST_USER_ID, ["Manager"])
+        catalog = portal["portal_catalog"]
+
+        portal.invokeFactory("Document", "mt-doc", title="MT Doc")
+        portal.invokeFactory("Folder", "mt-folder", title="MT Folder")
+        transaction.commit()
+
+        results = catalog.unrestrictedSearchResults(portal_type=["Document", "Folder"])
+        paths = [b.getPath() for b in results]
+        assert any(p.endswith("/mt-doc") for p in paths)
+        assert any(p.endswith("/mt-folder") for p in paths)
+
+    def test_search_returns_catalog_search_results(self, pg_functional):
+        """searchResults returns CatalogSearchResults instance."""
+        portal = pg_functional["portal"]
+        setRoles(portal, TEST_USER_ID, ["Manager"])
+        catalog = portal["portal_catalog"]
+
+        portal.invokeFactory("Document", "csr-doc", title="CSR Doc")
+        transaction.commit()
+
+        from plone.pgcatalog.brain import CatalogSearchResults
+
+        results = catalog.unrestrictedSearchResults(portal_type="Document")
+        assert isinstance(results, CatalogSearchResults)
+
+    def test_search_empty_result(self, pg_functional):
+        """searchResults with no matches returns empty results."""
+        portal = pg_functional["portal"]
+        catalog = portal["portal_catalog"]
+
+        results = catalog.unrestrictedSearchResults(portal_type="NonExistentType")
+        assert len(results) == 0
+
+
+# ---------------------------------------------------------------------------
+# Uncatalog / delete flow
+# ---------------------------------------------------------------------------
+
+
+class TestUncatalogDeleteFlow:
+    """Test that deleting content NULLs catalog columns in PG."""
+
+    def test_delete_nulls_catalog_columns(self, pg_functional):
+        """Deleting content sets idx to NULL in PG."""
+        portal = pg_functional["portal"]
+        setRoles(portal, TEST_USER_ID, ["Manager"])
+        catalog = portal["portal_catalog"]
+
+        portal.invokeFactory("Document", "del-doc", title="Delete Me")
+        transaction.commit()
+
+        # Verify it's cataloged
+        results = catalog.unrestrictedSearchResults(portal_type="Document")
+        paths = [b.getPath() for b in results]
+        assert any(p.endswith("/del-doc") for p in paths)
+
+        # Delete and commit
+        portal.manage_delObjects(["del-doc"])
+        transaction.commit()
+
+        # Should no longer appear in search
+        results = catalog.unrestrictedSearchResults(portal_type="Document")
+        paths = [b.getPath() for b in results]
+        assert not any(p.endswith("/del-doc") for p in paths)
+
+    def test_delete_preserves_other_content(self, pg_functional):
+        """Deleting one object does not affect sibling catalog entries."""
+        portal = pg_functional["portal"]
+        setRoles(portal, TEST_USER_ID, ["Manager"])
+        catalog = portal["portal_catalog"]
+
+        portal.invokeFactory("Document", "keep-doc", title="Keep Me")
+        portal.invokeFactory("Document", "remove-doc", title="Remove Me")
+        transaction.commit()
+
+        portal.manage_delObjects(["remove-doc"])
+        transaction.commit()
+
+        results = catalog.unrestrictedSearchResults(portal_type="Document")
+        paths = [b.getPath() for b in results]
+        assert any(p.endswith("/keep-doc") for p in paths)
+        assert not any(p.endswith("/remove-doc") for p in paths)
+
+
+# ---------------------------------------------------------------------------
+# Partial reindex (reindexObject with idxs)
+# ---------------------------------------------------------------------------
+
+
+class TestPartialReindex:
+    """Test reindexObject(idxs=[...]) updates specific idx fields in PG."""
+
+    def test_reindex_title_updates_idx(self, pg_functional):
+        """Changing title and reindexing Title updates idx in PG."""
+        portal = pg_functional["portal"]
+        setRoles(portal, TEST_USER_ID, ["Manager"])
+
+        portal.invokeFactory("Document", "ri-doc", title="Original Title")
+        transaction.commit()
+
+        row = _query_object_by_path_suffix(pg_functional, "/ri-doc")
+        assert row is not None
+        assert row[3]["Title"] == "Original Title"
+
+        # Change title and partial reindex
+        portal["ri-doc"].setTitle("Updated Title")
+        portal["ri-doc"].reindexObject(idxs=["Title"])
+        transaction.commit()
+
+        row = _query_object_by_path_suffix(pg_functional, "/ri-doc")
+        assert row is not None
+        assert row[3]["Title"] == "Updated Title"
+
+    def test_partial_reindex_preserves_other_fields(self, pg_functional):
+        """Partial reindex of Title does not clear portal_type."""
+        portal = pg_functional["portal"]
+        setRoles(portal, TEST_USER_ID, ["Manager"])
+
+        portal.invokeFactory("Document", "pr-doc", title="Preserve Test")
+        transaction.commit()
+
+        portal["pr-doc"].setTitle("New Title")
+        portal["pr-doc"].reindexObject(idxs=["Title"])
+        transaction.commit()
+
+        row = _query_object_by_path_suffix(pg_functional, "/pr-doc")
+        assert row is not None
+        assert row[3]["Title"] == "New Title"
+        assert row[3]["portal_type"] == "Document"
+
+
+# ---------------------------------------------------------------------------
+# Full-text search with weight-based relevance
+# ---------------------------------------------------------------------------
+
+
+class TestFullTextSearchWeighted:
+    """Test SearchableText queries with tsvector weight ranking."""
+
+    def test_searchable_text_finds_content(self, pg_functional):
+        """SearchableText query finds content matching title."""
+        portal = pg_functional["portal"]
+        setRoles(portal, TEST_USER_ID, ["Manager"])
+        catalog = portal["portal_catalog"]
+
+        portal.invokeFactory("Document", "fts-doc", title="Elephants in Africa")
+        transaction.commit()
+
+        results = catalog.unrestrictedSearchResults(SearchableText="Elephants")
+        paths = [b.getPath() for b in results]
+        assert any(p.endswith("/fts-doc") for p in paths)
+
+    def test_searchable_text_no_match(self, pg_functional):
+        """SearchableText query returns nothing for non-matching term."""
+        portal = pg_functional["portal"]
+        setRoles(portal, TEST_USER_ID, ["Manager"])
+        catalog = portal["portal_catalog"]
+
+        portal.invokeFactory("Document", "fts-no", title="Elephants Only")
+        transaction.commit()
+
+        results = catalog.unrestrictedSearchResults(SearchableText="Xylophone")
+        paths = [b.getPath() for b in results]
+        assert not any(p.endswith("/fts-no") for p in paths)
+
+    def test_title_match_ranks_higher_than_description(self, pg_functional):
+        """Content matching in Title (weight A) ranks above Description (B).
+
+        Verifies that PG tsvector weights are applied correctly so
+        title-matching results appear before description-only matches.
+        """
+        portal = pg_functional["portal"]
+        setRoles(portal, TEST_USER_ID, ["Manager"])
+        catalog = portal["portal_catalog"]
+
+        # "Quantum" in title only
+        portal.invokeFactory(
+            "Document",
+            "title-match",
+            title="Quantum Computing Breakthrough",
+            description="Recent advances in technology",
+        )
+        # "Quantum" in description only
+        portal.invokeFactory(
+            "Document",
+            "desc-match",
+            title="Technology News Today",
+            description="Quantum computing is advancing rapidly",
+        )
+        transaction.commit()
+
+        results = catalog.unrestrictedSearchResults(
+            SearchableText="Quantum",
+            sort_on="relevance",
+        )
+        paths = [b.getPath() for b in results]
+        matching = [p for p in paths if "title-match" in p or "desc-match" in p]
+        assert len(matching) == 2
+        # Title match should come first (higher weight)
+        assert matching[0].endswith("/title-match")
+        assert matching[1].endswith("/desc-match")
+
+    def test_multi_word_search(self, pg_functional):
+        """Multi-word SearchableText finds content with all terms."""
+        portal = pg_functional["portal"]
+        setRoles(portal, TEST_USER_ID, ["Manager"])
+        catalog = portal["portal_catalog"]
+
+        portal.invokeFactory(
+            "Document",
+            "multi-doc",
+            title="Python Web Development Guide",
+        )
+        portal.invokeFactory(
+            "Document",
+            "partial-doc",
+            title="Python Snake Facts",
+        )
+        transaction.commit()
+
+        # Both words must match (AND semantics)
+        results = catalog.unrestrictedSearchResults(SearchableText="Python Development")
+        paths = [b.getPath() for b in results]
+        assert any(p.endswith("/multi-doc") for p in paths)
+        # partial-doc should NOT match (has "Python" but not "Development")
+        assert not any(p.endswith("/partial-doc") for p in paths)
+
+
+# ---------------------------------------------------------------------------
+# Path queries via searchResults
+# ---------------------------------------------------------------------------
+
+
+class TestPathQueries:
+    """Test path-based queries through the catalog API."""
+
+    def test_path_subtree_query(self, pg_functional):
+        """path query finds all descendants of a folder."""
+        portal = pg_functional["portal"]
+        setRoles(portal, TEST_USER_ID, ["Manager"])
+        catalog = portal["portal_catalog"]
+
+        portal.invokeFactory("Folder", "pq-folder")
+        portal["pq-folder"].invokeFactory("Document", "pq-a", title="A")
+        portal["pq-folder"].invokeFactory("Document", "pq-b", title="B")
+        portal.invokeFactory("Document", "pq-outside", title="Outside")
+        transaction.commit()
+
+        site_path = "/".join(portal.getPhysicalPath())
+        results = catalog.unrestrictedSearchResults(
+            path=f"{site_path}/pq-folder",
+            portal_type="Document",
+        )
+        paths = [b.getPath() for b in results]
+        assert len(paths) == 2
+        assert any(p.endswith("/pq-a") for p in paths)
+        assert any(p.endswith("/pq-b") for p in paths)
+
+    def test_path_depth_one(self, pg_functional):
+        """path query with depth=1 finds only direct children."""
+        portal = pg_functional["portal"]
+        setRoles(portal, TEST_USER_ID, ["Manager"])
+        catalog = portal["portal_catalog"]
+
+        portal.invokeFactory("Folder", "d1-parent")
+        portal["d1-parent"].invokeFactory("Folder", "d1-child")
+        portal["d1-parent"]["d1-child"].invokeFactory(
+            "Document", "d1-grandchild", title="Grandchild"
+        )
+        transaction.commit()
+
+        site_path = "/".join(portal.getPhysicalPath())
+        results = catalog.unrestrictedSearchResults(
+            path={"query": f"{site_path}/d1-parent", "depth": 1},
+        )
+        paths = [b.getPath() for b in results]
+        # Should find only direct child, not grandchild or parent itself
+        assert any(p.endswith("/d1-child") for p in paths)
+        assert not any(p.endswith("/d1-grandchild") for p in paths)
+
+    def test_path_exact_match(self, pg_functional):
+        """path query with depth=0 finds only the exact object."""
+        portal = pg_functional["portal"]
+        setRoles(portal, TEST_USER_ID, ["Manager"])
+        catalog = portal["portal_catalog"]
+
+        portal.invokeFactory("Folder", "exact-folder")
+        portal["exact-folder"].invokeFactory("Document", "exact-doc", title="Exact")
+        transaction.commit()
+
+        site_path = "/".join(portal.getPhysicalPath())
+        results = catalog.unrestrictedSearchResults(
+            path={"query": f"{site_path}/exact-folder", "depth": 0},
+        )
+        paths = [b.getPath() for b in results]
+        assert len(paths) == 1
+        assert paths[0].endswith("/exact-folder")
+
+
+# ---------------------------------------------------------------------------
+# Sort + pagination via catalog API
+# ---------------------------------------------------------------------------
+
+
+class TestSortAndPagination:
+    """Test sort_on, sort_order, and b_start/b_size."""
+
+    def test_sort_by_sortable_title(self, pg_functional):
+        """Results sorted by sortable_title ascending."""
+        portal = pg_functional["portal"]
+        setRoles(portal, TEST_USER_ID, ["Manager"])
+        catalog = portal["portal_catalog"]
+
+        portal.invokeFactory("Document", "sort-c", title="Charlie")
+        portal.invokeFactory("Document", "sort-a", title="Alpha")
+        portal.invokeFactory("Document", "sort-b", title="Bravo")
+        transaction.commit()
+
+        results = catalog.unrestrictedSearchResults(
+            portal_type="Document",
+            sort_on="sortable_title",
+            sort_order="ascending",
+        )
+        titles = [b.Title for b in results]
+        # Filter to our test docs (site may have other content)
+        our_titles = [t for t in titles if t in ("Alpha", "Bravo", "Charlie")]
+        assert our_titles == ["Alpha", "Bravo", "Charlie"]
+
+    def test_sort_descending(self, pg_functional):
+        """Results sorted by sortable_title descending."""
+        portal = pg_functional["portal"]
+        setRoles(portal, TEST_USER_ID, ["Manager"])
+        catalog = portal["portal_catalog"]
+
+        portal.invokeFactory("Document", "sd-a", title="Alpha")
+        portal.invokeFactory("Document", "sd-b", title="Bravo")
+        portal.invokeFactory("Document", "sd-c", title="Charlie")
+        transaction.commit()
+
+        results = catalog.unrestrictedSearchResults(
+            portal_type="Document",
+            sort_on="sortable_title",
+            sort_order="descending",
+        )
+        titles = [b.Title for b in results]
+        our_titles = [t for t in titles if t in ("Alpha", "Bravo", "Charlie")]
+        assert our_titles == ["Charlie", "Bravo", "Alpha"]
+
+    def test_pagination_b_start_b_size(self, pg_functional):
+        """b_start and b_size limit returned results."""
+        portal = pg_functional["portal"]
+        setRoles(portal, TEST_USER_ID, ["Manager"])
+        catalog = portal["portal_catalog"]
+
+        for i in range(5):
+            portal.invokeFactory("Document", f"page-{i}", title=f"Page {i}")
+        transaction.commit()
+
+        results = catalog.unrestrictedSearchResults(
+            portal_type="Document",
+            sort_on="sortable_title",
+            b_start=0,
+            b_size=2,
+        )
+        assert len(list(results)) == 2
+
+    def test_pagination_offset(self, pg_functional):
+        """b_start > 0 skips initial results."""
+        portal = pg_functional["portal"]
+        setRoles(portal, TEST_USER_ID, ["Manager"])
+        catalog = portal["portal_catalog"]
+
+        for i in range(5):
+            portal.invokeFactory("Document", f"off-{i}", title=f"Off {i:02d}")
+        transaction.commit()
+
+        page1 = catalog.unrestrictedSearchResults(
+            portal_type="Document",
+            sort_on="sortable_title",
+            b_start=0,
+            b_size=3,
+        )
+        page2 = catalog.unrestrictedSearchResults(
+            portal_type="Document",
+            sort_on="sortable_title",
+            b_start=3,
+            b_size=3,
+        )
+        paths1 = {b.getPath() for b in page1}
+        paths2 = {b.getPath() for b in page2}
+        # No overlap between pages
+        assert paths1.isdisjoint(paths2)
+
+
+# ---------------------------------------------------------------------------
+# Brain attribute access from real search
+# ---------------------------------------------------------------------------
+
+
+class TestBrainAttributes:
+    """Test PGCatalogBrain attributes from real catalog search."""
+
+    def test_brain_get_path(self, pg_functional):
+        """brain.getPath() returns correct physical path."""
+        portal = pg_functional["portal"]
+        setRoles(portal, TEST_USER_ID, ["Manager"])
+        catalog = portal["portal_catalog"]
+
+        portal.invokeFactory("Document", "brain-doc", title="Brain Test")
+        transaction.commit()
+
+        results = catalog.unrestrictedSearchResults(portal_type="Document")
+        brain = next(b for b in results if b.getPath().endswith("/brain-doc"))
+        assert brain.getPath().endswith("/plone/brain-doc")
+
+    def test_brain_title(self, pg_functional):
+        """brain.Title returns the title from idx JSONB."""
+        portal = pg_functional["portal"]
+        setRoles(portal, TEST_USER_ID, ["Manager"])
+        catalog = portal["portal_catalog"]
+
+        portal.invokeFactory("Document", "bt-doc", title="My Brain Title")
+        transaction.commit()
+
+        results = catalog.unrestrictedSearchResults(portal_type="Document")
+        brain = next(b for b in results if b.getPath().endswith("/bt-doc"))
+        assert brain.Title == "My Brain Title"
+
+    def test_brain_portal_type(self, pg_functional):
+        """brain.portal_type returns the correct type."""
+        portal = pg_functional["portal"]
+        setRoles(portal, TEST_USER_ID, ["Manager"])
+        catalog = portal["portal_catalog"]
+
+        portal.invokeFactory("Folder", "bpt-folder", title="Type Test")
+        transaction.commit()
+
+        results = catalog.unrestrictedSearchResults(portal_type="Folder")
+        brain = next(b for b in results if b.getPath().endswith("/bpt-folder"))
+        assert brain.portal_type == "Folder"
+
+    def test_brain_get_object(self, pg_functional):
+        """brain.getObject() returns the actual persistent object."""
+        portal = pg_functional["portal"]
+        setRoles(portal, TEST_USER_ID, ["Manager"])
+        catalog = portal["portal_catalog"]
+
+        portal.invokeFactory("Document", "go-doc", title="Get Object")
+        transaction.commit()
+
+        results = catalog.unrestrictedSearchResults(portal_type="Document")
+        brain = next(b for b in results if b.getPath().endswith("/go-doc"))
+        obj = brain.getObject()
+        assert obj.getId() == "go-doc"
+        assert obj.Title() == "Get Object"
+
+    def test_brain_get_rid(self, pg_functional):
+        """brain.getRID() returns an integer ZOID."""
+        portal = pg_functional["portal"]
+        setRoles(portal, TEST_USER_ID, ["Manager"])
+        catalog = portal["portal_catalog"]
+
+        portal.invokeFactory("Document", "rid-doc", title="RID Test")
+        transaction.commit()
+
+        results = catalog.unrestrictedSearchResults(portal_type="Document")
+        brain = next(b for b in results if b.getPath().endswith("/rid-doc"))
+        rid = brain.getRID()
+        assert isinstance(rid, int)
+        assert rid > 0
+
+
+# ---------------------------------------------------------------------------
+# Security filtering (allowedRolesAndUsers)
+# ---------------------------------------------------------------------------
+
+
+class TestSecurityFiltering:
+    """Test that searchResults respects security (allowedRolesAndUsers)."""
+
+    def test_manager_finds_all_content(self, pg_functional):
+        """Manager user finds content via searchResults."""
+        portal = pg_functional["portal"]
+        setRoles(portal, TEST_USER_ID, ["Manager"])
+        catalog = portal["portal_catalog"]
+
+        portal.invokeFactory("Document", "sec-doc", title="Secured")
+        transaction.commit()
+
+        # Search as Manager (current user)
+        results = catalog.searchResults(portal_type="Document")
+        paths = [b.getPath() for b in results]
+        assert any(p.endswith("/sec-doc") for p in paths)
+
+    def test_anonymous_cannot_see_restricted_content(self, pg_functional):
+        """Anonymous user cannot see content restricted to Manager."""
+        portal = pg_functional["portal"]
+        setRoles(portal, TEST_USER_ID, ["Manager"])
+        catalog = portal["portal_catalog"]
+
+        portal.invokeFactory("Document", "priv-doc", title="Private")
+        doc = portal["priv-doc"]
+        # Restrict View to Manager only (break acquisition)
+        doc.manage_permission("View", roles=["Manager"], acquire=False)
+        doc.reindexObject()
+        transaction.commit()
+
+        # Search as anonymous
+        logout()
+        results = catalog.searchResults(portal_type="Document")
+        paths = [b.getPath() for b in results]
+        assert not any(p.endswith("/priv-doc") for p in paths)
+
+    def test_anonymous_can_see_public_content(self, pg_functional):
+        """Anonymous user can see content with View granted to Anonymous."""
+        portal = pg_functional["portal"]
+        setRoles(portal, TEST_USER_ID, ["Manager"])
+        catalog = portal["portal_catalog"]
+
+        portal.invokeFactory("Document", "pub-doc", title="Public")
+        transaction.commit()
+
+        # Default Plone grants View to Anonymous (no workflow)
+        logout()
+        results = catalog.searchResults(portal_type="Document")
+        paths = [b.getPath() for b in results]
+        assert any(p.endswith("/pub-doc") for p in paths)
+
+    def test_mixed_visibility(self, pg_functional):
+        """Manager sees both; anonymous sees only public content."""
+        portal = pg_functional["portal"]
+        setRoles(portal, TEST_USER_ID, ["Manager"])
+        catalog = portal["portal_catalog"]
+
+        portal.invokeFactory("Document", "mix-pub", title="Public Mix")
+        portal.invokeFactory("Document", "mix-priv", title="Private Mix")
+        doc = portal["mix-priv"]
+        doc.manage_permission("View", roles=["Manager"], acquire=False)
+        doc.reindexObject()
+        transaction.commit()
+
+        # Manager sees both
+        login(portal, TEST_USER_NAME)
+        setRoles(portal, TEST_USER_ID, ["Manager"])
+        results = catalog.searchResults(portal_type="Document")
+        manager_paths = [b.getPath() for b in results]
+        assert any(p.endswith("/mix-pub") for p in manager_paths)
+        assert any(p.endswith("/mix-priv") for p in manager_paths)
+
+        # Anonymous sees only public
+        logout()
+        results = catalog.searchResults(portal_type="Document")
+        anon_paths = [b.getPath() for b in results]
+        assert any(p.endswith("/mix-pub") for p in anon_paths)
+        assert not any(p.endswith("/mix-priv") for p in anon_paths)
+
+    def test_unrestricted_bypasses_security(self, pg_functional):
+        """unrestrictedSearchResults ignores security filters."""
+        portal = pg_functional["portal"]
+        setRoles(portal, TEST_USER_ID, ["Manager"])
+        catalog = portal["portal_catalog"]
+
+        portal.invokeFactory("Document", "unr-doc", title="Unrestricted")
+        doc = portal["unr-doc"]
+        doc.manage_permission("View", roles=["Manager"], acquire=False)
+        doc.reindexObject()
+        transaction.commit()
+
+        # Even as anonymous, unrestricted search finds it
+        logout()
+        results = catalog.unrestrictedSearchResults(portal_type="Document")
+        paths = [b.getPath() for b in results]
+        assert any(p.endswith("/unr-doc") for p in paths)
+
+
+# ---------------------------------------------------------------------------
+# uniqueValuesFor
+# ---------------------------------------------------------------------------
+
+
+class TestUniqueValuesFor:
+    """Test uniqueValuesFor() queries PG for distinct index values."""
+
+    def test_unique_portal_types(self, pg_functional):
+        """uniqueValuesFor('portal_type') returns distinct types."""
+        portal = pg_functional["portal"]
+        setRoles(portal, TEST_USER_ID, ["Manager"])
+        catalog = portal["portal_catalog"]
+
+        portal.invokeFactory("Document", "uv-doc", title="UV Doc")
+        portal.invokeFactory("Folder", "uv-folder", title="UV Folder")
+        transaction.commit()
+
+        values = catalog.uniqueValuesFor("portal_type")
+        assert "Document" in values
+        assert "Folder" in values
+
+    def test_unique_subjects(self, pg_functional):
+        """uniqueValuesFor('Subject') returns distinct keywords."""
+        portal = pg_functional["portal"]
+        setRoles(portal, TEST_USER_ID, ["Manager"])
+        catalog = portal["portal_catalog"]
+
+        portal.invokeFactory("Document", "us-doc1", title="US Doc 1")
+        portal["us-doc1"].setSubject(["alpha", "beta"])
+        portal["us-doc1"].reindexObject()
+
+        portal.invokeFactory("Document", "us-doc2", title="US Doc 2")
+        portal["us-doc2"].setSubject(["beta", "gamma"])
+        portal["us-doc2"].reindexObject()
+        transaction.commit()
+
+        values = catalog.uniqueValuesFor("Subject")
+        assert "alpha" in values
+        assert "beta" in values
+        assert "gamma" in values
+
+
+# ---------------------------------------------------------------------------
+# Maintenance operations
+# ---------------------------------------------------------------------------
+
+
+class TestMaintenanceOps:
+    """Test refreshCatalog, reindexIndex, clearFindAndRebuild."""
+
+    def test_refresh_catalog_recatalogs_existing(self, pg_functional):
+        """refreshCatalog() re-indexes objects already in PG."""
+        portal = pg_functional["portal"]
+        setRoles(portal, TEST_USER_ID, ["Manager"])
+        catalog = portal["portal_catalog"]
+
+        portal.invokeFactory("Document", "rc-doc", title="Original")
+        transaction.commit()
+
+        # Verify original title
+        row = _query_object_by_path_suffix(pg_functional, "/rc-doc")
+        assert row[3]["Title"] == "Original"
+
+        # Change title directly (bypass reindex)
+        portal["rc-doc"].setTitle("Refreshed")
+        transaction.commit()
+
+        # Title in PG is still old (no reindex happened)
+        row = _query_object_by_path_suffix(pg_functional, "/rc-doc")
+        assert row[3]["Title"] == "Original"
+
+        # refreshCatalog should pick up the new title
+        catalog.refreshCatalog(clear=0)
+        transaction.commit()
+
+        row = _query_object_by_path_suffix(pg_functional, "/rc-doc")
+        assert row[3]["Title"] == "Refreshed"
+
+    def test_clear_find_and_rebuild(self, pg_functional):
+        """clearFindAndRebuild() clears then re-indexes all content."""
+        portal = pg_functional["portal"]
+        setRoles(portal, TEST_USER_ID, ["Manager"])
+        catalog = portal["portal_catalog"]
+
+        portal.invokeFactory("Document", "cfr-doc", title="Rebuild Me")
+        transaction.commit()
+
+        # Verify it's cataloged
+        results = catalog.unrestrictedSearchResults(portal_type="Document")
+        paths = [b.getPath() for b in results]
+        assert any(p.endswith("/cfr-doc") for p in paths)
+
+        # Clear and rebuild
+        catalog.clearFindAndRebuild()
+        transaction.commit()
+
+        # Should still be findable after rebuild
+        results = catalog.unrestrictedSearchResults(portal_type="Document")
+        paths = [b.getPath() for b in results]
+        assert any(p.endswith("/cfr-doc") for p in paths)
+
+    def test_manage_catalog_clear(self, pg_functional):
+        """manage_catalogClear() removes all catalog data."""
+        portal = pg_functional["portal"]
+        setRoles(portal, TEST_USER_ID, ["Manager"])
+        catalog = portal["portal_catalog"]
+
+        portal.invokeFactory("Document", "clr-doc", title="Clear Me")
+        transaction.commit()
+
+        catalog.manage_catalogClear()
+
+        # After clear, nothing should be found
+        results = catalog.unrestrictedSearchResults(portal_type="Document")
+        assert len(list(results)) == 0
