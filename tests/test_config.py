@@ -441,9 +441,11 @@ class TestCatalogStateProcessor:
 
         processor = CatalogStateProcessor()
         columns = processor.get_extra_columns()
-        assert len(columns) == 3
+        assert len(columns) == 5
         names = [c.name for c in columns]
         assert "path" in names
+        assert "parent_path" in names
+        assert "path_depth" in names
         assert "idx" in names
         assert "searchable_text" in names
 
@@ -487,7 +489,13 @@ class TestCatalogStateProcessor:
         set_pending(42, None)
         processor = CatalogStateProcessor()
         result = processor.process(42, "some.module", "SomeClass", {})
-        assert result == {"path": None, "idx": None, "searchable_text": None}
+        assert result == {
+            "path": None,
+            "parent_path": None,
+            "path_depth": None,
+            "idx": None,
+            "searchable_text": None,
+        }
 
     def test_process_from_state_dict_fallback(self):
         from plone.pgcatalog.processor import ANNOTATION_KEY
