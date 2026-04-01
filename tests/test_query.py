@@ -15,16 +15,15 @@ from unittest import mock
 class TestFieldIndex:
     def test_exact_match(self):
         qr = build_query({"portal_type": "Document"})
-        assert "idx @>" in qr["where"]
-        assert "::jsonb" in qr["where"]
-        # Param should be a Json wrapper with the containment dict
-        param = _find_json_param(qr["params"])
-        assert param.obj == {"portal_type": "Document"}
+        assert "idx->>'portal_type' =" in qr["where"]
+        # Param should be a plain string (btree-friendly operator)
+        param = _find_str_param(qr["params"])
+        assert param == "Document"
 
     def test_exact_match_explicit_query(self):
         qr = build_query({"portal_type": {"query": "Document"}})
-        param = _find_json_param(qr["params"])
-        assert param.obj == {"portal_type": "Document"}
+        param = _find_str_param(qr["params"])
+        assert param == "Document"
 
     def test_multi_value(self):
         qr = build_query({"portal_type": {"query": ["Document", "News Item"]}})
@@ -55,7 +54,7 @@ class TestFieldIndex:
 
     def test_query_and_not(self):
         qr = build_query({"portal_type": {"query": "Document", "not": ["News Item"]}})
-        assert "idx @>" in qr["where"]
+        assert "idx->>'portal_type' =" in qr["where"]
         assert "NOT (idx->>'portal_type' = ANY(" in qr["where"]
 
 
@@ -95,18 +94,21 @@ class TestKeywordIndex:
 class TestBooleanIndex:
     def test_true(self):
         qr = build_query({"is_folderish": True})
-        param = _find_json_param(qr["params"])
-        assert param.obj == {"is_folderish": True}
+        assert "(idx->>'is_folderish')::boolean =" in qr["where"]
+        param = _find_bool_param(qr["params"])
+        assert param is True
 
     def test_false(self):
         qr = build_query({"is_folderish": False})
-        param = _find_json_param(qr["params"])
-        assert param.obj == {"is_folderish": False}
+        assert "(idx->>'is_folderish')::boolean =" in qr["where"]
+        param = _find_bool_param(qr["params"])
+        assert param is False
 
     def test_truthy_coerced(self):
         qr = build_query({"is_folderish": 1})
-        param = _find_json_param(qr["params"])
-        assert param.obj == {"is_folderish": True}
+        assert "(idx->>'is_folderish')::boolean =" in qr["where"]
+        param = _find_bool_param(qr["params"])
+        assert param is True
 
 
 # ---------------------------------------------------------------------------
@@ -183,8 +185,9 @@ class TestDateRangeIndex:
 class TestUUIDIndex:
     def test_exact_match(self):
         qr = build_query({"UID": "abc123def456"})
-        param = _find_json_param(qr["params"])
-        assert param.obj == {"UID": "abc123def456"}
+        assert "idx->>'UID' =" in qr["where"]
+        param = _find_str_param(qr["params"])
+        assert param == "abc123def456"
 
 
 # ---------------------------------------------------------------------------
@@ -762,6 +765,22 @@ def _find_list_param(params):
     return None
 
 
+def _find_str_param(params):
+    """Find the first plain string parameter value."""
+    for v in params.values():
+        if isinstance(v, str):
+            return v
+    return None
+
+
+def _find_bool_param(params):
+    """Find the first bool parameter value."""
+    for v in params.values():
+        if isinstance(v, bool):
+            return v
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Dynamic index tests — indexes registered at runtime via IndexRegistry
 # ---------------------------------------------------------------------------
@@ -778,9 +797,9 @@ class TestDynamicFieldIndex:
         get_registry().register("my_addon_field", IndexType.FIELD, "my_addon_field")
 
         qr = build_query({"my_addon_field": "some_value"})
-        assert "idx @>" in qr["where"]
-        param = _find_json_param(qr["params"])
-        assert param.obj == {"my_addon_field": "some_value"}
+        assert "idx->>'my_addon_field' =" in qr["where"]
+        param = _find_str_param(qr["params"])
+        assert param == "some_value"
 
     def test_dynamic_field_range(self, populated_registry):
         from plone.pgcatalog.columns import get_registry
