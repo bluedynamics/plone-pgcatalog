@@ -14,6 +14,16 @@ ALTER TABLE object_state ADD COLUMN IF NOT EXISTS parent_path TEXT;
 ALTER TABLE object_state ADD COLUMN IF NOT EXISTS path_depth INTEGER;
 ALTER TABLE object_state ADD COLUMN IF NOT EXISTS idx JSONB;
 ALTER TABLE object_state ADD COLUMN IF NOT EXISTS searchable_text TSVECTOR;
+
+-- Dedicated column for security filter (used in EVERY query).
+-- Stored as TEXT[] for direct GIN ?| queries without JSONB decompression.
+ALTER TABLE object_state ADD COLUMN IF NOT EXISTS allowed_roles TEXT[];
+
+-- Backfill from idx JSONB for existing databases (idempotent).
+UPDATE object_state SET allowed_roles = (
+    SELECT array_agg(value::text)
+    FROM jsonb_array_elements_text(idx->'allowedRolesAndUsers')
+) WHERE idx IS NOT NULL AND idx ? 'allowedRolesAndUsers' AND allowed_roles IS NULL;
 """
 
 CATALOG_FUNCTIONS = """\
@@ -155,10 +165,10 @@ CREATE INDEX IF NOT EXISTS idx_os_cat_type_state
 -- must scan all JSONB keys across all objects.  Dedicated indexes on
 -- just the keyword array are much smaller and faster for ?| queries.
 
--- Security filter (used in EVERY catalog query)
-CREATE INDEX IF NOT EXISTS idx_os_cat_allowed_gin
-    ON object_state USING gin ((idx->'allowedRolesAndUsers'))
-    WHERE idx IS NOT NULL AND idx ? 'allowedRolesAndUsers';
+-- Security filter (used in EVERY catalog query) — dedicated column, not JSONB
+DROP INDEX IF EXISTS idx_os_cat_allowed_gin;
+CREATE INDEX IF NOT EXISTS idx_os_allowed_roles
+    ON object_state USING gin (allowed_roles) WHERE allowed_roles IS NOT NULL;
 
 -- Interface-based lookups (object_provides)
 CREATE INDEX IF NOT EXISTS idx_os_cat_provides_gin
@@ -196,6 +206,7 @@ EXPECTED_COLUMNS = {
     "path_depth": "integer",
     "idx": "jsonb",
     "searchable_text": "tsvector",
+    "allowed_roles": "ARRAY",
 }
 
 # All expected catalog indexes
