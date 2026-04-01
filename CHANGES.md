@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.0.0b30
+
+### Fixed
+
+- Add dedicated GIN indexes for `allowedRolesAndUsers`,
+  `object_provides`, and `Subject` keyword fields. The full-idx GIN
+  index is too broad for `?|` queries on individual keyword arrays.
+  Dedicated indexes are much smaller and faster. `object_provides`
+  queries drop from 850ms to sub-millisecond.
+
 ## 1.0.0b29
 
 ### Fixed
