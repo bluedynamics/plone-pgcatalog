@@ -200,6 +200,23 @@ EXPECTED_INDEXES = [
 ]
 
 
+# ── Slow query logging table ──────────────────────────────────────────────────
+
+SLOW_QUERY_TABLE = """\
+CREATE TABLE IF NOT EXISTS pgcatalog_slow_queries (
+    id          BIGSERIAL PRIMARY KEY,
+    query_keys  TEXT[] NOT NULL,
+    duration_ms FLOAT NOT NULL,
+    query_text  TEXT,
+    params      JSONB,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_slow_queries_keys
+    ON pgcatalog_slow_queries USING gin (query_keys);
+"""
+
+
 # ── Optional text extraction queue (created when PGCATALOG_TIKA_URL is set) ──
 
 TEXT_EXTRACTION_QUEUE = """\

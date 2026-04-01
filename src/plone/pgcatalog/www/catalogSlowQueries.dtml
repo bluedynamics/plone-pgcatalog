@@ -1,0 +1,66 @@
+<dtml-var manage_page_header>
+<dtml-var manage_tabs>
+
+<main class="container-fluid">
+
+<dtml-let stats="manage_get_slow_query_stats()">
+
+<div class="card mt-3 mb-3">
+  <div class="card-header d-flex justify-content-between align-items-center">
+    <strong>Slow Query Patterns</strong>
+    <div>
+      <span class="text-muted small mr-2">Threshold: <code><dtml-var "_.getitem('PGCATALOG_SLOW_QUERY_MS', '10')">ms</code></span>
+      <a href="manage_clear_slow_queries"
+         class="btn btn-sm btn-outline-danger"
+         onclick="return confirm('Clear all slow query statistics?')">Clear Stats</a>
+    </div>
+  </div>
+  <div class="card-body p-0">
+    <dtml-if stats>
+    <table class="table table-striped table-hover table-sm mb-0">
+      <thead class="thead-light">
+        <tr>
+          <th scope="col">Query Fields</th>
+          <th scope="col" style="width:8%">Count</th>
+          <th scope="col" style="width:10%">Avg (ms)</th>
+          <th scope="col" style="width:10%">Max (ms)</th>
+          <th scope="col" style="width:15%">Last Seen</th>
+          <th scope="col">Suggested Index</th>
+        </tr>
+      </thead>
+      <tbody>
+        <dtml-in stats>
+        <dtml-let row="_['sequence-item']">
+        <tr>
+          <td><code><dtml-var "row['query_keys']" html_quote></code></td>
+          <td><dtml-var "row['count']"></td>
+          <td><dtml-var "row['avg_ms']"></td>
+          <td><dtml-var "row['max_ms']"></td>
+          <td class="text-muted small"><dtml-var "row['last_seen']" html_quote></td>
+          <td>
+            <dtml-if "row['suggested_index']">
+              <code class="small"><dtml-var "row['suggested_index']" html_quote></code>
+            <dtml-else>
+              <span class="text-muted">-</span>
+            </dtml-if>
+          </td>
+        </tr>
+        </dtml-let>
+        </dtml-in>
+      </tbody>
+    </table>
+    <dtml-else>
+    <p class="text-muted p-3 mb-0">
+      No slow queries recorded yet.
+      Queries exceeding the threshold (<code>PGCATALOG_SLOW_QUERY_MS</code>,
+      default 10ms) are logged here automatically.
+    </p>
+    </dtml-if>
+  </div>
+</div>
+
+</dtml-let>
+
+</main>
+
+<dtml-var manage_page_footer>

@@ -17,6 +17,16 @@
 
   Indexes are created automatically on startup (idempotent DDL).
 
+### Added
+
+- Slow catalog query logging: queries exceeding `PGCATALOG_SLOW_QUERY_MS`
+  (default: 10ms) are logged as warnings and recorded in the
+  `pgcatalog_slow_queries` table. Fixes #52.
+
+- ZMI "Slow Queries" tab on portal_catalog: shows aggregated slow query
+  patterns (count, avg/max duration, last seen) with suggested composite
+  index DDL for frequent patterns. Includes a "Clear Stats" button.
+
 ## 1.0.0b26
 
 ### Added

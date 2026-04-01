@@ -15,6 +15,7 @@ from plone.pgcatalog.schema import CATALOG_FUNCTIONS
 from plone.pgcatalog.schema import CATALOG_INDEXES
 from plone.pgcatalog.schema import CATALOG_LANG_FUNCTION
 from plone.pgcatalog.schema import RRULE_FUNCTIONS
+from plone.pgcatalog.schema import SLOW_QUERY_TABLE
 from plone.pgcatalog.schema import TEXT_EXTRACTION_QUEUE
 from psycopg.types.json import Json
 from zodb_pgjsonb import ExtraColumn
@@ -130,6 +131,7 @@ class CatalogStateProcessor:
             + RRULE_FUNCTIONS
             + backend.get_schema_sql()
         )
+        base += SLOW_QUERY_TABLE
         if TIKA_URL:
             base += TEXT_EXTRACTION_QUEUE
             base += backend.get_extraction_update_sql()
