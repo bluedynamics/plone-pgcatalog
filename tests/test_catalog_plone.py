@@ -808,21 +808,27 @@ class TestMaintenanceMethods:
             # Should not raise TypeError — ZMI calls with 3 positional args
             tool.reindexIndex("portal_type", None, handler)
 
+    def _mock_rebuild_pool(self, rows):
+        """Create a mock pool + cursor returning given zoid rows."""
+        mock_cursor = mock.Mock()
+        mock_cursor.__iter__ = mock.Mock(return_value=iter(rows))
+
+        mock_pool_conn = mock.Mock()
+        mock_pool_conn.cursor.return_value.__enter__ = mock.Mock(
+            return_value=mock_cursor
+        )
+        mock_pool_conn.cursor.return_value.__exit__ = mock.Mock(return_value=False)
+
+        mock_pool = mock.Mock()
+        mock_pool.getconn.return_value = mock_pool_conn
+        return mock_pool, mock_pool_conn, mock_cursor
+
     def test_clearFindAndRebuild_clears_and_queries_pg(self):
         """clearFindAndRebuild clears PG data then queries object_state."""
         tool = PlonePGCatalogTool.__new__(PlonePGCatalogTool)
         mock_pg_conn = mock.Mock()
+        mock_pool, mock_pool_conn, mock_cursor = self._mock_rebuild_pool([])
 
-        # Mock the read connection with a server-side cursor
-        mock_read_conn = mock.Mock()
-        mock_cursor = mock.Mock()
-        mock_cursor.__iter__ = mock.Mock(return_value=iter([]))
-        mock_read_conn.cursor.return_value.__enter__ = mock.Mock(
-            return_value=mock_cursor
-        )
-        mock_read_conn.cursor.return_value.__exit__ = mock.Mock(return_value=False)
-
-        # Mock _p_jar (ZODB connection)
         mock_jar = mock.Mock()
         tool._p_jar = mock_jar
 
@@ -833,45 +839,35 @@ class TestMaintenanceMethods:
             mock.patch(
                 "plone.pgcatalog.catalog.clear_catalog_data", return_value=10
             ) as clear_mock,
-            mock.patch.object(
-                PlonePGCatalogTool,
-                "_get_pg_read_connection",
-                return_value=mock_read_conn,
-            ),
+            mock.patch("plone.pgcatalog.catalog.get_pool", return_value=mock_pool),
         ):
             tool.clearFindAndRebuild()
             clear_mock.assert_called_once_with(mock_pg_conn)
             # Should open a server-side cursor
-            mock_read_conn.cursor.assert_called_once()
+            mock_pool_conn.cursor.assert_called_once()
             # Should execute a SELECT with class_mod exclusions
             mock_cursor.execute.assert_called_once()
             query = mock_cursor.execute.call_args[0][0]
             assert "object_state" in query
             assert "NOT LIKE" in query
+            # Pool connection returned
+            mock_pool.putconn.assert_called_once_with(mock_pool_conn)
 
     def test_clearFindAndRebuild_skips_non_content(self):
         """clearFindAndRebuild skips objects without reindexObject."""
         tool = PlonePGCatalogTool.__new__(PlonePGCatalogTool)
         mock_pg_conn = mock.Mock()
 
-        # Content object (has reindexObject)
         content_obj = mock.Mock(spec=["reindexObject", "getPhysicalPath"])
         content_obj.getPhysicalPath.return_value = ("", "Plone", "doc1")
-        # Non-content object (no reindexObject)
         non_content_obj = mock.Mock(spec=["getId"])
 
         zoid_content = 100
         zoid_non_content = 200
 
-        mock_read_conn = mock.Mock()
-        mock_cursor = mock.Mock()
-        mock_cursor.__iter__ = mock.Mock(
-            return_value=iter([(zoid_content,), (zoid_non_content,)])
+        mock_pool, _, _ = self._mock_rebuild_pool(
+            [(zoid_content,), (zoid_non_content,)]
         )
-        mock_read_conn.cursor.return_value.__enter__ = mock.Mock(
-            return_value=mock_cursor
-        )
-        mock_read_conn.cursor.return_value.__exit__ = mock.Mock(return_value=False)
 
         mock_jar = mock.Mock()
 
@@ -891,31 +887,17 @@ class TestMaintenanceMethods:
                 PlonePGCatalogTool, "_pg_connection", _mock_pg_connection(mock_pg_conn)
             ),
             mock.patch("plone.pgcatalog.catalog.clear_catalog_data"),
-            mock.patch.object(
-                PlonePGCatalogTool,
-                "_get_pg_read_connection",
-                return_value=mock_read_conn,
-            ),
+            mock.patch("plone.pgcatalog.catalog.get_pool", return_value=mock_pool),
             mock.patch.object(PlonePGCatalogTool, "catalog_object") as cat_mock,
         ):
             tool.clearFindAndRebuild()
-            # Only content object should be indexed
             cat_mock.assert_called_once_with(content_obj, "/Plone/doc1")
 
     def test_clearFindAndRebuild_skips_self(self):
         """clearFindAndRebuild skips the catalog tool itself."""
         tool = PlonePGCatalogTool.__new__(PlonePGCatalogTool)
         mock_pg_conn = mock.Mock()
-
-        zoid_self = 42
-
-        mock_read_conn = mock.Mock()
-        mock_cursor = mock.Mock()
-        mock_cursor.__iter__ = mock.Mock(return_value=iter([(zoid_self,)]))
-        mock_read_conn.cursor.return_value.__enter__ = mock.Mock(
-            return_value=mock_cursor
-        )
-        mock_read_conn.cursor.return_value.__exit__ = mock.Mock(return_value=False)
+        mock_pool, _, _ = self._mock_rebuild_pool([(42,)])
 
         mock_jar = mock.Mock()
         mock_jar.get = mock.Mock(return_value=tool)
@@ -926,11 +908,7 @@ class TestMaintenanceMethods:
                 PlonePGCatalogTool, "_pg_connection", _mock_pg_connection(mock_pg_conn)
             ),
             mock.patch("plone.pgcatalog.catalog.clear_catalog_data"),
-            mock.patch.object(
-                PlonePGCatalogTool,
-                "_get_pg_read_connection",
-                return_value=mock_read_conn,
-            ),
+            mock.patch("plone.pgcatalog.catalog.get_pool", return_value=mock_pool),
             mock.patch.object(PlonePGCatalogTool, "catalog_object") as cat_mock,
         ):
             tool.clearFindAndRebuild()
