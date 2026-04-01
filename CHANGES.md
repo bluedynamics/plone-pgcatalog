@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.0.0b28
+
+### Added
+
+- Auto-create btree expression indexes for custom CatalogIndex fields
+  at startup. Only standard Plone fields have hardcoded indexes; custom
+  fields (like `general_end`) now get indexes automatically based on
+  the IndexRegistry. Date fields use `pgcatalog_to_timestamptz()`
+  wrapper. Fixes #49.
+
 ## 1.0.0b27
 
 ### Fixed
