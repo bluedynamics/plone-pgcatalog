@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.0.0b22
+
+### Fixed
+
+- Fix high memory usage during catalog rebuild. `clearFindAndRebuild`
+  and `refreshCatalog` now commit every 500 objects, flushing dirty
+  ZODB objects and pending catalog data so `cacheMinimize()` can
+  actually reclaim memory. Previously, `_p_changed = True` on every
+  indexed object prevented deactivation until the end of the
+  (single) transaction.
+
 ## 1.0.0b21
 
 ### Fixed

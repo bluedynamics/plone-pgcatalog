@@ -65,17 +65,25 @@ from Products.ZCatalog.interfaces import IZCatalog
 from zope.interface import implementer
 
 import logging
+import transaction
 import warnings
 
 
 log = logging.getLogger(__name__)
 
+_REBUILD_BATCH = 500  # commit + cache-minimize every N objects during rebuild
 
-def _deactivate(obj):
-    """Ghost *obj* if it supports ZODB persistence, no-op otherwise."""
-    deact = getattr(obj, "_p_deactivate", None)
-    if deact is not None:
-        deact()
+
+def _commit_and_minimize(jar):
+    """Commit the current transaction and minimize the ZODB cache.
+
+    Committing flushes dirty objects to storage and clears the
+    thread-local pending catalog data, allowing ``cacheMinimize()``
+    to actually ghost them and reclaim memory.
+    """
+    transaction.commit()
+    if jar is not None:
+        jar.cacheMinimize()
 
 
 # ---------------------------------------------------------------------------
@@ -787,10 +795,9 @@ class PlonePGCatalogTool(UniqueObject, Folder):
                 obj = self.unrestrictedTraverse(path, None)
                 if obj is not None:
                     self.catalog_object(obj, path)
-                    _deactivate(obj)
                     count += 1
-                    if jar is not None and count % 500 == 0:
-                        jar.cacheMinimize()
+                    if count % _REBUILD_BATCH == 0:
+                        _commit_and_minimize(jar)
                         log.info("refreshCatalog: %d objects indexed", count)
             except Exception:
                 log.warning("Failed to recatalog %s", path, exc_info=True)
@@ -817,11 +824,9 @@ class PlonePGCatalogTool(UniqueObject, Folder):
            contentish object (i.e. objects with a ``reindexObject``
            method).  Non-content objects like ``acl_users`` are skipped.
 
-        Deactivates non-folderish objects immediately after indexing to
-        keep memory usage flat.  Folderish objects are left active
-        (ZopeFindAndApply still needs them for child traversal) and
-        cleaned up by periodic ``cacheMinimize()`` once their subtree
-        is done.
+        Commits every ``_REBUILD_BATCH`` objects so that dirty ZODB
+        objects and pending catalog data are flushed, keeping memory
+        usage flat on large sites.
         """
         with self._pg_connection() as conn:
             clear_catalog_data(conn)
@@ -836,12 +841,8 @@ class PlonePGCatalogTool(UniqueObject, Folder):
                 uid = "/".join(obj.getPhysicalPath())
                 self.catalog_object(obj, uid)
                 _count[0] += 1
-                # Deactivate leaf objects immediately — containers are
-                # still needed by ZopeFindAndApply for child traversal.
-                if not getattr(aq_base(obj), "isPrincipiaFolderish", False):
-                    _deactivate(obj)
-                if jar is not None and _count[0] % 500 == 0:
-                    jar.cacheMinimize()
+                if _count[0] % _REBUILD_BATCH == 0:
+                    _commit_and_minimize(jar)
                     log.info("clearFindAndRebuild: %d objects indexed", _count[0])
 
         portal = aq_parent(aq_inner(self))
@@ -851,8 +852,6 @@ class PlonePGCatalogTool(UniqueObject, Folder):
             search_sub=True,
             apply_func=_index_content,
         )
-        if jar is not None:
-            jar.cacheMinimize()
         log.info("clearFindAndRebuild: %d objects indexed total", _count[0])
 
     # -- ZCatalog internal API (PG-backed) ----------------------------------
