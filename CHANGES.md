@@ -10,6 +10,15 @@
   chains on the call stack means `cacheMinimize()` can ghost all
   objects — flat memory on large sites. Fixes #39.
 
+### Added
+
+- Skip `portal_transforms` text extraction for `IFile` when
+  `PGCATALOG_TIKA_URL` is set. The async Tika worker handles blob
+  text extraction — no more synchronous pdftotext/wv calls or BFS
+  graph traversal of the transform registry during indexing.
+  Custom types with blob fields need their own override (see docs).
+  Fixes #41.
+
 ## 1.0.0b23
 
 ### Fixed

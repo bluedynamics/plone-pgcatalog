@@ -20,4 +20,12 @@
       file="eeafacetednavigation_overrides.zcml"
       />
 
+  <!-- Skip portal_transforms for IFile when Tika is active (#41).
+       The indexer checks PGCATALOG_TIKA_URL at call time and delegates
+       to the original plone.app.contenttypes indexer when unset. -->
+  <adapter
+      factory=".indexers.indexer_SearchableText_file_override"
+      name="SearchableText"
+      />
+
 </configure>
