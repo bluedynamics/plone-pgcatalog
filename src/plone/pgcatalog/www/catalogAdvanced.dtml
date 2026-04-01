@@ -17,7 +17,8 @@
       </div>
       <form action="&dtml-URL1;" class="ml-3">
         <button class="btn btn-sm btn-primary" type="submit"
-                name="manage_catalogReindex:method" value="Update">
+                name="manage_catalogReindex:method" value="Update"
+                onclick="return confirm('Re-index all currently cataloged objects?\n\nThis may take a while on large sites.')">
           Update Catalog
         </button>
       </form>
@@ -34,7 +35,8 @@
       </div>
       <form action="&dtml-URL1;" class="ml-3">
         <button class="btn btn-sm btn-warning" type="submit"
-                name="manage_catalogRebuild:method" value="Rebuild">
+                name="manage_catalogRebuild:method" value="Rebuild"
+                onclick="return confirm('This will DELETE all catalog data and rebuild from scratch.\n\nSearch will not work until the rebuild completes.\nOn large sites this can take hours.\n\nContinue?')">
           Clear and Rebuild
         </button>
       </form>
