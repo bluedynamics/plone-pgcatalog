@@ -125,11 +125,14 @@ class PGCatalogPGFixture(Layer):
         # 4. Load pgcatalog components + install move handlers
         self._setup_zcml()
 
-        # 5. Fire IDatabaseOpenedWithRoot to register CatalogStateProcessor
-        from zope.event import notify
+        # 5. Register CatalogStateProcessor on the storage.
+        #    PGCatalogLayer loads configure.zcml which registers an
+        #    IDatabaseOpenedWithRoot subscriber for this, but PGCatalogPGFixture
+        #    doesn't load ZCML — call the handler directly.
+        from plone.pgcatalog.startup import register_catalog_processor
         from zope.processlifetime import DatabaseOpenedWithRoot
 
-        notify(DatabaseOpenedWithRoot(self._db))
+        register_catalog_processor(DatabaseOpenedWithRoot(self._db))
 
         # 6. Create Plone site in PG
         self._setup_plone_site()
@@ -230,6 +233,25 @@ class PGCatalogPGFixture(Layer):
             pas.source_users.addUser(TEST_USER_ID, TEST_USER_NAME, TEST_USER_PASSWORD)
             for role in TEST_USER_ROLES:
                 pas.portal_role_manager.doAssignRoleToPrincipal(TEST_USER_ID, role)
+
+            # Replace standard CatalogTool with PlonePGCatalogTool so that
+            # catalog_object() routes through PG annotation pipeline.
+            # Must happen AFTER addPloneSite (portal_catalog must exist).
+            from plone.pgcatalog.setuphandlers import _replace_catalog
+
+            portal = app[PLONE_SITE_ID]
+
+            from zope.component.hooks import setSite
+
+            setSite(portal)
+            _replace_catalog(portal)
+
+            # Re-import catalog indexes on the fresh PlonePGCatalogTool
+            # (UID, portal_type, etc. — needed for ZCatalog compatibility)
+            from plone.pgcatalog.setuphandlers import _ensure_catalog_indexes
+
+            _ensure_catalog_indexes(portal)
+            setSite(None)
 
             zope_testing.logout()
 
