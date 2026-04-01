@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.0.0b21
+
+### Fixed
+
+- Reduce memory usage during catalog rebuild. `clearFindAndRebuild` and
+  `refreshCatalog` now deactivate ZODB objects after indexing and
+  periodically call `cacheMinimize()` to keep RAM usage flat on large
+  sites. Folderish objects are kept active during tree traversal to
+  avoid redundant reloads.
+
 ## 1.0.0b20
 
 ### Fixed

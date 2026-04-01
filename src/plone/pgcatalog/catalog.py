@@ -71,6 +71,13 @@ import warnings
 log = logging.getLogger(__name__)
 
 
+def _deactivate(obj):
+    """Ghost *obj* if it supports ZODB persistence, no-op otherwise."""
+    deact = getattr(obj, "_p_deactivate", None)
+    if deact is not None:
+        deact()
+
+
 # ---------------------------------------------------------------------------
 # PlonePGCatalogTool
 # ---------------------------------------------------------------------------
@@ -772,6 +779,7 @@ class PlonePGCatalogTool(UniqueObject, Folder):
             )
             rows = cur.fetchall()
 
+        jar = self._p_jar
         count = 0
         for row in rows:
             path = row["path"]
@@ -779,7 +787,11 @@ class PlonePGCatalogTool(UniqueObject, Folder):
                 obj = self.unrestrictedTraverse(path, None)
                 if obj is not None:
                     self.catalog_object(obj, path)
+                    _deactivate(obj)
                     count += 1
+                    if jar is not None and count % 500 == 0:
+                        jar.cacheMinimize()
+                        log.info("refreshCatalog: %d objects indexed", count)
             except Exception:
                 log.warning("Failed to recatalog %s", path, exc_info=True)
 
@@ -804,9 +816,18 @@ class PlonePGCatalogTool(UniqueObject, Folder):
         2. Traverses the entire portal tree and re-indexes each
            contentish object (i.e. objects with a ``reindexObject``
            method).  Non-content objects like ``acl_users`` are skipped.
+
+        Deactivates non-folderish objects immediately after indexing to
+        keep memory usage flat.  Folderish objects are left active
+        (ZopeFindAndApply still needs them for child traversal) and
+        cleaned up by periodic ``cacheMinimize()`` once their subtree
+        is done.
         """
         with self._pg_connection() as conn:
             clear_catalog_data(conn)
+
+        jar = self._p_jar
+        _count = [0]
 
         def _index_content(obj, path):
             if aq_base(obj) is aq_base(self):
@@ -814,6 +835,14 @@ class PlonePGCatalogTool(UniqueObject, Folder):
             if base_hasattr(obj, "reindexObject") and safe_callable(obj.reindexObject):
                 uid = "/".join(obj.getPhysicalPath())
                 self.catalog_object(obj, uid)
+                _count[0] += 1
+                # Deactivate leaf objects immediately — containers are
+                # still needed by ZopeFindAndApply for child traversal.
+                if not getattr(aq_base(obj), "isPrincipiaFolderish", False):
+                    _deactivate(obj)
+                if jar is not None and _count[0] % 500 == 0:
+                    jar.cacheMinimize()
+                    log.info("clearFindAndRebuild: %d objects indexed", _count[0])
 
         portal = aq_parent(aq_inner(self))
         _index_content(portal, "")
@@ -822,6 +851,9 @@ class PlonePGCatalogTool(UniqueObject, Folder):
             search_sub=True,
             apply_func=_index_content,
         )
+        if jar is not None:
+            jar.cacheMinimize()
+        log.info("clearFindAndRebuild: %d objects indexed total", _count[0])
 
     # -- ZCatalog internal API (PG-backed) ----------------------------------
 
