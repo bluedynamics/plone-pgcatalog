@@ -9,7 +9,7 @@
   <div class="card-header d-flex justify-content-between align-items-center">
     <strong>Slow Query Patterns</strong>
     <div>
-      <span class="text-muted small mr-2">Threshold: <code><dtml-var "__import__('os').environ.get('PGCATALOG_SLOW_QUERY_MS', '10')">ms</code></span>
+      <span class="text-muted small mr-2">Threshold: <code><dtml-var "manage_get_slow_query_threshold()">ms</code></span>
       <a href="manage_clear_slow_queries"
          class="btn btn-sm btn-outline-danger"
          onclick="return confirm('Clear all slow query statistics?')">Clear Stats</a>
