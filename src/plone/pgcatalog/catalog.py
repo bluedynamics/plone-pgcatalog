@@ -164,6 +164,7 @@ class PlonePGCatalogTool(UniqueObject, Folder):
         manage_zcatalog_entries, "manage_catalogIndexesAndMetadata"
     )
     security.declareProtected(manage_zcatalog_entries, "manage_reindexIndex")
+    security.declareProtected(manage_zcatalog_entries, "manage_get_tika_status")
     security.declareProtected(manage_zcatalog_entries, "manage_get_catalog_summary")
     security.declareProtected(manage_zcatalog_entries, "manage_get_catalog_objects")
     security.declareProtected(manage_zcatalog_entries, "manage_get_object_detail")
@@ -1002,6 +1003,53 @@ class PlonePGCatalogTool(UniqueObject, Folder):
             "backend_name": "BM25" if has_bm25 else "Tsvector",
             "has_bm25": has_bm25,
             "bm25_languages": list(getattr(backend, "languages", [])),
+        }
+
+    def manage_get_tika_status(self):
+        """Return Tika extraction status dict for the Advanced tab."""
+        import os
+
+        tika_url = os.environ.get("PGCATALOG_TIKA_URL", "").strip()
+        if not tika_url:
+            return {"enabled": False}
+
+        tika_inprocess = os.environ.get("PGCATALOG_TIKA_INPROCESS", "").strip().lower()
+        worker_mode = (
+            "in-process thread"
+            if tika_inprocess in ("1", "true", "yes")
+            else "external worker"
+        )
+
+        from plone.pgcatalog.processor import TIKA_CONTENT_TYPES
+
+        # Queue stats
+        queue_stats = {}
+        try:
+            pool = get_pool(self)
+            pg_conn = pool.getconn()
+            try:
+                with pg_conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT status, COUNT(*) AS cnt "
+                        "FROM text_extraction_queue "
+                        "GROUP BY status"
+                    )
+                    for row in cur.fetchall():
+                        queue_stats[row["status"]] = row["cnt"]
+            finally:
+                pool.putconn(pg_conn)
+        except Exception:
+            pass
+
+        return {
+            "enabled": True,
+            "tika_url": tika_url,
+            "worker_mode": worker_mode,
+            "content_types": sorted(TIKA_CONTENT_TYPES),
+            "queue_pending": queue_stats.get("pending", 0),
+            "queue_processing": queue_stats.get("processing", 0),
+            "queue_done": queue_stats.get("done", 0),
+            "queue_failed": queue_stats.get("failed", 0),
         }
 
     def manage_get_catalog_objects(self, batch_start=0, filterpath=""):

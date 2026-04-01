@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.0b26
+
+### Added
+
+- ZMI: Tika status card on the Advanced tab showing URL, worker mode,
+  configured content types, extraction queue stats (pending/processing/
+  done/failed), and IFile transform override status. Fixes #47.
+
 ## 1.0.0b25
 
 ### Fixed
