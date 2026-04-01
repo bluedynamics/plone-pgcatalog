@@ -831,7 +831,8 @@ class PlonePGCatalogTool(UniqueObject, Folder):
         if jar is None:
             return 0
 
-        # Get all cataloged paths
+        # Get all cataloged paths (see clearFindAndRebuild for fetchall()
+        # memory trade-off note — same reasoning applies here).
         pool = get_pool(self)
         pg_conn = pool.getconn()
         try:
