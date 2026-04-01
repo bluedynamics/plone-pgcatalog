@@ -1,4 +1,4 @@
--c https://dist.plone.org/release/6.1-latest/constraints.txt
--r https://dist.plone.org/release/6.1-latest/requirements.txt
+-c https://dist.plone.org/release/6.2-latest/constraints.txt
+-r https://dist.plone.org/release/6.2-latest/requirements.txt
 Plone
 -e .
