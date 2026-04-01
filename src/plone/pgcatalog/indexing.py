@@ -43,6 +43,10 @@ def catalog_object(conn, zoid, path, idx, searchable_text=None, language="simple
     idx.setdefault("path_parent", parent_path)
     idx.setdefault("path_depth", path_depth)
 
+    # Extract allowedRolesAndUsers for the dedicated TEXT[] column
+    allowed = idx.get("allowedRolesAndUsers")
+    allowed_roles = allowed if isinstance(allowed, list) else None
+
     if searchable_text is not None:
         tsvector_sql = _WEIGHTED_TSVECTOR.format(
             idx_expr="%(idx)s::jsonb",
@@ -56,6 +60,7 @@ def catalog_object(conn, zoid, path, idx, searchable_text=None, language="simple
                 parent_path = %(parent_path)s,
                 path_depth = %(path_depth)s,
                 idx = %(idx)s,
+                allowed_roles = %(allowed_roles)s,
                 searchable_text = {tsvector_sql}
             WHERE zoid = %(zoid)s
             """,
@@ -65,6 +70,7 @@ def catalog_object(conn, zoid, path, idx, searchable_text=None, language="simple
                 "parent_path": parent_path,
                 "path_depth": path_depth,
                 "idx": Json(idx),
+                "allowed_roles": allowed_roles,
                 "text": searchable_text,
                 "lang": language,
             },
@@ -77,6 +83,7 @@ def catalog_object(conn, zoid, path, idx, searchable_text=None, language="simple
                 parent_path = %(parent_path)s,
                 path_depth = %(path_depth)s,
                 idx = %(idx)s,
+                allowed_roles = %(allowed_roles)s,
                 searchable_text = NULL
             WHERE zoid = %(zoid)s
             """,
@@ -85,6 +92,7 @@ def catalog_object(conn, zoid, path, idx, searchable_text=None, language="simple
                 "path": path,
                 "parent_path": parent_path,
                 "path_depth": path_depth,
+                "allowed_roles": allowed_roles,
                 "idx": Json(idx),
             },
         )

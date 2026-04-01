@@ -81,6 +81,44 @@ class TestApplySecurityFilters:
         }
 
 
+class TestAllowedRolesColumn:
+    """Test that allowedRolesAndUsers uses the dedicated allowed_roles column."""
+
+    def test_uses_allowed_roles_column(self):
+        from plone.pgcatalog.query import build_query
+
+        qr = build_query(
+            {"allowedRolesAndUsers": {"query": ["Anonymous"], "operator": "or"}}
+        )
+        assert "allowed_roles &&" in qr["where"]
+        assert "::text[]" in qr["where"]
+        assert "idx->" not in qr["where"] or "allowedRolesAndUsers" not in qr["where"]
+
+    def test_allowed_roles_and_operator(self):
+        from plone.pgcatalog.query import build_query
+
+        qr = build_query(
+            {
+                "allowedRolesAndUsers": {
+                    "query": ["Manager", "Editor"],
+                    "operator": "and",
+                }
+            }
+        )
+        assert "allowed_roles @>" in qr["where"]
+        assert "::text[]" in qr["where"]
+
+    def test_full_query_with_security(self):
+        from plone.pgcatalog.query import build_query
+
+        query = apply_security_filters({"portal_type": "Document"}, roles=["Anonymous"])
+        qr = build_query(query)
+        # Security uses dedicated column, not JSONB
+        assert "allowed_roles &&" in qr["where"]
+        # portal_type uses btree expression
+        assert "idx->>'portal_type'" in qr["where"]
+
+
 # ---------------------------------------------------------------------------
 # Integration tests: secured queries against real PG
 # ---------------------------------------------------------------------------

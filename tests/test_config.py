@@ -441,12 +441,13 @@ class TestCatalogStateProcessor:
 
         processor = CatalogStateProcessor()
         columns = processor.get_extra_columns()
-        assert len(columns) == 5
+        assert len(columns) == 6
         names = [c.name for c in columns]
         assert "path" in names
         assert "parent_path" in names
         assert "path_depth" in names
         assert "idx" in names
+        assert "allowed_roles" in names
         assert "searchable_text" in names
 
     def test_get_schema_sql(self):
@@ -495,6 +496,7 @@ class TestCatalogStateProcessor:
             "path_depth": None,
             "idx": None,
             "searchable_text": None,
+            "allowed_roles": None,
         }
 
     def test_process_from_state_dict_fallback(self):
