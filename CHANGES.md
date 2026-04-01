@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.0.0b31
+
+### Added
+
+- Denormalize `allowedRolesAndUsers` into dedicated `allowed_roles
+  TEXT[]` column with GIN index. Security filter queries now use
+  `allowed_roles && ARRAY[...]` instead of JSONB decompression.
+  Includes automatic backfill migration for existing databases.
+  Navigation queries 85ms to 5-15ms, all queries benefit. Fixes #63.
+
 ## 1.0.0b30
 
 ### Fixed
