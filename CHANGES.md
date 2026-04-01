@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.0.0b32
+
+### Fixed
+
+- Optimize bounded-depth path queries: rewrite `path LIKE + path_depth`
+  to `path_parent IN (subquery)` so PG can use the composite
+  `(path_parent, portal_type)` index. Navigation tree queries drop
+  from 630ms to ~77ms. Fixes #66.
+
 ## 1.0.0b31
 
 ### Added
