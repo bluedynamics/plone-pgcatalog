@@ -22,8 +22,6 @@ from AccessControl.Permissions import manage_zcatalog_entries
 from AccessControl.Permissions import manage_zcatalog_indexes
 from AccessControl.Permissions import search_zcatalog
 from Acquisition import aq_base
-from Acquisition import aq_inner
-from Acquisition import aq_parent
 from App.special_dtml import DTMLFile
 from BTrees.Length import Length
 from contextlib import contextmanager
@@ -72,6 +70,21 @@ import warnings
 log = logging.getLogger(__name__)
 
 _REBUILD_BATCH = 500  # commit + cache-minimize every N objects during rebuild
+
+# class_mod prefixes that are never content objects — safe to skip during
+# catalog rebuild.  These cover ~96% of rows in a typical Plone database.
+_EXCLUDE_CLASS_MODS = (
+    "BTrees.",
+    "ZODB.blob",
+    "persistent.mapping",
+    "persistent.list",
+    "Persistence.mapping",
+    "plone.namedfile.file",
+    "z3c.relationfield.relation",
+    "plone.scale.storage",
+    "plone.contentrules.engine.assignments",
+    "plone.app.textfield.value",
+)
 
 
 def _commit_and_minimize(jar):
@@ -819,40 +832,62 @@ class PlonePGCatalogTool(UniqueObject, Folder):
     def clearFindAndRebuild(self):
         """Clear all catalog data and rebuild from content objects.
 
-        1. Clears PG catalog columns (path, idx, searchable_text, etc.)
-        2. Traverses the entire portal tree and re-indexes each
-           contentish object (i.e. objects with a ``reindexObject``
-           method).  Non-content objects like ``acl_users`` are skipped.
+        Uses PG-driven iteration instead of ``ZopeFindAndApply`` to
+        avoid acquisition parent chains on the call stack that prevent
+        ``cacheMinimize()`` from ghosting objects.
 
-        Commits every ``_REBUILD_BATCH`` objects so that dirty ZODB
-        objects and pending catalog data are flushed, keeping memory
-        usage flat on large sites.
+        1. Clears PG catalog columns (path, idx, searchable_text, etc.)
+        2. Queries ``object_state`` for candidate zoids, filtering out
+           known non-content classes (~96% of rows in a typical site).
+        3. Loads each object via the ZODB connection, checks for
+           ``reindexObject``, and indexes it.
+        4. Commits every ``_REBUILD_BATCH`` objects so dirty objects
+           and pending catalog data are flushed — flat memory.
         """
+        from ZODB.utils import p64
+
         with self._pg_connection() as conn:
             clear_catalog_data(conn)
 
         jar = self._p_jar
-        _count = [0]
+        if jar is None:
+            return
 
-        def _index_content(obj, path):
-            if aq_base(obj) is aq_base(self):
-                return
-            if base_hasattr(obj, "reindexObject") and safe_callable(obj.reindexObject):
+        # Build WHERE clause excluding known non-content class_mod prefixes
+        exclude_clauses = " AND ".join(
+            f"class_mod NOT LIKE '{mod}%%'" for mod in _EXCLUDE_CLASS_MODS
+        )
+        query = f"SELECT zoid FROM object_state WHERE {exclude_clauses} ORDER BY zoid"
+
+        pg_conn = self._get_pg_read_connection()
+        with pg_conn.cursor(name="rebuild_cursor") as cur:
+            cur.itersize = _REBUILD_BATCH
+            cur.execute(query)
+
+            count = 0
+            for (zoid,) in cur:
+                try:
+                    obj = jar.get(p64(zoid))
+                except Exception:
+                    continue
+                if obj is None:
+                    continue
+                if aq_base(obj) is aq_base(self):
+                    continue
+                if not (
+                    base_hasattr(obj, "reindexObject")
+                    and safe_callable(obj.reindexObject)
+                ):
+                    continue
+
                 uid = "/".join(obj.getPhysicalPath())
                 self.catalog_object(obj, uid)
-                _count[0] += 1
-                if _count[0] % _REBUILD_BATCH == 0:
+                count += 1
+                if count % _REBUILD_BATCH == 0:
                     _commit_and_minimize(jar)
-                    log.info("clearFindAndRebuild: %d objects indexed", _count[0])
+                    log.info("clearFindAndRebuild: %d objects indexed", count)
 
-        portal = aq_parent(aq_inner(self))
-        _index_content(portal, "")
-        portal.ZopeFindAndApply(
-            portal,
-            search_sub=True,
-            apply_func=_index_content,
-        )
-        log.info("clearFindAndRebuild: %d objects indexed total", _count[0])
+        log.info("clearFindAndRebuild: %d objects indexed total", count)
 
     # -- ZCatalog internal API (PG-backed) ----------------------------------
 

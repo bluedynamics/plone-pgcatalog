@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.0.0b24
+
+### Changed
+
+- `clearFindAndRebuild` now uses PG-driven iteration instead of
+  `ZopeFindAndApply`. Queries `object_state` directly, filtering out
+  known non-content classes (~96% of rows). No acquisition parent
+  chains on the call stack means `cacheMinimize()` can ghost all
+  objects — flat memory on large sites. Fixes #39.
+
 ## 1.0.0b23
 
 ### Fixed
