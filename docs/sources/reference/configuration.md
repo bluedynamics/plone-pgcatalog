@@ -58,6 +58,7 @@ need a separate `%import` directive.
 | `PGCATALOG_TIKA_URL` | (none) | Tika server URL, for example `http://localhost:9998`. Enables async text extraction from binary content (PDFs, Office docs, images). When set, the queue table and merge function are created at startup. See {doc}`../how-to/enable-tika-extraction`. |
 | `PGCATALOG_TIKA_CONTENT_TYPES` | common office/PDF/image types | Comma-separated MIME types to send to Tika. Default includes PDF, MS Office, OpenDocument, RTF, and common image formats. |
 | `PGCATALOG_TIKA_INPROCESS` | (none) | Set to `true`, `1`, or `yes` to start the extraction worker as a daemon thread inside the Zope process. Requires `PGCATALOG_TIKA_URL`. |
+| `PGCATALOG_SLOW_QUERY_MS` | `10` | Threshold in milliseconds for slow query detection. Queries exceeding this are logged as warnings and recorded in the `pgcatalog_slow_queries` table for analysis via the ZMI Slow Queries tab. Set to `0` to disable. |
 | `ZODB_TEST_DSN` | `dbname=zodb_test host=localhost port=5433 user=zodb password=zodb` | DSN for test database (tests only). |
 | `BM25_TEST_DSN` | `dbname=zodb_test host=localhost port=5434 user=zodb password=zodb` | DSN for BM25 integration tests (tests only). |
 

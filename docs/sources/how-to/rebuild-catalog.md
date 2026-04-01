@@ -32,7 +32,7 @@ Expected timing: approximately 15 ms per object.
 
 ## Selective reindex (reindexIndex)
 
-Re-extracts a single index for all objects:
+Re-extracts a single index from all ZODB objects:
 
 ```python
 catalog.reindexIndex("review_state")
@@ -53,7 +53,7 @@ This happens automatically and does not trigger ZODB serialization of the object
 | `clearFindAndRebuild()` | Yes | Yes | ~15 ms/obj | Schema changes, corrupt data, major upgrades |
 | `refreshCatalog(clear=0)` | No | Re-catalogs existing | ~15 ms/obj | Reindex all without losing uncataloged objects |
 | `refreshCatalog(clear=1)` | Yes | Yes | Same | Equivalent to `clearFindAndRebuild()` |
-| `reindexIndex("name")` | No (single key) | No (PG only) | Fast | Single index changed, new indexer deployed |
+| `reindexIndex("name")` | No (single key) | Yes (ZODB load) | ~5 ms/obj | Single index changed, new indexer deployed |
 
 **`clearFindAndRebuild()`** NULLs all catalog columns (path, idx,
 searchable_text, backend extras), then traverses the entire portal tree
@@ -66,11 +66,11 @@ resolves each from ZODB, and re-extracts index values.
 It does not
 discover objects that were never cataloged.
 
-**`reindexIndex("name")`** is a PostgreSQL-only operation: it reads the
-existing `idx` JSONB for all objects that have the named key and
-re-applies it.
-It does not re-extract values from the live Zope object.
-To re-extract from objects, use `refreshCatalog()`.
+**`reindexIndex("name")`** loads each cataloged object from ZODB via
+`unrestrictedTraverse`, extracts the requested index value, and writes
+a JSONB merge update. This is faster than `refreshCatalog()` because
+it only re-extracts the single requested index, not all of them.
+Available via ZMI: Indexes & Metadata tab > [reindex] button per index.
 
 ## Troubleshooting
 
