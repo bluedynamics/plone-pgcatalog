@@ -127,6 +127,7 @@ def register_catalog_processor(event):
         log.info("Registered CatalogStateProcessor on %s", storage)
         _sync_registry_from_db(db)
         _ensure_text_indexes(storage)
+        _ensure_field_indexes(storage)
 
         # Install move/rename optimization handlers
         from plone.pgcatalog.move import install_move_handlers
@@ -186,6 +187,92 @@ def _ensure_text_indexes(storage):  # pragma: no cover
         log.error(
             "Failed to create text expression indexes — "
             "text field queries may be slow until indexes are created",
+            exc_info=True,
+        )
+
+
+# Hardcoded index names from schema.py — skip these in auto-creation
+_HARDCODED_IDX_KEYS = frozenset(
+    {
+        "path",
+        "path_parent",
+        "path_depth",
+        "modified",
+        "created",
+        "effective",
+        "expires",
+        "sortable_title",
+        "portal_type",
+        "review_state",
+        "UID",
+    }
+)
+
+# Index types that benefit from a btree expression index
+_BTREE_INDEX_TYPES = frozenset(
+    {IndexType.FIELD, IndexType.DATE, IndexType.BOOLEAN, IndexType.UUID}
+)
+
+
+def _ensure_field_indexes(storage):  # pragma: no cover
+    """Create btree expression indexes for dynamically discovered catalog indexes.
+
+    For each FIELD/DATE/BOOLEAN/UUID index with an idx_key not already
+    covered by hardcoded indexes in schema.py, creates a btree expression
+    index on ``(idx->>'{key}')``.  DATE indexes use the
+    ``pgcatalog_to_timestamptz()`` wrapper for proper ordering.
+
+    KEYWORD indexes are skipped --- they use GIN ``?|`` queries which are
+    handled by the existing GIN index on ``idx``.
+
+    Uses an autocommit connection to avoid REPEATABLE READ lock conflicts.
+    """
+    registry = get_registry()
+    candidates = [
+        (name, idx_type, idx_key)
+        for name, (idx_type, idx_key, _) in registry.items()
+        if idx_type in _BTREE_INDEX_TYPES
+        and idx_key is not None
+        and idx_key not in _HARDCODED_IDX_KEYS
+    ]
+    if not candidates:
+        return
+
+    dsn = getattr(storage, "_dsn", None)
+    if not dsn:
+        return
+
+    try:
+        from psycopg import sql as pgsql
+
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            for name, idx_type, idx_key in candidates:
+                validate_identifier(idx_key)
+                idx_name = f"idx_os_cat_{idx_key.lower()}"
+
+                if idx_type == IndexType.DATE:
+                    expr = pgsql.SQL("pgcatalog_to_timestamptz(idx->>{key})").format(
+                        key=pgsql.Literal(idx_key)
+                    )
+                else:
+                    expr = pgsql.SQL("(idx->>{key})").format(key=pgsql.Literal(idx_key))
+
+                stmt = pgsql.SQL(
+                    "CREATE INDEX IF NOT EXISTS {idx_name} "
+                    "ON object_state ({expr}) "
+                    "WHERE idx IS NOT NULL"
+                ).format(idx_name=pgsql.Identifier(idx_name), expr=expr)
+                conn.execute(stmt)
+                log.info(
+                    "Ensured btree index %s for %s (%s)",
+                    idx_name,
+                    name,
+                    idx_type.value,
+                )
+    except Exception:
+        log.error(
+            "Failed to create field expression indexes --- "
+            "custom field queries may be slow until indexes are created",
             exc_info=True,
         )
 
