@@ -43,7 +43,6 @@ from plone.pgcatalog.maintenance import _CatalogCompat
 from plone.pgcatalog.maintenance import _make_unsupported
 from plone.pgcatalog.maintenance import _UNSUPPORTED
 from plone.pgcatalog.maintenance import clear_catalog_data
-from plone.pgcatalog.maintenance import reindex_index
 from plone.pgcatalog.pending import _get_pending
 from plone.pgcatalog.pending import _local
 from plone.pgcatalog.pending import set_partial_pending
@@ -164,6 +163,7 @@ class PlonePGCatalogTool(UniqueObject, Folder):
     security.declareProtected(
         manage_zcatalog_entries, "manage_catalogIndexesAndMetadata"
     )
+    security.declareProtected(manage_zcatalog_entries, "manage_reindexIndex")
     security.declareProtected(manage_zcatalog_entries, "manage_get_catalog_summary")
     security.declareProtected(manage_zcatalog_entries, "manage_get_catalog_objects")
     security.declareProtected(manage_zcatalog_entries, "manage_get_object_detail")
@@ -817,15 +817,64 @@ class PlonePGCatalogTool(UniqueObject, Folder):
         return count
 
     def reindexIndex(self, name, REQUEST=None, pghandler=None):
-        """Re-apply a specific idx key across all cataloged objects.
+        """Re-extract a specific index from all cataloged ZODB objects.
+
+        Iterates all cataloged paths, loads each object via
+        ``unrestrictedTraverse``, extracts the requested index value,
+        and writes a JSONB merge update.  Commits every
+        ``_REBUILD_BATCH`` objects to keep memory flat.
 
         ``pghandler`` is accepted for ZCatalog API compatibility
-        (used by ``manage_reindexIndex`` and plone.distribution)
-        but ignored — PG-based reindexing is fast enough without
-        progress reporting.
+        but ignored.
         """
-        with self._pg_connection() as conn:
-            return reindex_index(conn, name)
+        jar = self._p_jar
+        if jar is None:
+            return 0
+
+        # Get all cataloged paths
+        pool = get_pool(self)
+        pg_conn = pool.getconn()
+        try:
+            with pg_conn.cursor() as cur:
+                cur.execute(
+                    "SELECT path FROM object_state "
+                    "WHERE path IS NOT NULL AND idx IS NOT NULL "
+                    "ORDER BY zoid"
+                )
+                all_paths = [row["path"] for row in cur.fetchall()]
+        finally:
+            pool.putconn(pg_conn)
+
+        count = 0
+        for path in all_paths:
+            try:
+                obj = self.unrestrictedTraverse(path, None)
+            except Exception:
+                continue
+            if obj is None:
+                continue
+
+            if self._partial_reindex(obj, [name]):
+                count += 1
+                if count % _REBUILD_BATCH == 0:
+                    _commit_and_minimize(jar)
+                    log.info("reindexIndex(%r): %d objects re-indexed", name, count)
+
+        if count > 0:
+            _commit_and_minimize(jar)
+        log.info("reindexIndex(%r): %d objects re-indexed total", name, count)
+        return count
+
+    def manage_reindexIndex(self, name, REQUEST=None):
+        """ZMI action: re-extract a specific index from all objects."""
+        count = self.reindexIndex(name)
+        if REQUEST is not None:
+            msg = f"Re-indexed+{count}+objects+for+index+{name}"
+            REQUEST.RESPONSE.redirect(
+                f"{self.absolute_url()}/manage_catalogIndexesAndMetadata"
+                f"?manage_tabs_message={msg}"
+            )
+        return count
 
     def clearFindAndRebuild(self):
         """Clear all catalog data and rebuild from content objects.
