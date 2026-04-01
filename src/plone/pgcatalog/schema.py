@@ -150,6 +150,26 @@ CREATE INDEX IF NOT EXISTS idx_os_cat_type_state
     ON object_state ((idx->>'portal_type'), (idx->>'review_state'))
     WHERE idx IS NOT NULL;
 
+-- Dedicated GIN indexes for high-cardinality keyword fields.
+-- The full-idx GIN index (idx_os_catalog) is too broad for these — PG
+-- must scan all JSONB keys across all objects.  Dedicated indexes on
+-- just the keyword array are much smaller and faster for ?| queries.
+
+-- Security filter (used in EVERY catalog query)
+CREATE INDEX IF NOT EXISTS idx_os_cat_allowed_gin
+    ON object_state USING gin ((idx->'allowedRolesAndUsers'))
+    WHERE idx IS NOT NULL AND idx ? 'allowedRolesAndUsers';
+
+-- Interface-based lookups (object_provides)
+CREATE INDEX IF NOT EXISTS idx_os_cat_provides_gin
+    ON object_state USING gin ((idx->'object_provides'))
+    WHERE idx IS NOT NULL AND idx ? 'object_provides';
+
+-- Subject keywords
+CREATE INDEX IF NOT EXISTS idx_os_cat_subject_gin
+    ON object_state USING gin ((idx->'Subject'))
+    WHERE idx IS NOT NULL AND idx ? 'Subject';
+
 -- Extended statistics for UID selectivity (helps planner pick the right index)
 CREATE STATISTICS IF NOT EXISTS stts_os_uid ON (idx->>'UID') FROM object_state;
 
