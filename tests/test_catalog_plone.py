@@ -808,13 +808,14 @@ class TestMaintenanceMethods:
             # Should not raise TypeError — ZMI calls with 3 positional args
             tool.reindexIndex("portal_type", None, handler)
 
-    def _mock_rebuild_pool(self, rows):
-        """Create a mock pool + cursor returning given zoid rows.
+    def _mock_rebuild_pool(self, zoids):
+        """Create a mock pool + cursor returning given zoids.
 
-        rows should be a list of (zoid,) tuples matching fetchall() format.
+        zoids should be a list of int zoids. Returns tuples to match
+        the storage pool's default row factory.
         """
         mock_cursor = mock.Mock()
-        mock_cursor.fetchall.return_value = rows
+        mock_cursor.fetchall.return_value = [(z,) for z in zoids]
 
         mock_pool_conn = mock.Mock()
         mock_pool_conn.cursor.return_value.__enter__ = mock.Mock(
@@ -868,9 +869,7 @@ class TestMaintenanceMethods:
         zoid_content = 100
         zoid_non_content = 200
 
-        mock_pool, _, _ = self._mock_rebuild_pool(
-            [(zoid_content,), (zoid_non_content,)]
-        )
+        mock_pool, _, _ = self._mock_rebuild_pool([zoid_content, zoid_non_content])
 
         mock_jar = mock.Mock()
 
@@ -900,7 +899,7 @@ class TestMaintenanceMethods:
         """clearFindAndRebuild skips the catalog tool itself."""
         tool = PlonePGCatalogTool.__new__(PlonePGCatalogTool)
         mock_pg_conn = mock.Mock()
-        mock_pool, _, _ = self._mock_rebuild_pool([(42,)])
+        mock_pool, _, _ = self._mock_rebuild_pool([42])
 
         mock_jar = mock.Mock()
         mock_jar.get = mock.Mock(return_value=tool)

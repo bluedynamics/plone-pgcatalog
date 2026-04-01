@@ -869,7 +869,7 @@ class PlonePGCatalogTool(UniqueObject, Folder):
         try:
             with pg_conn.cursor() as cur:
                 cur.execute(query)
-                all_zoids = [row["zoid"] for row in cur.fetchall()]
+                all_zoids = [row[0] for row in cur.fetchall()]
         finally:
             pool.putconn(pg_conn)
 
