@@ -246,7 +246,11 @@ Enabling Tika does not change how existing search works:
 - **Title and Description** are still indexed synchronously during
   `catalog_object()`, with immediate availability.
 - **Rich-text body** (SearchableText from `portal_transforms`) is
-  still indexed synchronously.
+  still indexed synchronously for non-File content types. For `IFile`
+  objects, `portal_transforms` is skipped when Tika is active—the
+  expensive `pdftotext`/`wv` calls and BFS graph traversal of the
+  transform registry are avoided entirely. See
+  {doc}`../how-to/custom-blob-searchabletext` for custom types.
 - **Tika extraction** adds to the existing tsvector asynchronously.
   A brief window (seconds to minutes, depending on queue
   depth and Tika processing time) exists where the blob content is not yet

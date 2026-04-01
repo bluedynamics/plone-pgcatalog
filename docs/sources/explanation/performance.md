@@ -235,3 +235,31 @@ the current floor are:
   queries per request.
 - **Increase batch sizes.** For bulk operations (reindex, migration), larger batches
   amortize per-statement overhead.
+
+### Composite indexes for multi-field queries
+
+PostgreSQL rarely combines individual single-column indexes via BitmapAnd.
+When a catalog query filters on multiple fields simultaneously (the common
+case—folder listings filter on `path_parent` + `portal_type` +
+`allowedRolesAndUsers`), PG picks one index and sequentially filters the
+rest. On a 137K-object database this means 3+ second query times.
+
+plone.pgcatalog ships composite indexes for the most common patterns:
+
+- `(path_parent, portal_type)` for folder listings and navigation
+- `(path pattern, portal_type)` for collections and search
+- `(path pattern, path_depth, portal_type)` for navigation tree
+- `(portal_type, review_state)` for workflow-filtered listings
+
+Custom catalog indexes registered via GenericSetup also get btree
+expression indexes automatically at startup.
+
+### Slow query detection
+
+Queries exceeding `PGCATALOG_SLOW_QUERY_MS` (default: 10 ms) are logged
+as warnings and recorded in the `pgcatalog_slow_queries` PostgreSQL table.
+The ZMI "Slow Queries" tab aggregates these by query field pattern and
+suggests composite index DDL for frequent patterns.
+
+This is a self-tuning feedback loop: deploy the site, let it accumulate
+slow query data under real load, then add the suggested indexes.
