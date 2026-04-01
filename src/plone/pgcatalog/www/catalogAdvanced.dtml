@@ -44,6 +44,63 @@
   </div>
 </div>
 
+<dtml-let tika="manage_get_tika_status()">
+
+<div class="card mb-3">
+  <div class="card-header d-flex justify-content-between align-items-center">
+    <strong>Tika Text Extraction</strong>
+    <dtml-if "tika['enabled']">
+      <span class="badge badge-success">enabled</span>
+    <dtml-else>
+      <span class="badge badge-secondary">not configured</span>
+    </dtml-if>
+  </div>
+  <dtml-if "tika['enabled']">
+  <div class="card-body p-3">
+    <table class="table table-sm table-borderless mb-0">
+      <tbody>
+        <tr>
+          <td class="text-muted" style="width:30%">Tika URL</td>
+          <td><code><dtml-var "tika['tika_url']" html_quote></code></td>
+        </tr>
+        <tr>
+          <td class="text-muted">Worker mode</td>
+          <td><dtml-var "tika['worker_mode']" html_quote></td>
+        </tr>
+        <tr>
+          <td class="text-muted">Content types</td>
+          <td><small><dtml-var "', '.join(tika['content_types'])" html_quote></small></td>
+        </tr>
+        <tr>
+          <td class="text-muted">Queue</td>
+          <td>
+            <span class="badge badge-warning"><dtml-var "tika['queue_pending']"> pending</span>
+            <span class="badge badge-info"><dtml-var "tika['queue_processing']"> processing</span>
+            <span class="badge badge-success"><dtml-var "tika['queue_done']"> done</span>
+            <dtml-if "tika['queue_failed']">
+              <span class="badge badge-danger"><dtml-var "tika['queue_failed']"> failed</span>
+            </dtml-if>
+          </td>
+        </tr>
+        <tr>
+          <td class="text-muted">IFile transforms</td>
+          <td>skipped (Tika handles blob text async)</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+  <dtml-else>
+  <div class="card-body p-3">
+    <p class="text-muted small mb-0">
+      Set <code>PGCATALOG_TIKA_URL</code> to enable async text extraction
+      from PDF, Office, and image files via Apache Tika.
+    </p>
+  </div>
+  </dtml-if>
+</div>
+
+</dtml-let>
+
 </main>
 
 <dtml-var manage_page_footer>
