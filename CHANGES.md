@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.0.0b29
+
+### Fixed
+
+- Use btree-friendly expressions instead of GIN containment for
+  FieldIndex single-value, BooleanIndex, and UUIDIndex queries.
+  Root cause of 3-4 second navigation queries on large sites.
+  Navigation queries drop from 3900ms to <1ms.
+
+- Fix Slow Queries ZMI tab crash with KeyError when
+  `PGCATALOG_SLOW_QUERY_MS` is not set. Fixes #58.
+
+- Python 3.14 CI compatibility. Fixes #57.
+
 ## 1.0.0b28
 
 ### Added
