@@ -860,38 +860,40 @@ class PlonePGCatalogTool(UniqueObject, Folder):
         query = f"SELECT zoid FROM object_state WHERE {exclude_clauses} ORDER BY zoid"
 
         # Use a pool connection (not the MVCC read connection) so the
-        # server-side cursor sees data AFTER clear_catalog_data committed.
+        # query sees data AFTER clear_catalog_data committed.
+        # Fetch all candidate zoids upfront — this is a lightweight query
+        # (just integer zoids, no state data) and the exclusion filter
+        # reduces the result set to ~4% of rows.
         pool = get_pool(self)
         pg_conn = pool.getconn()
         try:
-            count = 0
-            with pg_conn.cursor(name="rebuild_cursor") as cur:
-                cur.itersize = _REBUILD_BATCH
+            with pg_conn.cursor() as cur:
                 cur.execute(query)
-
-                for (zoid,) in cur:
-                    try:
-                        obj = jar.get(p64(zoid))
-                    except Exception:
-                        continue
-                    if obj is None:
-                        continue
-                    if aq_base(obj) is aq_base(self):
-                        continue
-                    if not (
-                        base_hasattr(obj, "reindexObject")
-                        and safe_callable(obj.reindexObject)
-                    ):
-                        continue
-
-                    uid = "/".join(obj.getPhysicalPath())
-                    self.catalog_object(obj, uid)
-                    count += 1
-                    if count % _REBUILD_BATCH == 0:
-                        _commit_and_minimize(jar)
-                        log.info("clearFindAndRebuild: %d objects indexed", count)
+                all_zoids = [row[0] for row in cur.fetchall()]
         finally:
             pool.putconn(pg_conn)
+
+        count = 0
+        for zoid in all_zoids:
+            try:
+                obj = jar.get(p64(zoid))
+            except Exception:
+                continue
+            if obj is None:
+                continue
+            if aq_base(obj) is aq_base(self):
+                continue
+            if not (
+                base_hasattr(obj, "reindexObject") and safe_callable(obj.reindexObject)
+            ):
+                continue
+
+            uid = "/".join(obj.getPhysicalPath())
+            self.catalog_object(obj, uid)
+            count += 1
+            if count % _REBUILD_BATCH == 0:
+                _commit_and_minimize(jar)
+                log.info("clearFindAndRebuild: %d objects indexed", count)
 
         log.info("clearFindAndRebuild: %d objects indexed total", count)
 

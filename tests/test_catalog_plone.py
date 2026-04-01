@@ -809,9 +809,12 @@ class TestMaintenanceMethods:
             tool.reindexIndex("portal_type", None, handler)
 
     def _mock_rebuild_pool(self, rows):
-        """Create a mock pool + cursor returning given zoid rows."""
+        """Create a mock pool + cursor returning given zoid rows.
+
+        rows should be a list of (zoid,) tuples matching fetchall() format.
+        """
         mock_cursor = mock.Mock()
-        mock_cursor.__iter__ = mock.Mock(return_value=iter(rows))
+        mock_cursor.fetchall.return_value = rows
 
         mock_pool_conn = mock.Mock()
         mock_pool_conn.cursor.return_value.__enter__ = mock.Mock(
