@@ -195,6 +195,9 @@ class PlonePGCatalogTool(UniqueObject, Folder):
     security.declareProtected(manage_zcatalog_entries, "manage_get_tika_status")
     security.declareProtected(manage_zcatalog_entries, "manage_slowQueries")
     security.declareProtected(manage_zcatalog_entries, "manage_get_slow_query_stats")
+    security.declareProtected(
+        manage_zcatalog_entries, "manage_get_slow_query_threshold"
+    )
     security.declareProtected(manage_zcatalog_entries, "manage_clear_slow_queries")
     security.declareProtected(manage_zcatalog_entries, "manage_get_catalog_summary")
     security.declareProtected(manage_zcatalog_entries, "manage_get_catalog_objects")
@@ -1086,6 +1089,12 @@ class PlonePGCatalogTool(UniqueObject, Folder):
             "queue_done": queue_stats.get("done", 0),
             "queue_failed": queue_stats.get("failed", 0),
         }
+
+    def manage_get_slow_query_threshold(self):
+        """Return the slow query threshold in ms (for ZMI display)."""
+        import os
+
+        return os.environ.get("PGCATALOG_SLOW_QUERY_MS", "10")
 
     def manage_get_slow_query_stats(self):
         """Return aggregated slow query stats for the Slow Queries tab."""
