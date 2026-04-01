@@ -907,6 +907,11 @@ class PlonePGCatalogTool(UniqueObject, Folder):
         # Snapshot paths BEFORE clearing — we need them for traversal.
         # Use a pool connection (not the MVCC snapshot) so the query
         # sees the current committed state.
+        # NOTE: fetchall() loads all paths into memory.  ~50 bytes per
+        # path, so 500k objects ≈ 25 MB — acceptable.  A server-side
+        # cursor would avoid this but requires holding a PG transaction
+        # open for the entire rebuild duration (hours on large sites),
+        # which blocks autovacuum.
         pool = get_pool(self)
         pg_conn = pool.getconn()
         try:
