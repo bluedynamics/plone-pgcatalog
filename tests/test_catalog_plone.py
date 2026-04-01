@@ -766,47 +766,44 @@ class TestMaintenanceMethods:
             # Should not raise TypeError
             tool.refreshCatalog(clear=1, pghandler=mock.Mock())
 
-    def test_reindexIndex(self):
+    def test_reindexIndex_extracts_from_zodb(self):
+        """reindexIndex loads objects and calls _partial_reindex."""
         tool = PlonePGCatalogTool.__new__(PlonePGCatalogTool)
-        mock_conn = mock.Mock()
+        tool._p_jar = mock.Mock()
+        content_obj = mock.Mock()
+
+        mock_pool, _, _ = self._mock_rebuild_pool(["/Plone/doc1", "/Plone/doc2"])
+
         with (
+            mock.patch("plone.pgcatalog.catalog.get_pool", return_value=mock_pool),
             mock.patch.object(
-                PlonePGCatalogTool, "_pg_connection", _mock_pg_connection(mock_conn)
+                PlonePGCatalogTool,
+                "unrestrictedTraverse",
+                return_value=content_obj,
             ),
-            mock.patch(
-                "plone.pgcatalog.catalog.reindex_index", return_value=3
-            ) as reindex_mock,
+            mock.patch.object(
+                PlonePGCatalogTool, "_partial_reindex", return_value=True
+            ) as partial_mock,
         ):
             result = tool.reindexIndex("portal_type")
-            assert result == 3
-            reindex_mock.assert_called_once_with(mock_conn, "portal_type")
+            assert result == 2
+            partial_mock.assert_any_call(content_obj, ["portal_type"])
 
     def test_reindexIndex_accepts_pghandler(self):
         """reindexIndex accepts pghandler kwarg (ZCatalog compat)."""
         tool = PlonePGCatalogTool.__new__(PlonePGCatalogTool)
-        mock_conn = mock.Mock()
-        with (
-            mock.patch.object(
-                PlonePGCatalogTool, "_pg_connection", _mock_pg_connection(mock_conn)
-            ),
-            mock.patch("plone.pgcatalog.catalog.reindex_index", return_value=0),
-        ):
+        tool._p_jar = mock.Mock()
+        mock_pool, _, _ = self._mock_rebuild_pool([])
+
+        with mock.patch("plone.pgcatalog.catalog.get_pool", return_value=mock_pool):
             # Should not raise TypeError
             tool.reindexIndex("portal_type", None, pghandler=mock.Mock())
 
-    def test_reindexIndex_three_positional_args(self):
-        """reindexIndex accepts 3 positional args (manage_reindexIndex compat)."""
+    def test_reindexIndex_no_jar(self):
+        """reindexIndex returns 0 when _p_jar is None."""
         tool = PlonePGCatalogTool.__new__(PlonePGCatalogTool)
-        mock_conn = mock.Mock()
-        handler = mock.Mock()
-        with (
-            mock.patch.object(
-                PlonePGCatalogTool, "_pg_connection", _mock_pg_connection(mock_conn)
-            ),
-            mock.patch("plone.pgcatalog.catalog.reindex_index", return_value=0),
-        ):
-            # Should not raise TypeError — ZMI calls with 3 positional args
-            tool.reindexIndex("portal_type", None, handler)
+        tool._p_jar = None
+        assert tool.reindexIndex("portal_type") == 0
 
     def _mock_rebuild_pool(self, paths):
         """Create a mock pool + cursor returning given paths.

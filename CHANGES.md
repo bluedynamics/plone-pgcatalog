@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.0.0b25
+
+### Fixed
+
+- `reindexIndex(name)` now re-extracts index values from ZODB objects
+  instead of reshuffling existing JSONB values. Iterates all cataloged
+  paths, loads via `unrestrictedTraverse`, extracts the requested index,
+  and writes a JSONB merge update. Batched commits for memory. Fixes #43.
+
+### Added
+
+- ZMI [reindex] button per index on the Indexes & Metadata tab with
+  confirmation dialog. Calls new `manage_reindexIndex` endpoint.
+
 ## 1.0.0b24
 
 ### Changed

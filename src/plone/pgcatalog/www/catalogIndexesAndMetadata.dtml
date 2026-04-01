@@ -22,8 +22,9 @@
         <tr>
           <th scope="col" style="width:22%">Name</th>
           <th scope="col" style="width:16%">Index Type</th>
-          <th scope="col" style="width:38%">PG Storage</th>
-          <th scope="col" style="width:24%">Source Attributes</th>
+          <th scope="col" style="width:32%">PG Storage</th>
+          <th scope="col" style="width:20%">Source Attributes</th>
+          <th scope="col" style="width:10%"></th>
         </tr>
       </thead>
       <tbody>
@@ -45,6 +46,11 @@
           </td>
           <td class="text-muted">
             <small><dtml-var "idx['source_attrs']" html_quote></small>
+          </td>
+          <td class="text-right">
+            <a href="manage_reindexIndex?name=<dtml-var "idx['name']" url_quote>"
+               class="btn btn-sm btn-outline-secondary"
+               onclick="return confirm('Re-extract \'' + '<dtml-var "idx['name']" html_quote>' + '\' from all cataloged objects?\n\nThis may take a while on large sites.')">reindex</a>
           </td>
         </tr>
         </dtml-let>
