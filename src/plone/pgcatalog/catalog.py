@@ -888,8 +888,17 @@ class PlonePGCatalogTool(UniqueObject, Folder):
             ):
                 continue
 
-            uid = "/".join(obj.getPhysicalPath())
-            self.catalog_object(obj, uid)
+            try:
+                uid = "/".join(obj.getPhysicalPath())
+                self.catalog_object(obj, uid)
+            except Exception:
+                log.warning(
+                    "clearFindAndRebuild: failed to index zoid=%d %s",
+                    zoid,
+                    type(obj).__name__,
+                    exc_info=True,
+                )
+                continue
             count += 1
             if count % _REBUILD_BATCH == 0:
                 _commit_and_minimize(jar)
