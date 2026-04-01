@@ -71,6 +71,13 @@ import warnings
 log = logging.getLogger(__name__)
 
 
+def _deactivate(obj):
+    """Ghost *obj* if it supports ZODB persistence, no-op otherwise."""
+    deact = getattr(obj, "_p_deactivate", None)
+    if deact is not None:
+        deact()
+
+
 # ---------------------------------------------------------------------------
 # PlonePGCatalogTool
 # ---------------------------------------------------------------------------
@@ -780,9 +787,9 @@ class PlonePGCatalogTool(UniqueObject, Folder):
                 obj = self.unrestrictedTraverse(path, None)
                 if obj is not None:
                     self.catalog_object(obj, path)
-                    obj._p_deactivate()
+                    _deactivate(obj)
                     count += 1
-                    if count % 500 == 0:
+                    if jar is not None and count % 500 == 0:
                         jar.cacheMinimize()
                         log.info("refreshCatalog: %d objects indexed", count)
             except Exception:
@@ -832,8 +839,8 @@ class PlonePGCatalogTool(UniqueObject, Folder):
                 # Deactivate leaf objects immediately — containers are
                 # still needed by ZopeFindAndApply for child traversal.
                 if not getattr(aq_base(obj), "isPrincipiaFolderish", False):
-                    obj._p_deactivate()
-                if _count[0] % 500 == 0:
+                    _deactivate(obj)
+                if jar is not None and _count[0] % 500 == 0:
                     jar.cacheMinimize()
                     log.info("clearFindAndRebuild: %d objects indexed", _count[0])
 
@@ -844,7 +851,8 @@ class PlonePGCatalogTool(UniqueObject, Folder):
             search_sub=True,
             apply_func=_index_content,
         )
-        jar.cacheMinimize()
+        if jar is not None:
+            jar.cacheMinimize()
         log.info("clearFindAndRebuild: %d objects indexed total", _count[0])
 
     # -- ZCatalog internal API (PG-backed) ----------------------------------
