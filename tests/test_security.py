@@ -91,6 +91,7 @@ class TestAllowedRolesColumn:
             {"allowedRolesAndUsers": {"query": ["Anonymous"], "operator": "or"}}
         )
         assert "allowed_roles ?|" in qr["where"]
+        assert "::text[]" in qr["where"]
         assert "idx->" not in qr["where"] or "allowedRolesAndUsers" not in qr["where"]
 
     def test_allowed_roles_and_operator(self):
@@ -105,6 +106,7 @@ class TestAllowedRolesColumn:
             }
         )
         assert "allowed_roles @>" in qr["where"]
+        assert "::text[]" in qr["where"]
 
     def test_full_query_with_security(self):
         from plone.pgcatalog.query import build_query

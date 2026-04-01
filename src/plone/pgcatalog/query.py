@@ -323,9 +323,9 @@ class _QueryBuilder:
         if idx_key == "allowedRolesAndUsers":
             p = self._pname(name)
             if operator == "and":
-                self.clauses.append(f"allowed_roles @> %({p})s")
+                self.clauses.append(f"allowed_roles @> %({p})s::text[]")
             else:
-                self.clauses.append(f"allowed_roles ?| %({p})s")
+                self.clauses.append(f"allowed_roles ?| %({p})s::text[]")
             self.params[p] = query_val
             return
 
