@@ -122,6 +122,34 @@ CREATE INDEX IF NOT EXISTS idx_os_cat_review_state
 CREATE INDEX IF NOT EXISTS idx_os_cat_uid
     ON object_state ((idx->>'UID')) WHERE idx IS NOT NULL;
 
+-- Composite indexes for common multi-field query patterns.
+-- Without these, PG picks a single-column index and sequentially filters
+-- all indexed rows (3+ seconds).  With composites, the planner uses a
+-- multi-column index scan (sub-millisecond).
+
+-- Folder listings, navigation: parent + type (most common pattern)
+CREATE INDEX IF NOT EXISTS idx_os_cat_parent_type
+    ON object_state ((idx->>'path_parent'), (idx->>'portal_type'))
+    WHERE idx IS NOT NULL;
+
+-- Path prefix queries with type filter (collections, search)
+CREATE INDEX IF NOT EXISTS idx_os_cat_path_type
+    ON object_state ((idx->>'path') text_pattern_ops, (idx->>'portal_type'))
+    WHERE idx IS NOT NULL;
+
+-- Path prefix + depth (navigation tree queries)
+CREATE INDEX IF NOT EXISTS idx_os_cat_path_depth_type
+    ON object_state (
+        (idx->>'path') text_pattern_ops,
+        ((idx->>'path_depth')::integer),
+        (idx->>'portal_type')
+    ) WHERE idx IS NOT NULL;
+
+-- Type + review state (workflow-filtered listings)
+CREATE INDEX IF NOT EXISTS idx_os_cat_type_state
+    ON object_state ((idx->>'portal_type'), (idx->>'review_state'))
+    WHERE idx IS NOT NULL;
+
 -- Extended statistics for UID selectivity (helps planner pick the right index)
 CREATE STATISTICS IF NOT EXISTS stts_os_uid ON (idx->>'UID') FROM object_state;
 

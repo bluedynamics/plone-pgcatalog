@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.0.0b27
+
+### Fixed
+
+- Add composite indexes for common catalog query patterns. Without
+  these, PG picks a single-column index and sequentially filters all
+  indexed rows (3+ seconds per query, 30+ second page loads). With
+  composite indexes: sub-millisecond. Fixes #50.
+
+  New indexes:
+  - `(path_parent, portal_type)` — folder listings, navigation
+  - `(path pattern, portal_type)` — collections, search
+  - `(path pattern, path_depth, portal_type)` — navigation tree
+  - `(portal_type, review_state)` — workflow-filtered listings
+
+  Indexes are created automatically on startup (idempotent DDL).
+
 ## 1.0.0b26
 
 ### Added
