@@ -26,8 +26,6 @@ from App.special_dtml import DTMLFile
 from BTrees.Length import Length
 from contextlib import contextmanager
 from OFS.Folder import Folder
-from plone.base.utils import base_hasattr
-from plone.base.utils import safe_callable
 from plone.pgcatalog.backends import BM25Backend
 from plone.pgcatalog.backends import get_backend
 from plone.pgcatalog.brain import CatalogSearchResults
@@ -832,23 +830,17 @@ class PlonePGCatalogTool(UniqueObject, Folder):
     def clearFindAndRebuild(self):
         """Clear all catalog data and rebuild from content objects.
 
-        Uses PG-driven iteration instead of ``ZopeFindAndApply`` to
-        avoid acquisition parent chains on the call stack that prevent
-        ``cacheMinimize()`` from ghosting objects.
+        Uses PG-driven path iteration instead of ``ZopeFindAndApply``
+        to avoid acquisition parent chains on the call stack that
+        prevent ``cacheMinimize()`` from ghosting objects.
 
-        1. Clears PG catalog columns (path, idx, searchable_text, etc.)
-        2. Queries ``object_state`` for candidate zoids, filtering out
-           known non-content classes (~96% of rows in a typical site).
-        3. Loads each object via the ZODB connection, checks for
-           ``reindexObject``, and indexes it.
+        1. Snapshots all known content paths from ``object_state``
+           (filtering out non-content classes — ~96% of rows).
+        2. Clears PG catalog columns (path, idx, searchable_text, etc.)
+        3. Traverses each path, re-indexes the object.
         4. Commits every ``_REBUILD_BATCH`` objects so dirty objects
            and pending catalog data are flushed — flat memory.
         """
-        from ZODB.utils import p64
-
-        with self._pg_connection() as conn:
-            clear_catalog_data(conn)
-
         jar = self._p_jar
         if jar is None:
             return
@@ -857,48 +849,37 @@ class PlonePGCatalogTool(UniqueObject, Folder):
         exclude_clauses = " AND ".join(
             f"class_mod NOT LIKE '{mod}%%'" for mod in _EXCLUDE_CLASS_MODS
         )
-        query = f"SELECT zoid FROM object_state WHERE {exclude_clauses} ORDER BY zoid"
+        query = (
+            "SELECT path FROM object_state "
+            f"WHERE path IS NOT NULL AND {exclude_clauses} "
+            "ORDER BY zoid"
+        )
 
-        # Use a pool connection (not the MVCC read connection) so the
-        # query sees data AFTER clear_catalog_data committed.
-        # Fetch all candidate zoids upfront — this is a lightweight query
-        # (just integer zoids, no state data) and the exclusion filter
-        # reduces the result set to ~4% of rows.
+        # Snapshot paths BEFORE clearing — we need them for traversal.
+        # Use a pool connection (not the MVCC snapshot) so the query
+        # sees the current committed state.
         pool = get_pool(self)
         pg_conn = pool.getconn()
         try:
             with pg_conn.cursor() as cur:
                 cur.execute(query)
-                all_zoids = [row["zoid"] for row in cur.fetchall()]
+                all_paths = [row["path"] for row in cur.fetchall()]
         finally:
             pool.putconn(pg_conn)
 
+        with self._pg_connection() as conn:
+            clear_catalog_data(conn)
+
         count = 0
-        for zoid in all_zoids:
+        for path in all_paths:
             try:
-                obj = jar.get(p64(zoid))
+                obj = self.unrestrictedTraverse(path, None)
             except Exception:
                 continue
             if obj is None:
                 continue
-            if aq_base(obj) is aq_base(self):
-                continue
-            if not (
-                base_hasattr(obj, "reindexObject") and safe_callable(obj.reindexObject)
-            ):
-                continue
 
-            try:
-                uid = "/".join(obj.getPhysicalPath())
-                self.catalog_object(obj, uid)
-            except Exception:
-                log.warning(
-                    "clearFindAndRebuild: failed to index zoid=%d %s",
-                    zoid,
-                    type(obj).__name__,
-                    exc_info=True,
-                )
-                continue
+            self.catalog_object(obj, path)
             count += 1
             if count % _REBUILD_BATCH == 0:
                 _commit_and_minimize(jar)

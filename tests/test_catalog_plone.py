@@ -808,14 +808,14 @@ class TestMaintenanceMethods:
             # Should not raise TypeError — ZMI calls with 3 positional args
             tool.reindexIndex("portal_type", None, handler)
 
-    def _mock_rebuild_pool(self, zoids):
-        """Create a mock pool + cursor returning given zoids.
+    def _mock_rebuild_pool(self, paths):
+        """Create a mock pool + cursor returning given paths.
 
-        zoids should be a list of int zoids. Returns dicts to match
+        paths should be a list of path strings. Returns dicts to match
         the storage pool's dict_row factory.
         """
         mock_cursor = mock.Mock()
-        mock_cursor.fetchall.return_value = [{"zoid": z} for z in zoids]
+        mock_cursor.fetchall.return_value = [{"path": p} for p in paths]
 
         mock_pool_conn = mock.Mock()
         mock_pool_conn.cursor.return_value.__enter__ = mock.Mock(
@@ -827,14 +827,12 @@ class TestMaintenanceMethods:
         mock_pool.getconn.return_value = mock_pool_conn
         return mock_pool, mock_pool_conn, mock_cursor
 
-    def test_clearFindAndRebuild_clears_and_queries_pg(self):
-        """clearFindAndRebuild clears PG data then queries object_state."""
+    def test_clearFindAndRebuild_snapshots_paths_then_clears(self):
+        """clearFindAndRebuild snapshots paths, clears, then re-indexes."""
         tool = PlonePGCatalogTool.__new__(PlonePGCatalogTool)
         mock_pg_conn = mock.Mock()
         mock_pool, mock_pool_conn, mock_cursor = self._mock_rebuild_pool([])
-
-        mock_jar = mock.Mock()
-        tool._p_jar = mock_jar
+        tool._p_jar = mock.Mock()
 
         with (
             mock.patch.object(
@@ -847,42 +845,22 @@ class TestMaintenanceMethods:
         ):
             tool.clearFindAndRebuild()
             clear_mock.assert_called_once_with(mock_pg_conn)
-            # Should open a server-side cursor
-            mock_pool_conn.cursor.assert_called_once()
-            # Should execute a SELECT with class_mod exclusions
+            # Should query paths with class_mod exclusions
             mock_cursor.execute.assert_called_once()
             query = mock_cursor.execute.call_args[0][0]
             assert "object_state" in query
             assert "NOT LIKE" in query
-            # Pool connection returned
+            assert "path IS NOT NULL" in query
             mock_pool.putconn.assert_called_once_with(mock_pool_conn)
 
-    def test_clearFindAndRebuild_skips_non_content(self):
-        """clearFindAndRebuild skips objects without reindexObject."""
+    def test_clearFindAndRebuild_indexes_by_path(self):
+        """clearFindAndRebuild traverses paths and re-indexes objects."""
         tool = PlonePGCatalogTool.__new__(PlonePGCatalogTool)
         mock_pg_conn = mock.Mock()
+        content_obj = mock.Mock()
 
-        content_obj = mock.Mock(spec=["reindexObject", "getPhysicalPath"])
-        content_obj.getPhysicalPath.return_value = ("", "Plone", "doc1")
-        non_content_obj = mock.Mock(spec=["getId"])
-
-        zoid_content = 100
-        zoid_non_content = 200
-
-        mock_pool, _, _ = self._mock_rebuild_pool([zoid_content, zoid_non_content])
-
-        mock_jar = mock.Mock()
-
-        def fake_get(oid):
-            from ZODB.utils import u64
-
-            zoid = u64(oid)
-            if zoid == zoid_content:
-                return content_obj
-            return non_content_obj
-
-        mock_jar.get = fake_get
-        tool._p_jar = mock_jar
+        mock_pool, _, _ = self._mock_rebuild_pool(["/Plone/doc1", "/Plone/doc2"])
+        tool._p_jar = mock.Mock()
 
         with (
             mock.patch.object(
@@ -890,20 +868,25 @@ class TestMaintenanceMethods:
             ),
             mock.patch("plone.pgcatalog.catalog.clear_catalog_data"),
             mock.patch("plone.pgcatalog.catalog.get_pool", return_value=mock_pool),
+            mock.patch.object(
+                PlonePGCatalogTool,
+                "unrestrictedTraverse",
+                return_value=content_obj,
+            ),
             mock.patch.object(PlonePGCatalogTool, "catalog_object") as cat_mock,
         ):
             tool.clearFindAndRebuild()
-            cat_mock.assert_called_once_with(content_obj, "/Plone/doc1")
+            assert cat_mock.call_count == 2
+            cat_mock.assert_any_call(content_obj, "/Plone/doc1")
+            cat_mock.assert_any_call(content_obj, "/Plone/doc2")
 
-    def test_clearFindAndRebuild_skips_self(self):
-        """clearFindAndRebuild skips the catalog tool itself."""
+    def test_clearFindAndRebuild_skips_missing_objects(self):
+        """clearFindAndRebuild skips paths that don't resolve."""
         tool = PlonePGCatalogTool.__new__(PlonePGCatalogTool)
         mock_pg_conn = mock.Mock()
-        mock_pool, _, _ = self._mock_rebuild_pool([42])
 
-        mock_jar = mock.Mock()
-        mock_jar.get = mock.Mock(return_value=tool)
-        tool._p_jar = mock_jar
+        mock_pool, _, _ = self._mock_rebuild_pool(["/Plone/gone"])
+        tool._p_jar = mock.Mock()
 
         with (
             mock.patch.object(
@@ -911,6 +894,9 @@ class TestMaintenanceMethods:
             ),
             mock.patch("plone.pgcatalog.catalog.clear_catalog_data"),
             mock.patch("plone.pgcatalog.catalog.get_pool", return_value=mock_pool),
+            mock.patch.object(
+                PlonePGCatalogTool, "unrestrictedTraverse", return_value=None
+            ),
             mock.patch.object(PlonePGCatalogTool, "catalog_object") as cat_mock,
         ):
             tool.clearFindAndRebuild()
@@ -919,16 +905,9 @@ class TestMaintenanceMethods:
     def test_clearFindAndRebuild_no_jar(self):
         """clearFindAndRebuild returns early when _p_jar is None."""
         tool = PlonePGCatalogTool.__new__(PlonePGCatalogTool)
-        mock_pg_conn = mock.Mock()
         tool._p_jar = None
 
-        with (
-            mock.patch.object(
-                PlonePGCatalogTool, "_pg_connection", _mock_pg_connection(mock_pg_conn)
-            ),
-            mock.patch("plone.pgcatalog.catalog.clear_catalog_data"),
-            mock.patch.object(PlonePGCatalogTool, "catalog_object") as cat_mock,
-        ):
+        with mock.patch.object(PlonePGCatalogTool, "catalog_object") as cat_mock:
             tool.clearFindAndRebuild()
             cat_mock.assert_not_called()
 
