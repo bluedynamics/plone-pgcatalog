@@ -302,9 +302,11 @@ class TestPathIndex:
         assert "idx->>'path_parent' =" in qr["where"]
 
     def test_limited_depth(self):
+        """depth>1 rewrites to path_parent IN (subquery) for composite index."""
         qr = build_query({"path": {"query": "/plone/folder", "depth": 2}})
-        assert "idx->>'path' LIKE" in qr["where"]
-        assert "(idx->>'path_depth')::integer <=" in qr["where"]
+        assert "idx->>'path_parent' IN" in qr["where"]
+        assert "SELECT DISTINCT" in qr["where"]
+        assert "(idx->>'path_depth')::integer <" in qr["where"]
 
     def test_navtree_depth_1(self):
         qr = build_query(
@@ -632,8 +634,9 @@ class TestAdditionalPathIndex:
 
     def test_tgpath_limited_depth(self):
         qr = build_query({"tgpath": {"query": "/uuid1/uuid2", "depth": 2}})
-        assert "idx->>'tgpath' LIKE" in qr["where"]
-        assert "(idx->>'tgpath_depth')::integer <=" in qr["where"]
+        assert "idx->>'tgpath_parent' IN" in qr["where"]
+        assert "SELECT DISTINCT" in qr["where"]
+        assert "(idx->>'tgpath_depth')::integer <" in qr["where"]
 
     def test_tgpath_navtree(self):
         qr = build_query(
