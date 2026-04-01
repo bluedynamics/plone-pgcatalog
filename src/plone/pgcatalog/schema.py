@@ -178,6 +178,7 @@ TEXT_EXTRACTION_QUEUE = """\
 CREATE TABLE IF NOT EXISTS text_extraction_queue (
     id           BIGSERIAL PRIMARY KEY,
     zoid         BIGINT NOT NULL,
+    blob_zoid    BIGINT NOT NULL,
     tid          BIGINT NOT NULL,
     content_type TEXT,
     status       TEXT NOT NULL DEFAULT 'pending',
@@ -186,8 +187,15 @@ CREATE TABLE IF NOT EXISTS text_extraction_queue (
     error        TEXT,
     created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
-    UNIQUE(zoid, tid)
+    UNIQUE(blob_zoid, tid)
 );
+
+ALTER TABLE text_extraction_queue ADD COLUMN IF NOT EXISTS blob_zoid BIGINT;
+UPDATE text_extraction_queue SET blob_zoid = zoid WHERE blob_zoid IS NULL;
+DO $$ BEGIN
+    ALTER TABLE text_extraction_queue ALTER COLUMN blob_zoid SET NOT NULL;
+EXCEPTION WHEN OTHERS THEN NULL;
+END $$;
 
 CREATE INDEX IF NOT EXISTS idx_teq_pending
     ON text_extraction_queue (id) WHERE status = 'pending';

@@ -60,6 +60,36 @@ def _should_extract(content_type):
     return content_type in TIKA_CONTENT_TYPES
 
 
+def _collect_ref_oids(state):
+    """Extract integer zoids from all ``@ref`` markers in a JSON state dict.
+
+    Returns a list of int zoids found in the state.  Handles both
+    compact forms: ``{"@ref": "hex_oid"}`` and
+    ``{"@ref": ["hex_oid", "mod.Cls"]}``.
+    """
+    refs = []
+
+    def _walk(obj):
+        if isinstance(obj, dict):
+            ref = obj.get("@ref")
+            if ref is not None:
+                hex_oid = ref[0] if isinstance(ref, list) else ref
+                if isinstance(hex_oid, str) and len(hex_oid) == 16:
+                    try:
+                        refs.append(int(hex_oid, 16))
+                    except ValueError:
+                        pass
+            else:
+                for v in obj.values():
+                    _walk(v)
+        elif isinstance(obj, list):
+            for item in obj:
+                _walk(item)
+
+    _walk(state)
+    return refs
+
+
 # Annotation key set by catalog_object() on persistent objects.
 # The processor pops it from the JSON state before writing to PG.
 ANNOTATION_KEY = "_pgcatalog_pending"
@@ -144,9 +174,15 @@ class CatalogStateProcessor:
         if TIKA_URL:
             content_type = pending.get("content_type")
             if _should_extract(content_type):
-                self._tika_candidates.append(
-                    {"zoid": zoid, "content_type": content_type}
-                )
+                blob_refs = _collect_ref_oids(state)
+                if blob_refs:
+                    self._tika_candidates.append(
+                        {
+                            "zoid": zoid,
+                            "content_type": content_type,
+                            "blob_refs": blob_refs,
+                        }
+                    )
 
         # Normal catalog: return column values
         idx = pending.get("idx")
@@ -224,26 +260,49 @@ class CatalogStateProcessor:
             self._enqueue_tika_jobs(cursor)
 
     def _enqueue_tika_jobs(self, cursor):
-        """Enqueue text extraction jobs for blobs committed in this txn."""
+        """Enqueue text extraction jobs for blobs committed in this txn.
+
+        Content objects (File/Image) and their Blob sub-objects have
+        *different* ZODB oids.  ``process()`` extracts ``@ref`` oids
+        from the content state; we look those up in ``blob_state`` to
+        find the actual blob zoid + tid.  The queue stores both so the
+        worker can fetch blob data (blob_zoid) and update
+        searchable_text on the content (zoid).
+        """
         candidates = self._tika_candidates
         self._tika_candidates = []
 
-        zoids = [c["zoid"] for c in candidates]
-        # Find which zoids actually have blobs (latest tid per zoid)
+        # Collect all referenced oids across all candidates
+        all_refs = set()
+        for c in candidates:
+            all_refs.update(c["blob_refs"])
+        if not all_refs:
+            return
+
+        # Find which referenced oids actually have blobs (latest tid per oid)
         cursor.execute(
             "SELECT DISTINCT ON (zoid) zoid, tid FROM blob_state "
             "WHERE zoid = ANY(%(zoids)s) ORDER BY zoid, tid DESC",
-            {"zoids": zoids},
+            {"zoids": list(all_refs)},
         )
         blob_rows = {row[0]: row[1] for row in cursor.fetchall()}
         if not blob_rows:
             return
 
-        ct_by_zoid = {c["zoid"]: c.get("content_type") for c in candidates}
-        for zoid, tid in blob_rows.items():
-            cursor.execute(
-                "INSERT INTO text_extraction_queue (zoid, tid, content_type) "
-                "VALUES (%(zoid)s, %(tid)s, %(ct)s) "
-                "ON CONFLICT (zoid, tid) DO NOTHING",
-                {"zoid": zoid, "tid": tid, "ct": ct_by_zoid.get(zoid)},
-            )
+        for c in candidates:
+            content_zoid = c["zoid"]
+            content_type = c.get("content_type")
+            for ref_zoid in c["blob_refs"]:
+                if ref_zoid in blob_rows:
+                    cursor.execute(
+                        "INSERT INTO text_extraction_queue "
+                        "  (zoid, blob_zoid, tid, content_type) "
+                        "VALUES (%(zoid)s, %(blob_zoid)s, %(tid)s, %(ct)s) "
+                        "ON CONFLICT (blob_zoid, tid) DO NOTHING",
+                        {
+                            "zoid": content_zoid,
+                            "blob_zoid": ref_zoid,
+                            "tid": blob_rows[ref_zoid],
+                            "ct": content_type,
+                        },
+                    )

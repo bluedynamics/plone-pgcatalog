@@ -92,40 +92,54 @@ class TestEnqueueLogic:
 
     @pytest.mark.skipif(not TIKA_URL, reason="PGCATALOG_TIKA_URL not set")
     def test_enqueue_blob_with_tika_url(self, pg_conn_with_queue):
-        """When TIKA_URL is set and object has a blob, job is enqueued."""
-        conn = pg_conn_with_queue
-        zoid, tid = 100, 1
+        """When TIKA_URL is set and object has a blob, job is enqueued.
 
-        insert_object(conn, zoid, tid)
-        self._insert_blob(conn, zoid, tid)
+        The content object (zoid=100) references a separate blob object
+        (zoid=999) via @ref in its state.  The queue must store both.
+        """
+        conn = pg_conn_with_queue
+        content_zoid, blob_zoid, tid = 100, 999, 1
+
+        insert_object(conn, content_zoid, tid)
+        self._insert_blob(conn, blob_zoid, tid)
 
         proc = CatalogStateProcessor()
-        # Simulate process() accumulating a candidate
-        proc._tika_candidates = [{"zoid": zoid, "content_type": "application/pdf"}]
+        proc._tika_candidates = [
+            {
+                "zoid": content_zoid,
+                "content_type": "application/pdf",
+                "blob_refs": [blob_zoid],
+            }
+        ]
 
-        # Use tuple_row to match production cursor (zodb-pgjsonb uses default)
         with conn.cursor(row_factory=tuple_row) as cur:
             proc._enqueue_tika_jobs(cur)
         conn.commit()
 
         rows = self._get_queue(conn)
         assert len(rows) == 1
-        assert rows[0]["zoid"] == zoid
+        assert rows[0]["zoid"] == content_zoid
+        assert rows[0]["blob_zoid"] == blob_zoid
         assert rows[0]["tid"] == tid
         assert rows[0]["content_type"] == "application/pdf"
         assert rows[0]["status"] == "pending"
 
     @pytest.mark.skipif(not TIKA_URL, reason="PGCATALOG_TIKA_URL not set")
     def test_no_enqueue_without_blob(self, pg_conn_with_queue):
-        """When object has no blob, no job is enqueued."""
+        """When referenced oids have no blob_state entry, no job is enqueued."""
         conn = pg_conn_with_queue
-        zoid, tid = 200, 1
+        content_zoid, tid = 200, 1
 
-        insert_object(conn, zoid, tid)
-        # No blob inserted
+        insert_object(conn, content_zoid, tid)
 
         proc = CatalogStateProcessor()
-        proc._tika_candidates = [{"zoid": zoid, "content_type": "application/pdf"}]
+        proc._tika_candidates = [
+            {
+                "zoid": content_zoid,
+                "content_type": "application/pdf",
+                "blob_refs": [9999],  # no blob_state entry for this ref
+            }
+        ]
 
         with conn.cursor(row_factory=tuple_row) as cur:
             proc._enqueue_tika_jobs(cur)
@@ -135,19 +149,40 @@ class TestEnqueueLogic:
         assert len(rows) == 0
 
     @pytest.mark.skipif(not TIKA_URL, reason="PGCATALOG_TIKA_URL not set")
-    def test_idempotent_enqueue(self, pg_conn_with_queue):
-        """Duplicate enqueue for same zoid+tid is ignored (UNIQUE constraint)."""
+    def test_no_enqueue_without_refs(self, pg_conn_with_queue):
+        """Candidates with empty blob_refs don't query blob_state."""
         conn = pg_conn_with_queue
-        zoid, tid = 300, 1
 
-        insert_object(conn, zoid, tid)
-        self._insert_blob(conn, zoid, tid)
+        proc = CatalogStateProcessor()
+        proc._tika_candidates = [
+            {"zoid": 200, "content_type": "application/pdf", "blob_refs": []}
+        ]
+
+        with conn.cursor(row_factory=tuple_row) as cur:
+            proc._enqueue_tika_jobs(cur)
+        conn.commit()
+
+        assert self._get_queue(conn) == []
+
+    @pytest.mark.skipif(not TIKA_URL, reason="PGCATALOG_TIKA_URL not set")
+    def test_idempotent_enqueue(self, pg_conn_with_queue):
+        """Duplicate enqueue for same blob_zoid+tid is ignored."""
+        conn = pg_conn_with_queue
+        content_zoid, blob_zoid, tid = 300, 888, 1
+
+        insert_object(conn, content_zoid, tid)
+        self._insert_blob(conn, blob_zoid, tid)
 
         proc = CatalogStateProcessor()
 
-        # Enqueue twice
         for _ in range(2):
-            proc._tika_candidates = [{"zoid": zoid, "content_type": "application/pdf"}]
+            proc._tika_candidates = [
+                {
+                    "zoid": content_zoid,
+                    "content_type": "application/pdf",
+                    "blob_refs": [blob_zoid],
+                }
+            ]
             with conn.cursor(row_factory=tuple_row) as cur:
                 proc._enqueue_tika_jobs(cur)
             conn.commit()
@@ -155,14 +190,13 @@ class TestEnqueueLogic:
         rows = self._get_queue(conn)
         assert len(rows) == 1
 
-    def test_process_accumulates_candidates(self, pg_conn_with_queue):
-        """process() accumulates tika candidates when TIKA_URL is set."""
+    def test_process_accumulates_candidates_with_blob_refs(self, pg_conn_with_queue):
+        """process() accumulates tika candidates with blob_refs from state."""
         from plone.pgcatalog.pending import set_pending
 
         proc = CatalogStateProcessor()
         proc._tika_candidates = []
 
-        # Only works when TIKA_URL is set -- test the accumulation logic
         if not TIKA_URL:
             pytest.skip("PGCATALOG_TIKA_URL not set")
 
@@ -177,10 +211,39 @@ class TestEnqueueLogic:
             },
         )
 
-        proc.process(zoid, "plone.app.contenttypes.content", "File", {})
+        # State with a blob @ref
+        state = {"file": {"_blob": {"@ref": "00000000000003e8"}}}
+        proc.process(zoid, "plone.app.contenttypes.content", "File", state)
         assert len(proc._tika_candidates) == 1
         assert proc._tika_candidates[0]["zoid"] == zoid
         assert proc._tika_candidates[0]["content_type"] == "application/pdf"
+        assert proc._tika_candidates[0]["blob_refs"] == [0x3E8]
+
+    def test_process_skips_candidate_without_refs(self, pg_conn_with_queue):
+        """process() does not accumulate candidate if state has no @ref."""
+        from plone.pgcatalog.pending import set_pending
+
+        proc = CatalogStateProcessor()
+        proc._tika_candidates = []
+
+        if not TIKA_URL:
+            pytest.skip("PGCATALOG_TIKA_URL not set")
+
+        zoid = 500
+        set_pending(
+            zoid,
+            {
+                "path": "/plone/test2",
+                "idx": {"portal_type": "File"},
+                "searchable_text": "",
+                "content_type": "application/pdf",
+            },
+        )
+
+        # State with no blob references
+        state = {"title": "No blob here"}
+        proc.process(zoid, "plone.app.contenttypes.content", "File", state)
+        assert len(proc._tika_candidates) == 0
 
 
 class TestQueueSchema:
@@ -197,15 +260,36 @@ class TestQueueSchema:
             )
             assert cur.fetchone()["exists"] is True
 
-    def test_unique_constraint(self, pg_conn_with_queue):
+    def test_unique_constraint_on_blob_zoid_tid(self, pg_conn_with_queue):
         conn = pg_conn_with_queue
         with conn.cursor() as cur:
-            cur.execute("INSERT INTO text_extraction_queue (zoid, tid) VALUES (1, 1)")
+            cur.execute(
+                "INSERT INTO text_extraction_queue (zoid, blob_zoid, tid) "
+                "VALUES (1, 10, 1)"
+            )
             conn.commit()
-            # Second insert should conflict
+            # Same blob_zoid+tid should conflict
             with pytest.raises(psycopg.errors.UniqueViolation):
                 cur.execute(
-                    "INSERT INTO text_extraction_queue (zoid, tid) VALUES (1, 1)"
+                    "INSERT INTO text_extraction_queue (zoid, blob_zoid, tid) "
+                    "VALUES (2, 10, 1)"
+                )
+            conn.rollback()
+
+    def test_different_content_same_blob_allowed(self, pg_conn_with_queue):
+        """Different content zoids with same blob_zoid+tid still conflict."""
+        conn = pg_conn_with_queue
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO text_extraction_queue (zoid, blob_zoid, tid) "
+                "VALUES (1, 10, 1)"
+            )
+            conn.commit()
+            # Different zoid, same blob_zoid+tid — still unique violation
+            with pytest.raises(psycopg.errors.UniqueViolation):
+                cur.execute(
+                    "INSERT INTO text_extraction_queue (zoid, blob_zoid, tid) "
+                    "VALUES (99, 10, 1)"
                 )
             conn.rollback()
 

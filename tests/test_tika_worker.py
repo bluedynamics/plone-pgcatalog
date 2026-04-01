@@ -84,13 +84,20 @@ def _insert_object_with_blob(conn, zoid, tid=1, blob_data=b"fake pdf", idx=None)
     conn.commit()
 
 
-def _enqueue_job(conn, zoid, tid=1, content_type="application/pdf"):
+def _enqueue_job(conn, zoid, tid=1, content_type="application/pdf", blob_zoid=None):
     """Insert a job into text_extraction_queue."""
     with conn.cursor() as cur:
         cur.execute(
-            "INSERT INTO text_extraction_queue (zoid, tid, content_type) "
-            "VALUES (%(zoid)s, %(tid)s, %(ct)s) ON CONFLICT DO NOTHING",
-            {"zoid": zoid, "tid": tid, "ct": content_type},
+            "INSERT INTO text_extraction_queue "
+            "(zoid, blob_zoid, tid, content_type) "
+            "VALUES (%(zoid)s, %(blob_zoid)s, %(tid)s, %(ct)s) "
+            "ON CONFLICT DO NOTHING",
+            {
+                "zoid": zoid,
+                "blob_zoid": blob_zoid if blob_zoid is not None else zoid,
+                "tid": tid,
+                "ct": content_type,
+            },
         )
     conn.commit()
 
