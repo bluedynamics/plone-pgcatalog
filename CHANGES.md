@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.0.0b23
+
+### Fixed
+
+- Fix Tika worker queue never being populated. Content objects
+  (File/Image) and their Blob sub-objects have different ZODB oids.
+  The enqueue logic now extracts `@ref` oids from the content state
+  to resolve the actual blob zoid in `blob_state`. The queue stores
+  both `zoid` (content, for searchable_text update) and `blob_zoid`
+  (for blob data fetch). Fixes #37.
+
 ## 1.0.0b22
 
 ### Fixed

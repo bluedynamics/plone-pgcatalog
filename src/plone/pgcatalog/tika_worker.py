@@ -104,7 +104,7 @@ class TikaWorker:
                     "  ORDER BY id "
                     "  FOR UPDATE SKIP LOCKED "
                     "  LIMIT 1"
-                    ") RETURNING id, zoid, tid, content_type"
+                    ") RETURNING id, zoid, blob_zoid, tid, content_type"
                 )
                 row = cur.fetchone()
                 if row is None:
@@ -114,11 +114,12 @@ class TikaWorker:
 
             job_id = row["id"]
             zoid = row["zoid"]
+            blob_zoid = row["blob_zoid"] or row["zoid"]  # fallback for old rows
             tid = row["tid"]
             content_type = row["content_type"]
 
             try:
-                text = self._extract(conn, zoid, tid, content_type)
+                text = self._extract(conn, blob_zoid, tid, content_type)
                 self._update_searchable_text(conn, zoid, text)
                 with conn.cursor() as cur:
                     cur.execute(
@@ -129,16 +130,18 @@ class TikaWorker:
                     )
                     conn.commit()
                 log.info(
-                    "Extracted text for zoid=%d tid=%d (%d chars, job %d)",
+                    "Extracted text for zoid=%d blob_zoid=%d tid=%d (%d chars, job %d)",
                     zoid,
+                    blob_zoid,
                     tid,
                     len(text) if text else 0,
                     job_id,
                 )
             except Exception as exc:
                 log.warning(
-                    "Extraction failed for zoid=%d tid=%d (job %d): %s",
+                    "Extraction failed for zoid=%d blob_zoid=%d tid=%d (job %d): %s",
                     zoid,
+                    blob_zoid,
                     tid,
                     job_id,
                     exc,
