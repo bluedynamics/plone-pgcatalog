@@ -275,8 +275,8 @@ class _QueryBuilder:
                 self.params[p] = [str(v) for v in query_val]
             else:
                 p = self._pname(name)
-                self.clauses.append(f"idx @> %({p})s::jsonb")
-                self.params[p] = Json({idx_key: query_val})
+                self.clauses.append(f"idx->>'{idx_key}' = %({p})s")
+                self.params[p] = str(query_val)
 
         if not_val is not None:
             if isinstance(not_val, (list, tuple)):
@@ -379,8 +379,10 @@ class _QueryBuilder:
         if query_val is None:
             return
         p = self._pname(name)
-        self.clauses.append(f"idx @> %({p})s::jsonb")
-        self.params[p] = Json({idx_key: bool(query_val)})
+        # Use btree-friendly expression (not GIN containment) so PG can
+        # use the btree expression index on (idx->>'key').
+        self.clauses.append(f"(idx->>'{idx_key}')::boolean = %({p})s")
+        self.params[p] = bool(query_val)
 
     # -- DateRangeIndex (effectiveRange) ------------------------------------
 
@@ -404,8 +406,8 @@ class _QueryBuilder:
         if query_val is None:
             return
         p = self._pname(name)
-        self.clauses.append(f"idx @> %({p})s::jsonb")
-        self.params[p] = Json({idx_key: str(query_val)})
+        self.clauses.append(f"idx->>'{idx_key}' = %({p})s")
+        self.params[p] = str(query_val)
 
     # -- ZCTextIndex (SearchableText / Title / Description) -----------------
 
