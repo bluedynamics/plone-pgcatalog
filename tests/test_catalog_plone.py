@@ -9,6 +9,8 @@ from plone.pgcatalog.extraction import _path_value_to_string
 from plone.pgcatalog.interfaces import IPGCatalogTool
 from unittest import mock
 
+import os
+
 
 class TestImplementsInterface:
     def test_implements_ipgcatalogtool(self):
@@ -935,6 +937,54 @@ class TestMaintenanceMethods:
                 "http://localhost/portal_catalog"
                 "/manage_catalogAdvanced?manage_tabs_message=Catalog+rebuilt."
             )
+
+    def test_manage_get_tika_status_disabled(self):
+        """manage_get_tika_status returns disabled when env var not set."""
+        tool = PlonePGCatalogTool.__new__(PlonePGCatalogTool)
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("PGCATALOG_TIKA_URL", None)
+            result = tool.manage_get_tika_status()
+        assert result["enabled"] is False
+
+    def test_manage_get_tika_status_enabled(self):
+        """manage_get_tika_status returns info when Tika is configured."""
+        tool = PlonePGCatalogTool.__new__(PlonePGCatalogTool)
+        tool._p_jar = mock.Mock()
+        with (
+            mock.patch.dict(
+                os.environ,
+                {"PGCATALOG_TIKA_URL": "http://tika:9998"},
+            ),
+            mock.patch("plone.pgcatalog.catalog.get_pool") as mock_pool,
+        ):
+            # Mock pool to avoid PG connection
+            mock_conn = mock.Mock()
+            mock_conn.cursor.return_value.__enter__ = mock.Mock(
+                return_value=mock.Mock(fetchall=mock.Mock(return_value=[]))
+            )
+            mock_conn.cursor.return_value.__exit__ = mock.Mock(return_value=False)
+            mock_pool.return_value.getconn.return_value = mock_conn
+
+            result = tool.manage_get_tika_status()
+        assert result["enabled"] is True
+        assert result["tika_url"] == "http://tika:9998"
+        assert "content_types" in result
+
+    def test_manage_get_slow_query_stats_empty(self):
+        """manage_get_slow_query_stats returns empty list on error."""
+        tool = PlonePGCatalogTool.__new__(PlonePGCatalogTool)
+        with mock.patch("plone.pgcatalog.catalog.get_pool", side_effect=RuntimeError):
+            result = tool.manage_get_slow_query_stats()
+        assert result == []
+
+    def test_manage_clear_slow_queries(self):
+        """manage_clear_slow_queries calls DELETE."""
+        tool = PlonePGCatalogTool.__new__(PlonePGCatalogTool)
+        mock_conn = mock.Mock()
+        with mock.patch("plone.pgcatalog.catalog.get_pool") as mock_pool:
+            mock_pool.return_value.getconn.return_value = mock_conn
+            tool.manage_clear_slow_queries()
+        mock_conn.execute.assert_called_once_with("DELETE FROM pgcatalog_slow_queries")
 
 
 # ---------------------------------------------------------------------------

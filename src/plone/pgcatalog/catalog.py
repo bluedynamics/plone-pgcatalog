@@ -84,6 +84,34 @@ _EXCLUDE_CLASS_MODS = (
 )
 
 
+# Fields that use dedicated columns or GIN — not useful in btree composites
+_NON_IDX_FIELDS = frozenset(
+    {
+        "SearchableText",
+        "path",
+        "effectiveRange",
+        "sort_on",
+        "sort_order",
+        "b_size",
+        "b_start",
+    }
+)
+
+
+def _suggest_index(keys):
+    """Suggest a composite index for a set of query field keys."""
+    idx_keys = [k for k in keys if k not in _NON_IDX_FIELDS]
+    if len(idx_keys) < 2:
+        return None
+    # Take the first 3 most selective fields for the composite
+    cols = ", ".join(f"(idx->>'{k}')" for k in idx_keys[:3])
+    name = "_".join(idx_keys[:3])
+    return (
+        f"CREATE INDEX IF NOT EXISTS idx_os_cat_{name} "
+        f"ON object_state ({cols}) WHERE idx IS NOT NULL;"
+    )
+
+
 def _commit_and_minimize(jar):
     """Commit the current transaction and minimize the ZODB cache.
 
@@ -165,6 +193,9 @@ class PlonePGCatalogTool(UniqueObject, Folder):
     )
     security.declareProtected(manage_zcatalog_entries, "manage_reindexIndex")
     security.declareProtected(manage_zcatalog_entries, "manage_get_tika_status")
+    security.declareProtected(manage_zcatalog_entries, "manage_slowQueries")
+    security.declareProtected(manage_zcatalog_entries, "manage_get_slow_query_stats")
+    security.declareProtected(manage_zcatalog_entries, "manage_clear_slow_queries")
     security.declareProtected(manage_zcatalog_entries, "manage_get_catalog_summary")
     security.declareProtected(manage_zcatalog_entries, "manage_get_catalog_objects")
     security.declareProtected(manage_zcatalog_entries, "manage_get_object_detail")
@@ -190,6 +221,7 @@ class PlonePGCatalogTool(UniqueObject, Folder):
         {"action": "manage_catalogView", "label": "Catalog"},
         {"action": "manage_catalogAdvanced", "label": "Advanced"},
         {"action": "manage_catalogIndexesAndMetadata", "label": "Indexes & Metadata"},
+        {"action": "manage_slowQueries", "label": "Slow Queries"},
     )
 
     # Simplified Advanced tab: only Update Catalog and Clear and Rebuild.
@@ -204,6 +236,9 @@ class PlonePGCatalogTool(UniqueObject, Folder):
     manage_catalogIndexesAndMetadata = DTMLFile(
         "www/catalogIndexesAndMetadata", globals()
     )
+
+    # Slow Queries tab.
+    manage_slowQueries = DTMLFile("www/catalogSlowQueries", globals())
 
     # Wrap each index with PGIndex — provides PG-backed _index and uniqueValues().
     Indexes = PGCatalogIndexes()
@@ -1051,6 +1086,62 @@ class PlonePGCatalogTool(UniqueObject, Folder):
             "queue_done": queue_stats.get("done", 0),
             "queue_failed": queue_stats.get("failed", 0),
         }
+
+    def manage_get_slow_query_stats(self):
+        """Return aggregated slow query stats for the Slow Queries tab."""
+        try:
+            pool = get_pool(self)
+            pg_conn = pool.getconn()
+            try:
+                with pg_conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT query_keys, "
+                        "  COUNT(*) AS cnt, "
+                        "  ROUND(AVG(duration_ms)::numeric, 1) AS avg_ms, "
+                        "  ROUND(MAX(duration_ms)::numeric, 1) AS max_ms, "
+                        "  MAX(created_at) AS last_seen "
+                        "FROM pgcatalog_slow_queries "
+                        "GROUP BY query_keys "
+                        "ORDER BY cnt DESC "
+                        "LIMIT 50"
+                    )
+                    rows = cur.fetchall()
+            finally:
+                pool.putconn(pg_conn)
+        except Exception:
+            return []
+
+        result = []
+        for row in rows:
+            keys = row["query_keys"]
+            result.append(
+                {
+                    "query_keys": ", ".join(keys),
+                    "count": row["cnt"],
+                    "avg_ms": float(row["avg_ms"]),
+                    "max_ms": float(row["max_ms"]),
+                    "last_seen": str(row["last_seen"])[:19],
+                    "suggested_index": _suggest_index(keys),
+                }
+            )
+        return result
+
+    def manage_clear_slow_queries(self, REQUEST=None):
+        """ZMI action: clear all slow query records."""
+        try:
+            pool = get_pool(self)
+            pg_conn = pool.getconn()
+            try:
+                pg_conn.execute("DELETE FROM pgcatalog_slow_queries")
+            finally:
+                pool.putconn(pg_conn)
+        except Exception:
+            pass
+        if REQUEST is not None:
+            REQUEST.RESPONSE.redirect(
+                f"{self.absolute_url()}/manage_slowQueries"
+                "?manage_tabs_message=Slow+query+stats+cleared"
+            )
 
     def manage_get_catalog_objects(self, batch_start=0, filterpath=""):
         """Return paginated list of cataloged objects for the Catalog tab."""

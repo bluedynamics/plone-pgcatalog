@@ -9,6 +9,39 @@ from plone.pgcatalog.brain import CatalogSearchResults
 from plone.pgcatalog.brain import PGCatalogBrain
 from plone.pgcatalog.query import build_query
 
+import logging
+import os
+import time
+
+
+log = logging.getLogger(__name__)
+
+_SLOW_QUERY_MS = float(os.environ.get("PGCATALOG_SLOW_QUERY_MS", "10"))
+
+
+def _record_slow_query(conn, query_keys, duration_ms, sql, params):
+    """Insert a slow query record into pgcatalog_slow_queries.
+
+    Best-effort — silently ignores errors (table may not exist yet,
+    or the connection may be in a read-only snapshot).
+    """
+    try:
+        from psycopg.types.json import Json
+
+        conn.execute(
+            "INSERT INTO pgcatalog_slow_queries "
+            "(query_keys, duration_ms, query_text, params) "
+            "VALUES (%(keys)s, %(ms)s, %(sql)s, %(params)s)",
+            {
+                "keys": query_keys,
+                "ms": duration_ms,
+                "sql": sql,
+                "params": Json({k: repr(v) for k, v in (params or {}).items()}),
+            },
+        )
+    except Exception:
+        pass  # best-effort — don't break search on logging failure
+
 
 class _PendingBrain:
     """Minimal brain for objects in pending store (not yet in PG).
@@ -79,9 +112,21 @@ def _run_search(conn, query, catalog=None, lazy_conn=None):
     if qr["offset"]:
         sql += f" OFFSET {qr['offset']}"
 
+    t0 = time.monotonic()
     with conn.cursor() as cur:
         cur.execute(sql, qr["params"], prepare=True)
         rows = cur.fetchall()
+    duration_ms = (time.monotonic() - t0) * 1000
+
+    if duration_ms > _SLOW_QUERY_MS:
+        query_keys = sorted(query.keys())
+        log.warning(
+            "Slow catalog query (%.1f ms): keys=%s sql=%s",
+            duration_ms,
+            query_keys,
+            sql,
+        )
+        _record_slow_query(conn, query_keys, duration_ms, sql, qr["params"])
 
     actual_count = None
     if has_limit and rows:
