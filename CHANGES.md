@@ -14,6 +14,11 @@
 - ZMI [reindex] button per index on the Indexes & Metadata tab with
   confirmation dialog. Calls new `manage_reindexIndex` endpoint.
 
+- ZMI: confirmation dialogs on Advanced tab for "Update Catalog" and
+  "Clear and Rebuild" buttons. Warns that operations may take a while
+  and that Clear and Rebuild destroys catalog data temporarily.
+  Fixes #44.
+
 ## 1.0.0b24
 
 ### Changed
