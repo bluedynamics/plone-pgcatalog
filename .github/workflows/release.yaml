@@ -2,7 +2,10 @@
 name: Build & upload PyPI package
 
 on:
-  push:
+  # Build dev package after CI passes on main (no duplicate test runs)
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
     branches: [main]
   release:
     types:
@@ -14,17 +17,12 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  qa:
-    uses: "./.github/workflows/qa.yaml"
-
-  tests:
-    uses: "./.github/workflows/tests.yaml"
-
   build-package:
     name: Build & verify package
-    needs:
-      - qa
-      - tests
+    # Skip if triggered by workflow_run and CI failed
+    if: >-
+      github.event_name != 'workflow_run' ||
+      github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -40,7 +38,7 @@ jobs:
   release-test-pypi:
     name: Publish in-dev package to test.pypi.org
     environment: release-test-pypi
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'workflow_run' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
     needs:
       - build-package
