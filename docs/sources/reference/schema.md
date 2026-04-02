@@ -17,10 +17,11 @@ with the following columns:
 | `path_depth` | `INTEGER` | Path depth (for depth-limited queries) |
 | `idx` | `JSONB` | All index and metadata values |
 | `searchable_text` | `TSVECTOR` | Weighted full-text search vector |
+| `allowed_roles` | `TEXT[]` | Dedicated security filter column (allowedRolesAndUsers) |
 | `search_bm25` | `BM25VECTOR` | BM25 fallback column (when BM25 active) |
 | `search_bm25_{lang}` | `BM25VECTOR` | Per-language BM25 column (when BM25 active) |
 
-The first five columns are always present.
+The first six columns are always present.
 
 `parent_path` and `path_depth` are derived from `path` (the parent is
 the path with its last segment removed; the depth is the number of
@@ -71,6 +72,30 @@ VectorChord-BM25 extensions are detected at startup.
 | `idx_os_cat_review_state` | B-tree | `idx->>'review_state'` | Workflow state filtering |
 | `idx_os_cat_uid` | B-tree | `idx->>'uid'` | UUID lookup |
 
+### Composite indexes
+
+| Index Name | Type | Expression | Purpose |
+|---|---|---|---|
+| `idx_os_cat_parent_type` | B-tree | `(path_parent, portal_type)` | Folder listings, navigation |
+| `idx_os_cat_path_type` | B-tree | `(path pattern, portal_type)` | Collections, search |
+| `idx_os_cat_path_depth_type` | B-tree | `(path pattern, path_depth, portal_type)` | Navigation tree |
+| `idx_os_cat_type_state` | B-tree | `(portal_type, review_state)` | Workflow-filtered listings |
+
+### Keyword GIN indexes
+
+| Index Name | Type | Expression | Purpose |
+|---|---|---|---|
+| `idx_os_allowed_roles` | GIN | `allowed_roles` | Security filter (every query) |
+| `idx_os_cat_provides_gin` | GIN | `idx->'object_provides'` | Interface-based lookups |
+| `idx_os_cat_subject_gin` | GIN | `idx->'Subject'` | Subject keyword queries |
+
+### Partial indexes
+
+| Index Name | Type | Expression | Purpose |
+|---|---|---|---|
+| `idx_os_cat_nav_visible` | B-tree (partial) | Navigation fields where `exclude_from_nav=false` | Navigation listings (only ~1.6% of rows) |
+| `idx_os_cat_events_upcoming` | B-tree (partial) | Event fields where `portal_type=Event` | Calendar/event queries |
+
 ### Text expression indexes
 
 | Index Name | Type | Expression | Purpose |
@@ -83,6 +108,11 @@ addon `ZCTextIndex` fields discovered in `portal_catalog`.
 These follow
 the naming pattern `idx_os_cat_{key}_tsv` and use the `'simple'`
 regconfig for word-level matching.
+
+Custom catalog indexes (FieldIndex, DateIndex, BooleanIndex, UUIDIndex,
+DateRecurringIndex) also get btree expression indexes automatically at
+startup based on the IndexRegistry. Date fields use the
+`pgcatalog_to_timestamptz()` wrapper.
 
 ### BM25 indexes (optional)
 

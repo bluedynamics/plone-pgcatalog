@@ -263,3 +263,33 @@ suggests composite index DDL for frequent patterns.
 
 This is a self-tuning feedback loop: deploy the site, let it accumulate
 slow query data under real load, then add the suggested indexes.
+
+### Dedicated security column
+
+`allowedRolesAndUsers` is in every catalog query (security filter). Storing
+it as a dedicated `allowed_roles TEXT[]` column with its own GIN index
+eliminates JSONB decompression from query evaluation. PG can BitmapAnd the
+security GIN with btree composite indexes directly.
+
+### Partial indexes for common patterns
+
+Navigation queries filter on `exclude_from_nav=false`, which matches only
+~1.6% of rows. A partial index on this condition reduces navigation query
+times from 261ms to 20ms (13x). Similarly, a partial index for event queries
+(`portal_type=Event` + `show_in_sidecalendar=true`) reduces calendar queries
+from 728ms to 33ms (22x).
+
+### Cache invalidation via MAX(tid)
+
+`getCounter()` returns `MAX(tid)` from `object_state` instead of a
+persistent ZODB counter. This enables `plone.memoize` to cache
+catalog-dependent results (like navigation trees) and invalidate them only
+when content actually changes. The query costs ~0.2ms via Index Only Scan.
+
+### Query expression optimization
+
+FieldIndex, BooleanIndex, and UUIDIndex queries use btree-friendly
+`idx->>'key' = value` expressions instead of JSONB containment
+(`idx @> {...}::jsonb`). This allows PG to use btree expression indexes
+directly instead of falling back to the broad GIN index on `idx`. Navigation
+queries dropped from 3900ms to 20ms.

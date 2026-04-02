@@ -133,3 +133,11 @@ Install extras with: `pip install plone.pgcatalog[tika]` or
 | `postgres:17` | Standard PostgreSQL with tsvector-based full-text ranking. |
 | `tensorchord/vchord-suite:pg17-latest` | PostgreSQL with VectorChord-BM25 and pg_tokenizer pre-installed. |
 | `apache/tika:latest` | Apache Tika server for text extraction from PDFs, Office docs, and images. Stateless, no persistent storage needed. |
+
+## PostgreSQL tuning recommendations
+
+For SSD-based deployments (most modern setups), set `random_page_cost = 1.1`
+in `postgresql.conf` (default is 4.0, tuned for spinning disks). This helps
+the planner prefer index scans over bitmap scans for complex multi-field
+queries. Verified on production: ~2x improvement for navigation queries
+without affecting simple queries.
