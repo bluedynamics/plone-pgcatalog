@@ -11,9 +11,18 @@ batched queries where LIMIT < total matching rows.
 from plone.pgcatalog.columns import get_registry
 from plone.pgcatalog.extraction import decode_meta
 from Products.ZCatalog.interfaces import ICatalogBrain
+from ZODB.utils import p64
 from zope.interface import implementer
 from zope.interface.common.sequence import IFiniteSequence
 from ZTUtils.Lazy import Lazy
+
+import logging
+import os
+
+
+log = logging.getLogger(__name__)
+
+_PREFETCH_BATCH = int(os.environ.get("PGCATALOG_PREFETCH_BATCH", "100"))
 
 
 @implementer(ICatalogBrain)
@@ -59,6 +68,20 @@ class PGCatalogBrain:
                 return request.physicalPathToURL(self.getPath(), relative)
         return self.getPath()
 
+    def _maybe_prefetch(self):
+        """Trigger ZODB object prefetch if this brain is in a result set.
+
+        Warms the storage ``_load_cache`` so that subsequent
+        ``getObject()`` / ``_unrestrictedGetObject()`` calls on nearby
+        brains hit the cache instead of issuing individual SQL queries.
+        """
+        if _PREFETCH_BATCH <= 0:
+            return
+        result_set = object.__getattribute__(self, "_result_set")
+        if result_set is None:
+            return
+        result_set._maybe_prefetch_objects(self)
+
     def getObject(self):
         """Return the object for this record.
 
@@ -67,6 +90,7 @@ class PGCatalogBrain:
         """
         if self._catalog is None:
             return None
+        self._maybe_prefetch()
         try:
             return self._catalog.restrictedTraverse(self.getPath())
         except (KeyError, AttributeError):
@@ -76,6 +100,7 @@ class PGCatalogBrain:
         """Return the object without security checks."""
         if self._catalog is None:
             return None
+        self._maybe_prefetch()
         try:
             return self._catalog.unrestrictedTraverse(self.getPath())
         except (KeyError, AttributeError):
@@ -229,6 +254,9 @@ class CatalogSearchResults(Lazy):
         )
         self._conn = conn
         self._idx_loaded = conn is None  # eager if no conn
+        self._prefetched_ranges = set()  # set of (start, end) tuples
+        # Build index for O(1) brain → position lookup (used by prefetch)
+        self._brain_index = {id(b): i for i, b in enumerate(self._brains)}
 
     def _load_idx_batch(self):
         """Batch-load idx for all brains in this result set.
@@ -257,6 +285,54 @@ class CatalogSearchResults(Lazy):
                 brain = brain_map.get(row["zoid"])
                 if brain is not None:
                     brain._row["idx"] = row["idx"]
+
+    def _maybe_prefetch_objects(self, brain):
+        """Prefetch ZODB objects for a batch of brains around *brain*.
+
+        Warms the storage ``_load_cache`` so subsequent ``getObject()``
+        calls hit the cache instead of making individual SQL queries.
+
+        Uses ``storage.load_multiple(oids)`` when available (backwards
+        compatible — skips silently if storage lacks the method).
+        """
+        if _PREFETCH_BATCH <= 0:
+            return
+
+        brain_id = id(brain)
+        idx = self._brain_index.get(brain_id)
+        if idx is None:
+            return
+
+        # Check if this index is already in a prefetched range.
+        for start, end in self._prefetched_ranges:
+            if start <= idx < end:
+                return
+
+        # Determine the batch range.
+        start = idx
+        end = min(idx + _PREFETCH_BATCH, len(self._brains))
+        self._prefetched_ranges.add((start, end))
+
+        batch = self._brains[start:end]
+        if not batch:
+            return
+
+        # Get storage from the catalog reference on the first brain.
+        catalog = batch[0]._catalog
+        if catalog is None:
+            return
+        jar = getattr(catalog, "_p_jar", None)
+        if jar is None:
+            return
+        storage = getattr(jar, "_storage", None)
+        if storage is None or not hasattr(storage, "load_multiple"):
+            return
+
+        oids = [p64(b.getRID()) for b in batch]
+        try:
+            storage.load_multiple(oids)
+        except Exception:
+            log.debug("prefetch failed", exc_info=True)
 
     def __len__(self):
         return len(self._brains)
