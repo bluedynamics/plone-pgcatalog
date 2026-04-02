@@ -13,6 +13,14 @@
 - Mark `pgcatalog_to_timestamptz()` as `PARALLEL SAFE` to allow
   parallel query execution.
 
+### Fixed
+
+- `getCounter()` now returns `MAX(tid)` from PostgreSQL instead of a
+  persistent counter that was never incremented (always returned 0).
+  This enables Plone's cache invalidation (`plone.memoize`) for
+  catalog-dependent caches like navigation trees. ~0.2ms via
+  Index Only Scan, no ZODB write overhead.
+
 ## 1.0.0b34
 
 ### Fixed
