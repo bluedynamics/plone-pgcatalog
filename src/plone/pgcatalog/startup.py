@@ -283,6 +283,11 @@ def _register_dri_translators(catalog):  # pragma: no cover
     Called during startup after sync_from_catalog.  Reads per-index config
     (recurdef_attr, until_attr) from the ZCatalog index objects and registers
     a DateRecurringIndexTranslator utility for each.
+
+    NOTE: DRI fields are also in META_TYPE_MAP as IndexType.DATE, so they
+    appear in the IndexRegistry and get auto-created btree indexes via
+    _ensure_field_indexes.  The query builder checks for an IPGIndexTranslator
+    FIRST, so the rrule query logic takes priority over _handle_date.
     """
     try:
         indexes = catalog._catalog.indexes

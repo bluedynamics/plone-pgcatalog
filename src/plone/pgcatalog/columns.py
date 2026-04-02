@@ -71,6 +71,7 @@ META_TYPE_MAP = {
     "FieldIndex": IndexType.FIELD,
     "KeywordIndex": IndexType.KEYWORD,
     "DateIndex": IndexType.DATE,
+    "DateRecurringIndex": IndexType.DATE,  # query via IPGIndexTranslator (rrule)
     "BooleanIndex": IndexType.BOOLEAN,
     "DateRangeIndex": IndexType.DATE_RANGE,
     "UUIDIndex": IndexType.UUID,

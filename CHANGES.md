@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.0.0b34
+
+### Fixed
+
+- DateRecurringIndex fields (e.g. `general_end`) now get auto-created
+  btree expression indexes and appear in the ZMI Indexes tab. Added
+  `DateRecurringIndex` to `META_TYPE_MAP`. Query builder now checks
+  `IPGIndexTranslator` before IndexRegistry, so rrule query logic
+  takes priority. Fixes #71.
+
 ## 1.0.0b33
 
 ### Fixed
