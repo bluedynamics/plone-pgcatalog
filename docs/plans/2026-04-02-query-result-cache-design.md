@@ -104,11 +104,34 @@ In `_run_search()`:
 On a typical page with 10-15 catalog queries, the second page load
 should be nearly free (~2ms for 10 cache hits + 1 `MAX(tid)` check).
 
+## ZMI visibility
+
+The existing "Slow Queries" tab gets a second section: **Cache Status**.
+
+### Display
+
+- **Hit/Miss ratio**: total hits, misses, hit-rate percentage
+- **Entries**: current / max configured
+- **Last TID**: current cached TID + number of invalidations since start
+- **TTR**: configured rounding granularity (seconds)
+- **Top cached queries**: the N most expensive cached entries
+  (query keys, cost_ms, hit count)
+- **Clear Cache** button (with confirmation dialog)
+
+### Data source
+
+The `QueryCache` singleton exposes a `stats()` method returning a dict
+with all the above. The ZMI tab calls `manage_get_cache_stats()` on
+the catalog tool, which delegates to `QueryCache.stats()`.
+
 ## Implementation steps
 
-1. Create `cache.py` with `QueryCache` class
+1. Create `cache.py` with `QueryCache` class (incl. `stats()` method)
 2. Add query normalization (sort keys, round datetimes)
 3. Integrate into `_run_search()` with TID check
 4. Add env var configuration
-5. Tests: cache hit/miss, TID invalidation, cost eviction, TTR rounding
-6. Changelog + docs
+5. Add `manage_get_cache_stats()` + `manage_clear_cache()` to catalog
+6. Extend `catalogSlowQueries.dtml` with Cache Status section
+7. Tests: cache hit/miss, TID invalidation, cost eviction, TTR rounding,
+   stats accuracy
+8. Changelog + docs
