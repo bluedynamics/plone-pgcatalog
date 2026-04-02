@@ -108,9 +108,12 @@ def _run_search(conn, query, catalog=None, lazy_conn=None):
 
     cache = get_query_cache()
 
-    # Get current TID for cache validation
+    # Get current TID for cache validation.
+    # Only cache when called via the catalog tool (catalog is not None).
+    # Direct _run_search() calls (tests, scripts) skip caching to avoid
+    # stale results within a single PG transaction.
     current_tid = None
-    if cache.max_entries > 0:
+    if cache.max_entries > 0 and catalog is not None:
         try:
             with conn.cursor() as cur:
                 cur.execute("SELECT MAX(tid) AS tid FROM object_state")
