@@ -120,7 +120,7 @@ def _run_search(conn, query, catalog=None, lazy_conn=None):
                 row = cur.fetchone()
             current_tid = row["tid"] if row and row["tid"] else None
         except Exception:
-            pass
+            log.warning("Query cache: TID lookup failed", exc_info=True)
 
     # Cache lookup
     cache_key = normalize_query(query)
