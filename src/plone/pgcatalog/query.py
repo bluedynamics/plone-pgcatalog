@@ -236,17 +236,21 @@ class _QueryBuilder:
     }
 
     def _process_index(self, name, raw):
+        # IPGIndexTranslator takes priority (e.g. DateRecurringIndex with
+        # rrule logic).  These fields may ALSO be in the IndexRegistry
+        # (for ZMI display and auto-index creation), but the translator
+        # handles query generation.
+        translator = _lookup_translator(name)
+        if translator is not None:
+            spec = _normalize_query(raw)
+            sql_fragment, params = translator.query(name, raw, spec)
+            self.clauses.append(sql_fragment)
+            self.params.update(params)
+            return
+
         registry = get_registry()
         entry = registry.get(name)
         if entry is None:
-            # Fallback: look for an IPGIndexTranslator utility
-            translator = _lookup_translator(name)
-            if translator is not None:
-                spec = _normalize_query(raw)
-                sql_fragment, params = translator.query(name, raw, spec)
-                self.clauses.append(sql_fragment)
-                self.params.update(params)
-                return
             # Fall back to simple JSONB field query for unregistered indexes
             # (e.g. Language, TranslationGroup from plone.app.multilingual).
             validate_identifier(name)
