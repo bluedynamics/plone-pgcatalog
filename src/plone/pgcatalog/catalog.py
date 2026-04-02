@@ -198,6 +198,8 @@ class PlonePGCatalogTool(UniqueObject, Folder):
         manage_zcatalog_entries, "manage_get_slow_query_threshold"
     )
     security.declareProtected(manage_zcatalog_entries, "manage_clear_slow_queries")
+    security.declareProtected(manage_zcatalog_entries, "manage_get_cache_stats")
+    security.declareProtected(manage_zcatalog_entries, "manage_clear_cache")
     security.declareProtected(manage_zcatalog_entries, "manage_get_catalog_summary")
     security.declareProtected(manage_zcatalog_entries, "manage_get_catalog_objects")
     security.declareProtected(manage_zcatalog_entries, "manage_get_object_detail")
@@ -280,7 +282,7 @@ class PlonePGCatalogTool(UniqueObject, Folder):
         try:
             conn = self._get_pg_read_connection()
             with conn.cursor() as cur:
-                cur.execute("SELECT MAX(tid) FROM object_state")
+                cur.execute("SELECT MAX(tid) AS tid FROM object_state")
                 row = cur.fetchone()
             return row["tid"] if row and row["tid"] else 0
         except Exception:
@@ -1160,6 +1162,23 @@ class PlonePGCatalogTool(UniqueObject, Folder):
             REQUEST.RESPONSE.redirect(
                 f"{self.absolute_url()}/manage_slowQueries"
                 "?manage_tabs_message=Slow+query+stats+cleared"
+            )
+
+    def manage_get_cache_stats(self):
+        """Return query cache statistics for ZMI display."""
+        from plone.pgcatalog.cache import get_query_cache
+
+        return get_query_cache().stats()
+
+    def manage_clear_cache(self, REQUEST=None):
+        """ZMI action: clear the query result cache."""
+        from plone.pgcatalog.cache import get_query_cache
+
+        get_query_cache().clear()
+        if REQUEST is not None:
+            REQUEST.RESPONSE.redirect(
+                f"{self.absolute_url()}/manage_slowQueries"
+                "?manage_tabs_message=Query+cache+cleared"
             )
 
     def manage_get_catalog_objects(self, batch_start=0, filterpath=""):

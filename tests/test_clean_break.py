@@ -207,9 +207,10 @@ class TestCounter:
         from tests.conftest import insert_object
 
         tool._get_pg_read_connection = lambda: pg_conn
-        insert_object(pg_conn, zoid=999, tid=42)
+        # Use a high tid to ensure it's the MAX
+        insert_object(pg_conn, zoid=999, tid=999_999_999)
         pg_conn.commit()
-        assert tool.getCounter() == 42
+        assert tool.getCounter() == 999_999_999
 
     def test_increment_is_noop(self, tool):
         """_increment_counter is a no-op (counter derived from TID)."""

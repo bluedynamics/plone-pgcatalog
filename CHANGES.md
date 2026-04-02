@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.0.0b36
+
+### Added
+
+- Process-wide query result cache with TID-based invalidation. Caches
+  catalog query results in memory. Invalidated when `MAX(tid)` changes
+  (any ZODB commit). Cost-based eviction keeps expensive queries in
+  cache. Configurable via `PGCATALOG_QUERY_CACHE_SIZE` (default 200)
+  and `PGCATALOG_QUERY_CACHE_TTR` (default 60s). Fixes #74.
+
+- ZMI: Cache Status section on the Slow Queries tab showing hit/miss
+  rate, entries, invalidations, TTR, and top cached queries by cost.
+
+### Fixed
+
+- `getCounter()` fix: `SELECT MAX(tid)` returns column `max`, not
+  `tid`. Added `AS tid` alias. Also fixes the test.
+
 ## 1.0.0b35
 
 ### Performance

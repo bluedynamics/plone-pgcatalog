@@ -61,6 +61,84 @@
 
 </dtml-let>
 
+<dtml-let cache="manage_get_cache_stats()">
+
+<div class="card mb-3">
+  <div class="card-header d-flex justify-content-between align-items-center">
+    <strong>Query Result Cache</strong>
+    <div>
+      <dtml-if "cache['enabled']">
+        <span class="badge badge-success">enabled</span>
+      <dtml-else>
+        <span class="badge badge-secondary">disabled</span>
+      </dtml-if>
+      <a href="manage_clear_cache"
+         class="btn btn-sm btn-outline-danger ml-2"
+         onclick="return confirm('Clear the query result cache?')">Clear Cache</a>
+    </div>
+  </div>
+  <dtml-if "cache['enabled']">
+  <div class="card-body p-3">
+    <table class="table table-sm table-borderless mb-3">
+      <tbody>
+        <tr>
+          <td class="text-muted" style="width:25%">Entries</td>
+          <td><dtml-var "cache['current_entries']"> / <dtml-var "cache['max_entries']"></td>
+        </tr>
+        <tr>
+          <td class="text-muted">Hit rate</td>
+          <td>
+            <strong><dtml-var "cache['hit_rate']">%</strong>
+            (<dtml-var "cache['hits']"> hits, <dtml-var "cache['misses']"> misses)
+          </td>
+        </tr>
+        <tr>
+          <td class="text-muted">Invalidations</td>
+          <td><dtml-var "cache['invalidations']"></td>
+        </tr>
+        <tr>
+          <td class="text-muted">TTR (rounding)</td>
+          <td><dtml-var "cache['ttr_seconds']">s</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <dtml-if "cache['top_entries']">
+    <h6>Top cached queries (by cost)</h6>
+    <table class="table table-striped table-sm mb-0">
+      <thead class="thead-light">
+        <tr>
+          <th scope="col" style="width:15%">Cost (ms)</th>
+          <th scope="col" style="width:15%">Hits</th>
+          <th scope="col" style="width:15%">Rows</th>
+        </tr>
+      </thead>
+      <tbody>
+        <dtml-in "cache['top_entries']">
+        <dtml-let entry="_['sequence-item']">
+        <tr>
+          <td><dtml-var "entry['cost_ms']"></td>
+          <td><dtml-var "entry['hits']"></td>
+          <td><dtml-var "entry['rows']"></td>
+        </tr>
+        </dtml-let>
+        </dtml-in>
+      </tbody>
+    </table>
+    </dtml-if>
+  </div>
+  <dtml-else>
+  <div class="card-body p-3">
+    <p class="text-muted small mb-0">
+      Set <code>PGCATALOG_QUERY_CACHE_SIZE</code> to enable the query result cache
+      (default: 200 entries).
+    </p>
+  </div>
+  </dtml-if>
+</div>
+
+</dtml-let>
+
 </main>
 
 <dtml-var manage_page_footer>

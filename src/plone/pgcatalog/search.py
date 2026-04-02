@@ -72,20 +72,27 @@ _SELECT_COLS_EAGER = "zoid, path, idx"
 _SELECT_COLS_EAGER_COUNTED = "zoid, path, idx, COUNT(*) OVER() AS _total_count"
 
 
+def _build_results(rows, actual_count, catalog, lazy_conn):
+    """Build CatalogSearchResults from raw rows."""
+    brains = [PGCatalogBrain(row, catalog=catalog) for row in rows]
+    results = CatalogSearchResults(
+        brains, actual_result_count=actual_count, conn=lazy_conn
+    )
+    if lazy_conn is not None:
+        for brain in brains:
+            brain._result_set = results
+    return results
+
+
 def _run_search(conn, query, catalog=None, lazy_conn=None):
     """Execute a prepared query dict and return CatalogSearchResults.
 
-    Builds the SQL once and uses a ``COUNT(*) OVER()`` window function
-    when a LIMIT is present so only *one* query is executed.
+    Results are cached process-wide with TID-based invalidation.
+    On cache hit, brains are rebuilt from cached rows (no PG query).
 
     When ``lazy_conn`` is provided, uses **lazy mode**: only ``zoid`` and
     ``path`` are selected.  The ``idx`` JSONB is fetched on demand when
-    brain metadata is first accessed (via
-    ``CatalogSearchResults._load_idx_batch()``), using the same connection
-    (and thus the same REPEATABLE READ snapshot).
-
-    Without ``lazy_conn``, uses **eager mode**: ``idx`` is included in the
-    SELECT for backward compatibility with tests and direct callers.
+    brain metadata is first accessed.
 
     Args:
         conn: psycopg connection (dict_row factory)
@@ -96,6 +103,31 @@ def _run_search(conn, query, catalog=None, lazy_conn=None):
     Returns:
         CatalogSearchResults with PGCatalogBrain instances
     """
+    from plone.pgcatalog.cache import _normalize_query as normalize_query
+    from plone.pgcatalog.cache import get_query_cache
+
+    cache = get_query_cache()
+
+    # Get current TID for cache validation
+    current_tid = None
+    if cache.max_entries > 0:
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT MAX(tid) AS tid FROM object_state")
+                row = cur.fetchone()
+            current_tid = row["tid"] if row and row["tid"] else None
+        except Exception:
+            pass
+
+    # Cache lookup
+    cache_key = normalize_query(query)
+    if current_tid is not None:
+        cached = cache.get(cache_key, current_tid)
+        if cached is not None:
+            rows, actual_count = cached
+            return _build_results(rows, actual_count, catalog, lazy_conn)
+
+    # Cache miss — execute query
     qr = build_query(query)
 
     has_limit = qr["limit"] is not None
@@ -132,20 +164,12 @@ def _run_search(conn, query, catalog=None, lazy_conn=None):
     if has_limit and rows:
         first = rows[0]
         actual_count = first["_total_count"] if isinstance(first, dict) else first[-1]
-        # Strip the window-function column from each row
         rows = [{k: v for k, v in r.items() if k != "_total_count"} for r in rows]
     elif has_limit:
-        # LIMIT set but no rows — actual count is 0
         actual_count = 0
 
-    brains = [PGCatalogBrain(row, catalog=catalog) for row in rows]
-    results = CatalogSearchResults(
-        brains, actual_result_count=actual_count, conn=lazy_conn
-    )
+    # Store in cache
+    if current_tid is not None:
+        cache.put(cache_key, rows, actual_count, duration_ms, current_tid)
 
-    # Wire brains to result set for lazy loading
-    if lazy_conn is not None:
-        for brain in brains:
-            brain._result_set = results
-
-    return results
+    return _build_results(rows, actual_count, catalog, lazy_conn)
