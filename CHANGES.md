@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.0.0b38
+
+### Fixed
+
+- Extract `allowed_roles` backfill from schema DDL into batched startup
+  step (#65 Phase 2). Previously the backfill ran as a single UPDATE
+  on 4.4M rows inside ACCESS EXCLUSIVE, blocking the entire database.
+  Now processes 5000 rows per batch with autocommit and `lock_timeout`.
+  Safe to re-run, idempotent, logs progress.
+
 ## 1.0.0b37
 
 ### Fixed
