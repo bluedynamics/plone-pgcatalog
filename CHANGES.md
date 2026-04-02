@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.0.0b37
+
+### Fixed
+
+- Prevent database lockup during rolling deployments (#65).
+  `_ensure_text_indexes()` and `_ensure_field_indexes()` now set
+  `lock_timeout = '5s'` to prevent indefinite blocking on ACCESS
+  EXCLUSIVE locks from concurrent REPEATABLE READ sessions.
+  Log level changed from `error` to `warning` since indexes are
+  retried on next startup.
+
 ## 1.0.0b36
 
 ### Added
