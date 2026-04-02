@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.0.0b39
+
+### Fixed
+
+- Log query cache TID lookup failures instead of silently swallowing
+  them. Diagnoses why the query cache may not be populating.
+
 ## 1.0.0b38
 
 ### Fixed
