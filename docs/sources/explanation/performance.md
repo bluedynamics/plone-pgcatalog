@@ -314,6 +314,53 @@ N individual queries to 1 batch query. Window-based: only prefetches
 the next batch, not the entire result set (safe for large result sets
 where only a page is rendered).
 
+#### Pluggable refs prefetch (zodb-pgjsonb v1.9.2)
+
+In addition to the explicit `load_multiple()` batch on `getObject()`, the
+storage layer itself can prefetch an object's direct references (annotations,
+sub-mappings, OOBTrees) automatically on every `load()` call. This is
+controlled by a SQL expression registered via
+`storage.register_prefetch_refs_expr()`.
+
+plone-pgcatalog registers the expression at startup:
+
+```python
+storage.register_prefetch_refs_expr(
+    "CASE WHEN idx IS NOT NULL THEN refs END"
+)
+```
+
+This `CASE WHEN idx IS NOT NULL THEN refs END` expression is the result of
+a three-version saga:
+
+- **v1.9.0** prefetched unconditionally for all objects. This caused severe
+  over-fetching: internal ZODB structures (BTrees, PersistentMappings) have
+  refs that cascade into thousands of objects that are never accessed by user
+  code. Cold-start performance was 40--84% *slower* than without prefetch.
+- **v1.9.1** added a class-module blacklist to skip known non-content classes.
+  This was fragile -- any addon adding new persistent classes could reintroduce
+  over-fetching.
+- **v1.9.2** replaced the blacklist with the pluggable SQL expression. The
+  `idx IS NOT NULL` filter is a reliable proxy for "is a content object" because
+  only cataloged content objects have a non-NULL `idx` column in `object_state`.
+  Non-content objects (BTrees, PersistentMappings, Length objects, etc.) never
+  have catalog index data and produce NULL, suppressing the prefetch entirely.
+
+#### Cold vs warm performance summary
+
+With the final `idx IS NOT NULL` filter, the combined batch loading and refs
+prefetch achieves the intended benefit without the over-fetching penalty:
+
+- **Cold start** (empty ZODB cache): page loads with 10--50 `getObject()` calls
+  issue 1--2 batch queries instead of 10--50 individual queries. The refs
+  prefetch warms annotations and workflow state objects ahead of access.
+- **Warm cache** (ZODB cache populated): prefetch calls hit the storage LRU
+  cache and return immediately with no database roundtrips. The overhead of
+  checking the cache is negligible (microseconds).
+- **Large result sets**: window-based batching ensures only the currently
+  rendered page is prefetched. A search returning 10,000 results but rendering
+  25 per page prefetches at most 100 objects (one batch window).
+
 ### ZODB cache sizing
 
 The ZODB Connection cache is the primary performance lever for warm-cache

@@ -25,6 +25,7 @@ ZEO
 FileStorage
 ZCatalog
 BTree[s]?
+OOBTree[s]?
 PGJsonb
 GenericSetup
 VectorChord
@@ -243,4 +244,5 @@ pending
 [Aa]uto(detect(ed|s|ion)?|discover(ed|s|y)|creat(ed|es)|inject|appli(ed|es)|populat(ed|es))
 datetime
 [Pp]refetch(ed|er|es|ing)?
+[Pp]luggable
 roundtrips

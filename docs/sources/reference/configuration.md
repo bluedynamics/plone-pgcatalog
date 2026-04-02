@@ -61,7 +61,7 @@ need a separate `%import` directive.
 | `PGCATALOG_SLOW_QUERY_MS` | `10` | Threshold in milliseconds for slow query detection. Queries exceeding this are logged as warnings and recorded in the `pgcatalog_slow_queries` table for analysis via the ZMI Slow Queries tab. Set to `0` to disable. |
 | `PGCATALOG_QUERY_CACHE_SIZE` | `200` | Max cached query results per process. Set to `0` to disable. Invalidated when `MAX(tid)` changes (any ZODB commit). Cost-based eviction keeps expensive queries in cache. |
 | `PGCATALOG_QUERY_CACHE_TTR` | `60` | Time-to-round in seconds for datetime values in cache keys. Controls cache key granularity for effectiveRange queries. Higher values = more cache hits but slightly stale effectiveRange. |
-| `PGCATALOG_PREFETCH_BATCH` | `100` | Number of objects to prefetch when `brain.getObject()` is called. Set to `0` to disable. Requires zodb-pgjsonb >= 1.8.0. |
+| `PGCATALOG_PREFETCH_BATCH` | `100` | Number of objects to prefetch when `brain.getObject()` is called. Set to `0` to disable. Requires zodb-pgjsonb >= 1.8.0. In addition, automatic refs prefetch on `load()` is registered at startup when zodb-pgjsonb >= 1.9.2 is available (uses `idx IS NOT NULL` filter to limit prefetch to cataloged content). |
 | `ZODB_TEST_DSN` | `dbname=zodb_test host=localhost port=5433 user=zodb password=zodb` | DSN for test database (tests only). |
 | `BM25_TEST_DSN` | `dbname=zodb_test host=localhost port=5434 user=zodb password=zodb` | DSN for BM25 integration tests (tests only). |
 
@@ -109,7 +109,7 @@ The following registrations are made:
 | `psycopg[binary,pool]>=3.1` | PostgreSQL adapter with connection pooling. |
 | `orjson>=3.9` | Fast JSONB deserialization. |
 | `Products.CMFPlone` | Plone framework. |
-| `zodb-pgjsonb>=1.1` | ZODB storage backend (provides the `object_state` table). |
+| `zodb-pgjsonb>=1.8` | ZODB storage backend (provides the `object_state` table). v1.8.0 adds `load_multiple()` for batch prefetch; v1.9.2 adds `register_prefetch_refs_expr()` for automatic refs prefetch on `load()`. |
 
 ## Optional dependencies
 
