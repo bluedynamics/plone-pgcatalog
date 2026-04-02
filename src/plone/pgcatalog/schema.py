@@ -17,13 +17,8 @@ ALTER TABLE object_state ADD COLUMN IF NOT EXISTS searchable_text TSVECTOR;
 
 -- Dedicated column for security filter (used in EVERY query).
 -- Stored as TEXT[] for direct GIN ?| queries without JSONB decompression.
+-- Backfill is done in batches at startup (_backfill_allowed_roles).
 ALTER TABLE object_state ADD COLUMN IF NOT EXISTS allowed_roles TEXT[];
-
--- Backfill from idx JSONB for existing databases (idempotent).
-UPDATE object_state SET allowed_roles = (
-    SELECT array_agg(value::text)
-    FROM jsonb_array_elements_text(idx->'allowedRolesAndUsers')
-) WHERE idx IS NOT NULL AND idx ? 'allowedRolesAndUsers' AND allowed_roles IS NULL;
 """
 
 CATALOG_FUNCTIONS = """\
