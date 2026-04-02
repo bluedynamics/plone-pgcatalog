@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.0.0b40
+
+### Added
+
+- Brain object prefetch via `storage.load_multiple()`. When iterating
+  search results and calling `getObject()`, the first call in each batch
+  prefetches up to 100 objects in a single SQL query, warming the storage
+  cache for subsequent calls. Configurable via `PGCATALOG_PREFETCH_BATCH`
+  environment variable (default 100, set to 0 to disable).
+
 ## 1.0.0b39
 
 ### Fixed
