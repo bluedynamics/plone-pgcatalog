@@ -40,7 +40,7 @@ CATALOG_FUNCTIONS = """\
 CREATE OR REPLACE FUNCTION pgcatalog_to_timestamptz(text)
 RETURNS timestamptz AS $$
     SELECT $1::timestamptz;
-$$ LANGUAGE sql IMMUTABLE STRICT;
+$$ LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE;
 """
 
 CATALOG_LANG_FUNCTION = """\
@@ -160,6 +160,20 @@ CREATE INDEX IF NOT EXISTS idx_os_cat_type_state
     ON object_state ((idx->>'portal_type'), (idx->>'review_state'))
     WHERE idx IS NOT NULL;
 
+-- Partial index for navigation listings (exclude_from_nav = false is ~1.6%
+-- of rows — highly selective, eliminates 98% before heap scan).
+CREATE INDEX IF NOT EXISTS idx_os_cat_nav_visible
+    ON object_state ((idx->>'path') text_pattern_ops, (idx->>'portal_type'))
+    WHERE idx IS NOT NULL AND (idx->>'exclude_from_nav')::boolean = false;
+
+-- Partial index for upcoming events (portal_type = Event + sidecalendar).
+-- Allows direct index scan on end date for calendar widgets.
+CREATE INDEX IF NOT EXISTS idx_os_cat_events_upcoming
+    ON object_state (pgcatalog_to_timestamptz(idx->>'end') DESC)
+    WHERE idx IS NOT NULL
+      AND (idx->>'portal_type') = 'Event'
+      AND (idx->>'show_in_sidecalendar')::boolean = true;
+
 -- Dedicated GIN indexes for high-cardinality keyword fields.
 -- The full-idx GIN index (idx_os_catalog) is too broad for these — PG
 -- must scan all JSONB keys across all objects.  Dedicated indexes on
@@ -225,6 +239,8 @@ EXPECTED_INDEXES = [
     "idx_os_cat_portal_type",
     "idx_os_cat_review_state",
     "idx_os_cat_uid",
+    "idx_os_cat_nav_visible",
+    "idx_os_cat_events_upcoming",
     "idx_os_searchable_text",
     "idx_os_cat_title_tsv",
     "idx_os_cat_description_tsv",
