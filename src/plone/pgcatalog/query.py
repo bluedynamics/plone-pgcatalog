@@ -543,41 +543,19 @@ class _QueryBuilder:
             self.params[p] = paths
 
     def _path_limited(self, expr_path, expr_depth, path, depth):
-        """depth=N (N>1): subtree limited to N levels below path.
-
-        Rewrites to ``path_parent IN (subquery)`` so PG can use the
-        composite ``(path_parent, portal_type)`` index instead of
-        scanning by ``path LIKE + path_depth``.  The subquery resolves
-        all paths within the depth range — these are the parent folders
-        whose children we want.
-        """
+        """depth=N (N>1): subtree limited to N levels below path."""
         from plone.pgcatalog.columns import compute_path_info
 
         _, base_depth = compute_path_info(path)
         max_depth = base_depth + depth
 
-        # Build the set of parent paths: the base path itself + all
-        # sub-paths up to (max_depth - 1) levels.  Children of these
-        # parents will have depth <= max_depth.
-        key = expr_path.split("'")[1]  # extract key name from "idx->>'path'"
-        parent_key = f"{key}_parent"
-        expr_parent = f"idx->>'{parent_key}'"
-
-        p_path = self._pname("path")
         p_like = self._pname("path_like")
-        p_max_depth = self._pname("max_depth")
+        p_depth = self._pname("max_depth")
         self.clauses.append(
-            f"{expr_parent} IN ("
-            f"SELECT DISTINCT idx->>'{key}' FROM object_state "
-            f"WHERE idx IS NOT NULL "
-            f"AND (idx->>'{key}' = %({p_path})s "
-            f"OR idx->>'{key}' LIKE %({p_like})s) "
-            f"AND {expr_depth} < %({p_max_depth})s"
-            f")"
+            f"({expr_path} LIKE %({p_like})s AND {expr_depth} <= %({p_depth})s)"
         )
-        self.params[p_path] = path
         self.params[p_like] = path.rstrip("/") + "/%"
-        self.params[p_max_depth] = max_depth
+        self.params[p_depth] = max_depth
 
     def _path_navtree(self, expr_path, expr_parent, path, depth, navtree_start):
         """navtree=True: navigation tree query."""

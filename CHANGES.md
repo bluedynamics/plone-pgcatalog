@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.0.0b33
+
+### Fixed
+
+- Revert path_parent IN subquery for bounded-depth queries (#68).
+  The subquery caused Nested Loop plans where PG repeated the
+  `allowed_roles` GIN scan per parent path (615ms). Reverts to
+  `LIKE + path_depth` which uses the `path_depth_type` composite
+  index (85-300ms depending on cache state).
+
 ## 1.0.0b32
 
 ### Fixed
