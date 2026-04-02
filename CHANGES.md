@@ -4,7 +4,7 @@
 
 ### Fixed
 
-- DateRecurringIndex fields (e.g. `general_end`) now get auto-created
+- DateRecurringIndex fields (e.g. `start`, `end`) now get auto-created
   btree expression indexes and appear in the ZMI Indexes tab. Added
   `DateRecurringIndex` to `META_TYPE_MAP`. Query builder now checks
   `IPGIndexTranslator` before IndexRegistry, so rrule query logic
