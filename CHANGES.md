@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.0.0b35
+
+### Performance
+
+- Add partial index `idx_os_cat_nav_visible` for navigation listings
+  (`exclude_from_nav=false` is only ~1.6% of rows). Verified on
+  production: 261ms → 20ms (13×).
+- Add partial index `idx_os_cat_events_upcoming` for calendar/event
+  queries (`portal_type=Event` + `show_in_sidecalendar=true` + end
+  date). Verified on production: 728ms → 33ms (22×).
+- Mark `pgcatalog_to_timestamptz()` as `PARALLEL SAFE` to allow
+  parallel query execution.
+
 ## 1.0.0b34
 
 ### Fixed
