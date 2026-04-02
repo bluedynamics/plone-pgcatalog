@@ -59,6 +59,9 @@ need a separate `%import` directive.
 | `PGCATALOG_TIKA_CONTENT_TYPES` | common office/PDF/image types | Comma-separated MIME types to send to Tika. Default includes PDF, MS Office, OpenDocument, RTF, and common image formats. |
 | `PGCATALOG_TIKA_INPROCESS` | (none) | Set to `true`, `1`, or `yes` to start the extraction worker as a daemon thread inside the Zope process. Requires `PGCATALOG_TIKA_URL`. |
 | `PGCATALOG_SLOW_QUERY_MS` | `10` | Threshold in milliseconds for slow query detection. Queries exceeding this are logged as warnings and recorded in the `pgcatalog_slow_queries` table for analysis via the ZMI Slow Queries tab. Set to `0` to disable. |
+| `PGCATALOG_QUERY_CACHE_SIZE` | `200` | Max cached query results per process. Set to `0` to disable. Invalidated when `MAX(tid)` changes (any ZODB commit). Cost-based eviction keeps expensive queries in cache. |
+| `PGCATALOG_QUERY_CACHE_TTR` | `60` | Time-to-round in seconds for datetime values in cache keys. Controls cache key granularity for effectiveRange queries. Higher values = more cache hits but slightly stale effectiveRange. |
+| `PGCATALOG_PREFETCH_BATCH` | `100` | Number of objects to prefetch when `brain.getObject()` is called. Set to `0` to disable. Requires zodb-pgjsonb >= 1.8.0. |
 | `ZODB_TEST_DSN` | `dbname=zodb_test host=localhost port=5433 user=zodb password=zodb` | DSN for test database (tests only). |
 | `BM25_TEST_DSN` | `dbname=zodb_test host=localhost port=5434 user=zodb password=zodb` | DSN for BM25 integration tests (tests only). |
 
@@ -141,3 +144,19 @@ in `postgresql.conf` (default is 4.0, tuned for spinning disks). This helps
 the planner prefer index scans over bitmap scans for complex multi-field
 queries. Verified on production: ~2x improvement for navigation queries
 without affecting simple queries.
+
+For large Plone sites, configure the ZODB cache generously:
+
+```ini
+<zodb_db main>
+  cache-size 70000
+  cache-size-bytes 500MB
+  <pgjsonb>
+    dsn ...
+  </pgjsonb>
+</zodb_db>
+```
+
+The default ZODB cache (5000 objects) is too small for sites with many
+content objects. A site with 14,000 events showed 5-6 second warm-cache
+page loads with the default, dropping to 0.8 seconds with 70,000 objects.

@@ -293,3 +293,39 @@ FieldIndex, BooleanIndex, and UUIDIndex queries use btree-friendly
 (`idx @> {...}::jsonb`). This allows PG to use btree expression indexes
 directly instead of falling back to the broad GIN index on `idx`. Navigation
 queries dropped from 3900ms to 20ms.
+
+### Query result cache
+
+Process-wide in-memory cache for catalog query results. Cache key is a
+hash of the normalized query dict (datetime values rounded to
+`PGCATALOG_QUERY_CACHE_TTR` seconds). Invalidated when `MAX(tid)` changes
+(any ZODB commit). Cost-based eviction keeps expensive queries (navigation
+85ms) in cache while cheap ones are evicted first.
+
+On a typical page with 10-15 catalog queries, the second page load is
+nearly free (cache hits cost <0.1ms vs 20-300ms for SQL execution).
+
+### Batch object loading
+
+`brain.getObject()` triggers a prefetch of the next N objects
+(`PGCATALOG_PREFETCH_BATCH`, default 100) from the result set via
+`storage.load_multiple()`. This reduces per-object SQL roundtrips from
+N individual queries to 1 batch query. Window-based: only prefetches
+the next batch, not the entire result set (safe for large result sets
+where only a page is rendered).
+
+### ZODB cache sizing
+
+The ZODB Connection cache is the primary performance lever for warm-cache
+page loads. The default (5000 objects) is too small for production sites.
+With a 14,000-event site, increasing to 70,000 objects reduced warm-cache
+page loads from 5-6 seconds to 0.8 seconds. Configure `cache-size` and
+`cache-size-bytes` in `zope.conf`.
+
+### Packer performance
+
+The packer uses `NOT EXISTS` anti-joins instead of `NOT IN` for
+unreachable object deletion. On a 4.4M-object database, pack completed
+in 140 seconds (previously 48+ minutes with `NOT IN`). Pack removed
+1.8M unreachable objects (41% of the database), halving the table size
+and improving cold-cache performance.

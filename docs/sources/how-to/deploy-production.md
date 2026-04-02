@@ -49,6 +49,39 @@ No special operator configuration is needed beyond the standard PostgreSQL image
 
 - Deploy a reverse proxy (nginx, HAProxy) with rate limiting on search endpoints (`@@search`, `@@search-results`) to protect against query abuse.
 
+### ZODB cache sizing
+
+The default ZODB cache (5000 objects) is too small for production sites.
+Increase `cache-size` and `cache-size-bytes` in `zope.conf`:
+
+```ini
+<zodb_db main>
+  cache-size 70000
+  cache-size-bytes 500MB
+  <pgjsonb>
+    dsn dbname=zodb host=localhost port=5432 user=zodb password=zodb
+  </pgjsonb>
+</zodb_db>
+```
+
+A site with 14,000 events showed 5-6 second warm-cache page loads with
+the default, dropping to 0.8 seconds with 70,000 objects. While
+plone.pgcatalog eliminates BTree cache pressure for catalog data, Plone
+content objects themselves still benefit from a large ZODB cache.
+
+### Query cache and prefetch
+
+plone.pgcatalog includes a process-wide query result cache and a batch
+object prefetcher. Both are enabled by default:
+
+- `PGCATALOG_QUERY_CACHE_SIZE=200` -- cached query results per process,
+  invalidated on every ZODB commit. Set to `0` to disable.
+- `PGCATALOG_PREFETCH_BATCH=100` -- objects prefetched when
+  `brain.getObject()` is called (requires zodb-pgjsonb >= 1.8.0).
+  Set to `0` to disable.
+
+See {doc}`../reference/configuration` for all environment variables.
+
 ## Monitoring
 
 Key PostgreSQL views:
