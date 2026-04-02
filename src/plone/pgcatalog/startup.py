@@ -168,6 +168,7 @@ def _ensure_text_indexes(storage):  # pragma: no cover
         from psycopg import sql as pgsql
 
         with psycopg.connect(dsn, autocommit=True) as conn:
+            conn.execute("SET lock_timeout = '5s'")
             for name, idx_key in text_indexes:
                 validate_identifier(idx_key)
                 idx_name = f"idx_os_cat_{idx_key.lower()}_tsv"
@@ -184,9 +185,11 @@ def _ensure_text_indexes(storage):  # pragma: no cover
                 conn.execute(stmt)
                 log.info("Ensured GIN text index %s for %s", idx_name, name)
     except Exception:
-        log.error(
-            "Failed to create text expression indexes — "
-            "text field queries may be slow until indexes are created",
+        log.warning(
+            "Failed to create text expression indexes "
+            "(lock timeout or other error) — "
+            "text field queries may be slow until indexes are created. "
+            "Indexes will be retried on next startup.",
             exc_info=True,
         )
 
@@ -246,6 +249,7 @@ def _ensure_field_indexes(storage):  # pragma: no cover
         from psycopg import sql as pgsql
 
         with psycopg.connect(dsn, autocommit=True) as conn:
+            conn.execute("SET lock_timeout = '5s'")
             for name, idx_type, idx_key in candidates:
                 validate_identifier(idx_key)
                 idx_name = f"idx_os_cat_{idx_key.lower()}"
@@ -270,9 +274,11 @@ def _ensure_field_indexes(storage):  # pragma: no cover
                     idx_type.value,
                 )
     except Exception:
-        log.error(
-            "Failed to create field expression indexes --- "
-            "custom field queries may be slow until indexes are created",
+        log.warning(
+            "Failed to create field expression indexes "
+            "(lock timeout or other error) --- "
+            "custom field queries may be slow until indexes are created. "
+            "Indexes will be retried on next startup.",
             exc_info=True,
         )
 
