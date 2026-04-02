@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.0.0b41
+
+### Fixed
+
+- Register refs prefetch expression for cataloged content objects.
+  Uses `CASE WHEN idx IS NOT NULL THEN refs END` so only content
+  objects (with catalog data) trigger prefetch. Requires
+  zodb-pgjsonb >= 1.9.2.
+
 ## 1.0.0b40
 
 ### Added
