@@ -1123,7 +1123,7 @@ class PlonePGCatalogTool(UniqueObject, Folder):
                         "  MAX(created_at) AS last_seen "
                         "FROM pgcatalog_slow_queries "
                         "GROUP BY query_keys "
-                        "ORDER BY cnt DESC "
+                        "ORDER BY max_ms DESC "
                         "LIMIT 50"
                     )
                     rows = cur.fetchall()
