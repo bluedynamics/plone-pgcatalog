@@ -130,6 +130,14 @@ def register_catalog_processor(event):
         _ensure_field_indexes(storage)
         _backfill_allowed_roles(storage)
 
+        # Enable refs prefetch for cataloged content objects only.
+        # Non-content objects (BTrees, PersistentMappings, etc.) have
+        # idx IS NULL and won't trigger prefetch.
+        if hasattr(storage, "register_prefetch_refs_expr"):
+            storage.register_prefetch_refs_expr(
+                "CASE WHEN idx IS NOT NULL THEN refs END"
+            )
+
         # Install move/rename optimization handlers
         from plone.pgcatalog.move import install_move_handlers
 
