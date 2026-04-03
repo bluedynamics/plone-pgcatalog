@@ -8,9 +8,88 @@ from psycopg.rows import dict_row
 from psycopg.rows import tuple_row
 from tests.conftest import DSN
 from tests.conftest import insert_object
+from unittest import mock
 
+import json
 import psycopg.errors
 import pytest
+
+
+class TestMimeTypeFromIdx:
+    """Test content_type extraction from idx.mime_type (#90).
+
+    Pure unit tests — no PG or TIKA_URL needed.
+    """
+
+    def test_mime_type_from_idx(self):
+        """MIME type is read from idx.mime_type for Tika enqueue."""
+        from plone.pgcatalog.pending import set_pending
+
+        proc = CatalogStateProcessor()
+        proc._tika_candidates = []
+
+        with mock.patch("plone.pgcatalog.processor.TIKA_URL", "http://tika:9998"):
+            zoid = 600
+            set_pending(
+                zoid,
+                {
+                    "path": "/plone/test.pdf",
+                    "idx": {"portal_type": "File", "mime_type": "application/pdf"},
+                    "searchable_text": "",
+                },
+            )
+
+            state = json.dumps({"file": {"_blob": {"@ref": "00000000000003e8"}}})
+            proc.process(zoid, "plone.app.contenttypes.content", "File", state)
+
+        assert len(proc._tika_candidates) == 1
+        assert proc._tika_candidates[0]["content_type"] == "application/pdf"
+
+    def test_no_mime_type_no_candidate(self):
+        """No mime_type in idx → no Tika candidate (e.g. Document, no blob)."""
+        from plone.pgcatalog.pending import set_pending
+
+        proc = CatalogStateProcessor()
+        proc._tika_candidates = []
+
+        with mock.patch("plone.pgcatalog.processor.TIKA_URL", "http://tika:9998"):
+            zoid = 601
+            set_pending(
+                zoid,
+                {
+                    "path": "/plone/page",
+                    "idx": {"portal_type": "Document"},
+                    "searchable_text": "text",
+                },
+            )
+
+            state = json.dumps({"title": "A page"})
+            proc.process(zoid, "plone.app.contenttypes.content", "Document", state)
+
+        assert len(proc._tika_candidates) == 0
+
+    def test_non_extractable_mime_type(self):
+        """text/html mime_type → not extractable, no candidate."""
+        from plone.pgcatalog.pending import set_pending
+
+        proc = CatalogStateProcessor()
+        proc._tika_candidates = []
+
+        with mock.patch("plone.pgcatalog.processor.TIKA_URL", "http://tika:9998"):
+            zoid = 602
+            set_pending(
+                zoid,
+                {
+                    "path": "/plone/page.html",
+                    "idx": {"portal_type": "Document", "mime_type": "text/html"},
+                    "searchable_text": "",
+                },
+            )
+
+            state = json.dumps({"title": "HTML page"})
+            proc.process(zoid, "plone.app.contenttypes.content", "Document", state)
+
+        assert len(proc._tika_candidates) == 0
 
 
 # Skip if no PG available
@@ -205,9 +284,8 @@ class TestEnqueueLogic:
             zoid,
             {
                 "path": "/plone/test",
-                "idx": {"portal_type": "File"},
+                "idx": {"portal_type": "File", "mime_type": "application/pdf"},
                 "searchable_text": "test document",
-                "content_type": "application/pdf",
             },
         )
 
@@ -234,9 +312,8 @@ class TestEnqueueLogic:
             zoid,
             {
                 "path": "/plone/test2",
-                "idx": {"portal_type": "File"},
+                "idx": {"portal_type": "File", "mime_type": "application/pdf"},
                 "searchable_text": "",
-                "content_type": "application/pdf",
             },
         )
 
