@@ -196,24 +196,25 @@ class TestGetIndexDataForRID:
 
 
 class TestCounter:
-    """Test catalog change counter (MAX(tid) based)."""
+    """Test catalog change counter (pgcatalog_change_seq based)."""
 
     def test_counter_returns_zero_without_pg(self, tool):
         """getCounter returns 0 when no PG connection available."""
         assert tool.getCounter() == 0
 
     def test_counter_with_pg(self, pg_conn, tool):
-        """getCounter returns MAX(tid) from object_state."""
-        from tests.conftest import insert_object
-
+        """getCounter returns last_value from pgcatalog_change_seq."""
         tool._get_pg_read_connection = lambda: pg_conn
-        # Use a high tid to ensure it's the MAX
-        insert_object(pg_conn, zoid=999, tid=999_999_999)
+        pg_conn.execute("CREATE SEQUENCE IF NOT EXISTS pgcatalog_change_seq")
         pg_conn.commit()
-        assert tool.getCounter() == 999_999_999
+        # Advance the sequence
+        pg_conn.execute("SELECT nextval('pgcatalog_change_seq')")
+        pg_conn.execute("SELECT nextval('pgcatalog_change_seq')")
+        pg_conn.execute("SELECT nextval('pgcatalog_change_seq')")
+        assert tool.getCounter() == 3
 
     def test_increment_is_noop(self, tool):
-        """_increment_counter is a no-op (counter derived from TID)."""
+        """_increment_counter is a no-op (counter derived from sequence)."""
         tool._increment_counter()  # should not raise
 
 

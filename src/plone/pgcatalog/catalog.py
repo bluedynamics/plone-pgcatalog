@@ -250,16 +250,16 @@ class PlonePGCatalogTool(UniqueObject, Folder):
     def getCounter(self):
         """Return a monotonically increasing counter for cache invalidation.
 
-        Uses MAX(tid) from object_state — changes on every ZODB commit
-        that touches cataloged objects.  No persistent counter needed,
-        no ZODB write overhead.  ~0.2ms via Index Only Scan.
+        Uses ``pgcatalog_change_seq`` — only increments on actual catalog
+        writes (catalog_object, uncatalog_object, reindex, move).
+        Non-catalog ZODB writes (scales, sessions, etc.) don't affect it.
         """
         try:
             conn = self._get_pg_read_connection()
             with conn.cursor() as cur:
-                cur.execute("SELECT MAX(tid) AS tid FROM object_state")
+                cur.execute("SELECT last_value FROM pgcatalog_change_seq")
                 row = cur.fetchone()
-            return row["tid"] if row and row["tid"] else 0
+            return row["last_value"] if row and row["last_value"] else 0
         except Exception:
             return 0
 

@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.0.0b46
+
+### Fixed
+
+- Query cache: use catalog-specific change counter instead of
+  `MAX(tid)` (#94).  The cache was invalidated on every ZODB write
+  (~2500/hour from ScalesDict alone), making it nearly useless (~28%
+  hit rate).  Now uses `pgcatalog_change_seq` which only increments
+  on actual catalog writes (catalog_object, uncatalog, reindex, move).
+  Expected hit rate 90%+ on typical sites.
+
 ## 1.0.0b45
 
 ### Fixed

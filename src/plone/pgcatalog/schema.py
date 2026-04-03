@@ -242,6 +242,12 @@ EXPECTED_INDEXES = [
 ]
 
 
+# ── Catalog change counter (for query cache invalidation) ────────────────────
+
+CATALOG_CHANGE_SEQ = """\
+CREATE SEQUENCE IF NOT EXISTS pgcatalog_change_seq;
+"""
+
 # ── Slow query logging table ──────────────────────────────────────────────────
 
 SLOW_QUERY_TABLE = """\
