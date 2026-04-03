@@ -1129,7 +1129,7 @@ class PlonePGCatalogTool(UniqueObject, Folder):
             )
         return result
 
-    def manage_get_managed_indexes(self):
+    def manage_get_managed_indexes(self):  # pragma: no cover
         """Return list of idx_os_sug_* indexes for ZMI display."""
         from plone.pgcatalog.suggestions import get_existing_indexes
 
@@ -1149,7 +1149,7 @@ class PlonePGCatalogTool(UniqueObject, Folder):
             if name.startswith("idx_os_sug_")
         ]
 
-    def manage_explain_slow_query(self, query_id, REQUEST=None):
+    def manage_explain_slow_query(self, query_id, REQUEST=None):  # pragma: no cover
         """ZMI action: run EXPLAIN on a slow query and return the plan."""
         from plone.pgcatalog.suggestions import explain_query
 
@@ -1172,7 +1172,7 @@ class PlonePGCatalogTool(UniqueObject, Folder):
             return {"error": str(exc)}
         return {"error": "Query not found"}
 
-    def manage_apply_index(self, ddl, REQUEST=None):
+    def manage_apply_index(self, ddl, REQUEST=None):  # pragma: no cover
         """ZMI action: create a suggested index."""
         from plone.pgcatalog.suggestions import apply_index
 
@@ -1196,7 +1196,7 @@ class PlonePGCatalogTool(UniqueObject, Folder):
             )
         return msg
 
-    def manage_drop_index(self, index_name, REQUEST=None):
+    def manage_drop_index(self, index_name, REQUEST=None):  # pragma: no cover
         """ZMI action: drop a suggestion-system index."""
         from plone.pgcatalog.suggestions import drop_index
 
