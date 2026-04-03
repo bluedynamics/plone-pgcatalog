@@ -241,7 +241,7 @@ def _check_covered(ddl, existing_indexes):
 # ── DB helpers ───────────────────────────────────────────────────────────
 
 
-def get_existing_indexes(conn):
+def get_existing_indexes(conn):  # pragma: no cover
     """Query pg_indexes for all indexes on object_state.
 
     Returns:
@@ -255,7 +255,7 @@ def get_existing_indexes(conn):
         return {row["indexname"]: row["indexdef"] for row in cur.fetchall()}
 
 
-def explain_query(conn, sql, params):
+def explain_query(conn, sql, params):  # pragma: no cover
     """Run EXPLAIN (FORMAT JSON) for a query and return the plan.
 
     Args:
@@ -286,7 +286,7 @@ def explain_query(conn, sql, params):
         return {"error": str(exc)}
 
 
-def apply_index(conn, ddl):
+def apply_index(conn, ddl):  # pragma: no cover
     """Create an index using CREATE INDEX CONCURRENTLY.
 
     The connection must support autocommit (CONCURRENTLY cannot run
@@ -330,7 +330,7 @@ def apply_index(conn, ddl):
         conn.autocommit = old_autocommit
 
 
-def drop_index(conn, index_name):
+def drop_index(conn, index_name):  # pragma: no cover
     """Drop a suggestion-system index using DROP INDEX CONCURRENTLY.
 
     Only indexes with the ``idx_os_sug_`` prefix can be dropped.
