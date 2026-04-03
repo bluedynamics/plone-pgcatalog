@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.0b47
+
+### Fixed
+
+- Fix `ValueError: Invalid path: ''` when path query receives empty
+  string. Empty/blank paths are now silently filtered, matching
+  ZCatalog behavior.
+
 ## 1.0.0b46
 
 ### Fixed

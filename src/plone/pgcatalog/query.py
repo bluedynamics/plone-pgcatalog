@@ -483,6 +483,10 @@ class _QueryBuilder:
         navtree_start = spec.get("navtree_start", 0)
 
         paths = [query_val] if isinstance(query_val, str) else list(query_val)
+        # Filter empty/blank paths — ZCatalog silently ignores them
+        paths = [p for p in paths if p and p.strip()]
+        if not paths:
+            return  # nothing to query
 
         if len(paths) > _MAX_PATHS:
             raise ValueError("Too many paths in query")
