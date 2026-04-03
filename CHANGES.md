@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.0.0b44
+
+### Added
+
+- Smart index suggestions in ZMI Slow Queries tab (#86).  Replaces the
+  naive `_suggest_index()` with field-type-aware suggestions using the
+  IndexRegistry.  Generates correct DDL per IndexType (btree expression,
+  GIN, tsvector, composites).  Detects already-covered fields (dedicated
+  columns, existing indexes).  Manual "Apply" button creates indexes via
+  `CREATE INDEX CONCURRENTLY`.  "Drop" button for removing suggestion
+  indexes (`idx_os_sug_*`).  On-demand EXPLAIN plans for slow queries.
+  New `suggestions.py` module with pure suggestion engine + DB helpers.
+
 ## 1.0.0b43
 
 ### Fixed
