@@ -2,6 +2,8 @@
 
 from plone.pgcatalog.processor import _collect_ref_oids
 
+import json
+
 
 class TestCollectRefOids:
     """Extract @ref oid integers from JSON state dicts."""
@@ -74,3 +76,30 @@ class TestCollectRefOids:
             "creators": ["admin"],
         }
         assert _collect_ref_oids(state) == [0xBC614E]
+
+    # ── JSON string input (decode_zodb_record_for_pg_json path) ────
+
+    def test_json_string_input(self):
+        """state may be a JSON string from the fast codec path."""
+        state_dict = {"blob": {"@ref": "0000000000000042"}}
+        state_str = json.dumps(state_dict)
+        assert _collect_ref_oids(state_str) == [0x42]
+
+    def test_json_string_real_world(self):
+        """Full File state as JSON string — the actual bug scenario."""
+        state_dict = {
+            "title": "Report Q4",
+            "file": {
+                "@cls": ["plone.namedfile.file", "NamedBlobFile"],
+                "_blob": {"@ref": ["0000000000bc614e", "ZODB.blob.Blob"]},
+                "contentType": "application/pdf",
+            },
+        }
+        state_str = json.dumps(state_dict)
+        assert _collect_ref_oids(state_str) == [0xBC614E]
+
+    def test_json_string_empty(self):
+        assert _collect_ref_oids("{}") == []
+
+    def test_invalid_json_string(self):
+        assert _collect_ref_oids("not json") == []

@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.0.0b43
+
+### Fixed
+
+- Fix Tika enqueue: `_collect_ref_oids()` and the `ANNOTATION_KEY`
+  fallback in `CatalogStateProcessor.process()` now handle JSON
+  string state (from `decode_zodb_record_for_pg_json`).  Previously
+  `state` was assumed to be a dict, but the fast codec path returns a
+  JSON string — so `@ref` markers were never found, no extraction
+  jobs were enqueued, and Tika sat idle.
+
 ## 1.0.0b42
 
 ### Fixed

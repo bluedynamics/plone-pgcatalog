@@ -20,6 +20,7 @@ from plone.pgcatalog.schema import TEXT_EXTRACTION_QUEUE
 from psycopg.types.json import Json
 from zodb_pgjsonb import ExtraColumn
 
+import json
 import logging
 import os
 
@@ -62,12 +63,21 @@ def _should_extract(content_type):
 
 
 def _collect_ref_oids(state):
-    """Extract integer zoids from all ``@ref`` markers in a JSON state dict.
+    """Extract integer zoids from all ``@ref`` markers in a JSON state.
+
+    *state* may be a dict (already parsed) or a JSON string (from the
+    ``decode_zodb_record_for_pg_json`` fast path).
 
     Returns a list of int zoids found in the state.  Handles both
     compact forms: ``{"@ref": "hex_oid"}`` and
     ``{"@ref": ["hex_oid", "mod.Cls"]}``.
     """
+    if isinstance(state, str):
+        try:
+            state = json.loads(state)
+        except (json.JSONDecodeError, TypeError):
+            return []
+
     refs = []
 
     def _walk(obj):
@@ -148,9 +158,17 @@ class CatalogStateProcessor:
         # catalog_object / uncatalog_object via set_pending).
         pending = pop_pending(zoid)
         if pending is _MISSING:
-            # Also check state dict for backward compat / direct use
-            if isinstance(state, dict) and ANNOTATION_KEY in state:
-                pending = state.pop(ANNOTATION_KEY)
+            # Also check state dict for backward compat / direct use.
+            # state may be a JSON string (from decode_zodb_record_for_pg_json)
+            # or a dict (from decode_zodb_record_for_pg).
+            state_dict = state
+            if isinstance(state, str):
+                try:
+                    state_dict = json.loads(state)
+                except (json.JSONDecodeError, TypeError):
+                    return None
+            if isinstance(state_dict, dict) and ANNOTATION_KEY in state_dict:
+                pending = state_dict.pop(ANNOTATION_KEY)
             else:
                 return None
 
