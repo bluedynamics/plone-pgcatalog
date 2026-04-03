@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.0.0b42
+
+### Fixed
+
+- Handle Unix epoch floats/ints in `ensure_date_param()`. Callers
+  like `plone.app.textfield` pass `time.time()` values as date query
+  params. Now converts to `datetime.fromtimestamp(value, tz=UTC)`.
+  Fixes #82.
+
+- Skip missing attributes instead of storing null in idx JSONB.
+  Matches ZCatalog semantics: missing attribute = not indexed (key
+  omitted), not "indexed as null". Fixes #81.
+
+- Use `@>` containment for single-value KeywordIndex queries instead
+  of `?|` overlap. The GIN index handles `@>` much better.
+  `object_provides` queries: 2.4s to 650ms. Fixes #80.
+
 ## 1.0.0b41
 
 ### Fixed
