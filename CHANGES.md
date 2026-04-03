@@ -11,6 +11,12 @@
   `idx["mime_type"]` (the standard Plone catalog index), which is
   reliably extracted by the IndexRegistry.
 
+- Fix suggestion index existence check + dedicated KEYWORD fields (#92).
+  `_check_covered()` now compares by index name (reliable) with
+  normalized expression fallback.  `object_provides` and `Subject`
+  added to `_DEDICATED_FIELDS` — their existing GIN indexes make new
+  suggestions useless.
+
 ## 1.0.0b44
 
 ### Added
