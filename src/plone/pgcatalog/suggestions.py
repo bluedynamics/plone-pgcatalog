@@ -38,10 +38,12 @@ _NON_IDX_FIELDS = frozenset(
     }
 )
 
-# Fields with dedicated PG columns — always "already_covered"
-_DEDICATED_COLUMNS = {
+# Fields with dedicated PG columns or indexes — always "already_covered"
+_DEDICATED_FIELDS = {
     "allowedRolesAndUsers": "allowed_roles (dedicated TEXT[] column + GIN)",
     "SearchableText": "searchable_text (dedicated tsvector column + GIN)",
+    "object_provides": "idx_os_cat_provides_gin (dedicated GIN index)",
+    "Subject": "idx_os_cat_subject_gin (dedicated GIN index)",
 }
 
 # IndexTypes that cannot participate in btree composites
@@ -116,7 +118,7 @@ def suggest_indexes(query_keys, registry, existing_indexes):
             continue
 
         # Dedicated column check
-        if key in _DEDICATED_COLUMNS:
+        if key in _DEDICATED_FIELDS:
             suggestions.append(
                 {
                     "fields": [key],
@@ -125,7 +127,7 @@ def suggest_indexes(query_keys, registry, existing_indexes):
                     ],
                     "ddl": "",
                     "status": "already_covered",
-                    "reason": f"Dedicated column: {_DEDICATED_COLUMNS[key]}",
+                    "reason": f"Dedicated column: {_DEDICATED_FIELDS[key]}",
                 }
             )
             continue
@@ -225,17 +227,42 @@ def _add_btree_suggestions(btree_fields, existing_indexes, suggestions):
 
 
 def _check_covered(ddl, existing_indexes):
-    """Check if the DDL expression is already covered by an existing index."""
-    # Extract the part between ON object_state (...) to compare
-    m = re.search(r"ON object_state\b.*?\((.+?)\)\s*(?:WHERE|USING|$)", ddl)
-    if not m:
-        return "new"
-    new_expr = m.group(1).strip()
+    """Check if the suggested index already exists.
 
-    for _idx_name, idx_def in existing_indexes.items():
-        if new_expr in idx_def:
-            return "already_covered"
+    Two checks:
+    1. Exact name match (catches re-apply of same suggestion)
+    2. Normalized expression match (catches existing idx_os_cat_* indexes
+       that cover the same columns with different naming)
+    """
+    # Check 1: exact index name match
+    m = re.search(r"(?:CREATE INDEX\s+(?:CONCURRENTLY\s+)?)(\S+)", ddl, re.I)
+    if m and m.group(1) in existing_indexes:
+        return "already_covered"
+
+    # Check 2: normalize and compare column expressions
+    norm = _normalize_idx_expr(ddl)
+    if norm:
+        for _name, idx_def in existing_indexes.items():
+            if norm in _normalize_idx_expr(idx_def):
+                return "already_covered"
     return "new"
+
+
+def _normalize_idx_expr(ddl):
+    """Extract and normalize the column expression from a CREATE INDEX DDL.
+
+    Strips whitespace, double parens, and ``::text`` casts that PG adds
+    during normalization so generated and stored expressions can be compared.
+    """
+    m = re.search(r"\((.+)\)\s*(?:WHERE|$)", ddl)
+    if not m:
+        return ""
+    expr = m.group(1)
+    # Remove ::text casts, collapse whitespace, strip extra parens
+    expr = re.sub(r"::text", "", expr)
+    expr = re.sub(r"\s+", " ", expr).strip()
+    expr = re.sub(r"\(\((.+?)\)\)", r"(\1)", expr)
+    return expr
 
 
 # ── DB helpers ───────────────────────────────────────────────────────────

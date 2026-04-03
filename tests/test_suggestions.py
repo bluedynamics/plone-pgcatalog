@@ -105,8 +105,9 @@ class TestSuggestIndexes:
         assert any("text_pattern_ops" in s["ddl"] for s in new)
 
     def test_keyword_gets_own_gin(self):
-        registry = _reg(Subject=IndexType.KEYWORD)
-        result = suggest_indexes(["Subject"], registry, {})
+        """Unknown KEYWORD fields (not in _DEDICATED_FIELDS) get a GIN suggestion."""
+        registry = _reg(custom_tags=IndexType.KEYWORD)
+        result = suggest_indexes(["custom_tags"], registry, {})
         new = [s for s in result if s["status"] == "new"]
         assert any("GIN" in s["ddl"].upper() or "gin" in s["ddl"] for s in new)
 
@@ -134,14 +135,41 @@ class TestSuggestIndexes:
         result = suggest_indexes(["portal_type"], registry, existing)
         assert all(s["status"] == "already_covered" for s in result)
 
-    def test_dedicated_column_already_covered(self):
+    def test_already_covered_by_sug_name(self):
+        """Re-applying the same suggestion detects by idx_os_sug_ name."""
+        registry = _reg(portal_type=IndexType.FIELD)
+        existing = {
+            "idx_os_sug_portal_type": (
+                "CREATE INDEX idx_os_sug_portal_type ON public.object_state "
+                "USING btree (((idx ->> 'portal_type'::text))) "
+                "WHERE (idx IS NOT NULL)"
+            )
+        }
+        result = suggest_indexes(["portal_type"], registry, existing)
+        assert all(s["status"] == "already_covered" for s in result)
+
+    def test_dedicated_field_already_covered(self):
         registry = _reg(
             allowedRolesAndUsers=IndexType.KEYWORD,
         )
         result = suggest_indexes(["allowedRolesAndUsers"], registry, {})
         covered = [s for s in result if s["status"] == "already_covered"]
         assert len(covered) == 1
-        assert "dedicated column" in covered[0]["reason"].lower()
+        assert "dedicated" in covered[0]["reason"].lower()
+
+    def test_object_provides_already_covered(self):
+        """object_provides has a dedicated GIN index — always covered."""
+        registry = _reg(object_provides=IndexType.KEYWORD)
+        result = suggest_indexes(["object_provides"], registry, {})
+        covered = [s for s in result if s["status"] == "already_covered"]
+        assert len(covered) == 1
+
+    def test_subject_already_covered(self):
+        """Subject has a dedicated GIN index — always covered."""
+        registry = _reg(Subject=IndexType.KEYWORD)
+        result = suggest_indexes(["Subject"], registry, {})
+        covered = [s for s in result if s["status"] == "already_covered"]
+        assert len(covered) == 1
 
     def test_empty_keys_returns_empty(self):
         registry = _reg()
