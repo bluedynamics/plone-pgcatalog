@@ -103,16 +103,14 @@ sequenceDiagram
 
 ### Step-by-Step
 
-1. **catalog_object()** extracts the object's MIME content type via
-   `extract_content_type()` (tries `IPrimaryFieldInfo` first, then
-   `content_type` attribute).
-   The content type is included in the
-   pending annotation.
+1. **catalog_object()** extracts index data including the `mime_type`
+   catalog index (from the Plone `mime_type` FieldIndex).  The MIME
+   type is stored in the `idx` JSONB as part of the pending annotation.
 
-2. **CatalogStateProcessor.process()** checks if `PGCATALOG_TIKA_URL`
-   is set and the content type is in the extractable set.
-   If so, the
-   zoid is added to `self._tika_candidates`.
+2. **CatalogStateProcessor.process()** reads `idx["mime_type"]` from
+   the pending data and checks if `PGCATALOG_TIKA_URL` is set and the
+   MIME type is in the extractable set. If so, the zoid is added to
+   `self._tika_candidates`.
 
 3. **CatalogStateProcessor.finalize()** runs in the same PostgreSQL
    transaction as the ZODB commit.

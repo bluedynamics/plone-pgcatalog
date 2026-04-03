@@ -279,12 +279,14 @@ times from 261ms to 20ms (13x). Similarly, a partial index for event queries
 (`portal_type=Event` + `show_in_sidecalendar=true`) reduces calendar queries
 from 728ms to 33ms (22x).
 
-### Cache invalidation via MAX(tid)
+### Cache invalidation via catalog change counter
 
-`getCounter()` returns `MAX(tid)` from `object_state` instead of a
-persistent ZODB counter. This enables `plone.memoize` to cache
-catalog-dependent results (like navigation trees) and invalidate them only
-when content actually changes. The query costs ~0.2ms via Index Only Scan.
+`getCounter()` reads `pgcatalog_change_seq`, a PostgreSQL sequence that
+only increments on actual catalog writes (catalog_object, uncatalog,
+reindex, move). Non-catalog ZODB writes (ScalesDict, sessions,
+annotations) do not invalidate the cache. This enables `plone.memoize`
+to cache catalog-dependent results (like navigation trees) with high
+hit rates even on active sites.
 
 ### Query expression optimization
 
