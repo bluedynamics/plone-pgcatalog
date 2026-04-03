@@ -66,8 +66,8 @@ class TestFieldIndex:
 class TestKeywordIndex:
     def test_single_value(self):
         qr = build_query({"Subject": "Python"})
-        # Single value gets wrapped in list → overlap
-        assert "?|" in qr["where"]
+        # Single value uses @> containment (GIN-friendly, #80)
+        assert "idx @>" in qr["where"]
 
     def test_or_operator(self):
         qr = build_query({"Subject": {"query": ["Python", "Zope"], "operator": "or"}})
