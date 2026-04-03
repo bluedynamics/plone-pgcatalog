@@ -192,9 +192,12 @@ class CatalogStateProcessor:
             result.update(get_backend().uncatalog_extra())
             return result
 
-        # Accumulate Tika extraction candidates
+        # Accumulate Tika extraction candidates.
+        # MIME type comes from the idx JSONB (mime_type catalog index),
+        # which is reliably extracted by the IndexRegistry (#90).
         if TIKA_URL:
-            content_type = pending.get("content_type")
+            idx_data = pending.get("idx")
+            content_type = idx_data.get("mime_type") if idx_data else None
             if _should_extract(content_type):
                 blob_refs = _collect_ref_oids(state)
                 if blob_refs:

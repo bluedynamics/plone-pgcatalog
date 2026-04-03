@@ -15,3 +15,5 @@ docs/.mxmake/
 docs/.venv/
 docs/.vale/styles/Microsoft/
 docs/.vale/styles/write-good/
+uv.lock
+development/

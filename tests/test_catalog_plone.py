@@ -245,9 +245,6 @@ class TestCatalogObjectWritePath:
             mock.patch.object(
                 PlonePGCatalogTool, "_extract_searchable_text", return_value=None
             ),
-            mock.patch(
-                "plone.pgcatalog.catalog.extract_content_type", return_value=None
-            ),
             mock.patch("plone.pgcatalog.catalog.set_pending") as pending_mock,
         ):
             tool.catalog_object(obj)

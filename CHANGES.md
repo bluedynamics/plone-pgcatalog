@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.0.0b45
+
+### Fixed
+
+- Fix Tika queue never populated: `content_type` always None (#90).
+  Removed broken `extract_content_type()` — `IPrimaryFieldInfo` can't
+  adapt the indexer wrapper and Dexterity items have no top-level
+  `content_type` attribute.  MIME type is now read directly from
+  `idx["mime_type"]` (the standard Plone catalog index), which is
+  reliably extracted by the IndexRegistry.
+
 ## 1.0.0b44
 
 ### Added
