@@ -339,8 +339,14 @@ class _QueryBuilder:
             p = self._pname(name)
             self.clauses.append(f"idx @> %({p})s::jsonb")
             self.params[p] = Json({idx_key: query_val})
+        elif len(query_val) == 1:
+            # Single value "or" — use @> containment (GIN-friendly)
+            # instead of ?| which the planner often ignores (#80).
+            p = self._pname(name)
+            self.clauses.append(f"idx @> %({p})s::jsonb")
+            self.params[p] = Json({idx_key: query_val})
         else:
-            # Any value present → ?| overlap
+            # Multiple values "or" — use ?| overlap
             p = self._pname(name)
             self.clauses.append(f"idx->'{idx_key}' ?| %({p})s")
             self.params[p] = query_val
