@@ -83,34 +83,6 @@ _EXCLUDE_CLASS_MODS = (
 )
 
 
-# Fields that use dedicated columns or GIN — not useful in btree composites
-_NON_IDX_FIELDS = frozenset(
-    {
-        "SearchableText",
-        "path",
-        "effectiveRange",
-        "sort_on",
-        "sort_order",
-        "b_size",
-        "b_start",
-    }
-)
-
-
-def _suggest_index(keys):
-    """Suggest a composite index for a set of query field keys."""
-    idx_keys = [k for k in keys if k not in _NON_IDX_FIELDS]
-    if len(idx_keys) < 2:
-        return None
-    # Take the first 3 most selective fields for the composite
-    cols = ", ".join(f"(idx->>'{k}')" for k in idx_keys[:3])
-    name = "_".join(idx_keys[:3])
-    return (
-        f"CREATE INDEX IF NOT EXISTS idx_os_cat_{name} "
-        f"ON object_state ({cols}) WHERE idx IS NOT NULL;"
-    )
-
-
 def _commit_and_minimize(jar):
     """Commit the current transaction and minimize the ZODB cache.
 
@@ -198,6 +170,10 @@ class PlonePGCatalogTool(UniqueObject, Folder):
         manage_zcatalog_entries, "manage_get_slow_query_threshold"
     )
     security.declareProtected(manage_zcatalog_entries, "manage_clear_slow_queries")
+    security.declareProtected(manage_zcatalog_entries, "manage_get_managed_indexes")
+    security.declareProtected(manage_zcatalog_entries, "manage_explain_slow_query")
+    security.declareProtected(manage_zcatalog_entries, "manage_apply_index")
+    security.declareProtected(manage_zcatalog_entries, "manage_drop_index")
     security.declareProtected(manage_zcatalog_entries, "manage_get_cache_stats")
     security.declareProtected(manage_zcatalog_entries, "manage_clear_cache")
     security.declareProtected(manage_zcatalog_entries, "manage_get_catalog_summary")
@@ -1110,10 +1086,16 @@ class PlonePGCatalogTool(UniqueObject, Folder):
 
     def manage_get_slow_query_stats(self):
         """Return aggregated slow query stats for the Slow Queries tab."""
+        from plone.pgcatalog.suggestions import get_existing_indexes
+        from plone.pgcatalog.suggestions import suggest_indexes
+
         try:
             pool = get_pool(self)
             pg_conn = pool.getconn()
             try:
+                registry = get_registry()
+                existing = get_existing_indexes(pg_conn)
+
                 with pg_conn.cursor() as cur:
                     cur.execute(
                         "SELECT query_keys, "
@@ -1142,10 +1124,101 @@ class PlonePGCatalogTool(UniqueObject, Folder):
                     "avg_ms": float(row["avg_ms"]),
                     "max_ms": float(row["max_ms"]),
                     "last_seen": str(row["last_seen"])[:19],
-                    "suggested_index": _suggest_index(keys),
+                    "suggestions": suggest_indexes(keys, registry, existing),
                 }
             )
         return result
+
+    def manage_get_managed_indexes(self):  # pragma: no cover
+        """Return list of idx_os_sug_* indexes for ZMI display."""
+        from plone.pgcatalog.suggestions import get_existing_indexes
+
+        try:
+            pool = get_pool(self)
+            pg_conn = pool.getconn()
+            try:
+                existing = get_existing_indexes(pg_conn)
+            finally:
+                pool.putconn(pg_conn)
+        except Exception:
+            return []
+
+        return [
+            {"name": name, "definition": defn}
+            for name, defn in sorted(existing.items())
+            if name.startswith("idx_os_sug_")
+        ]
+
+    def manage_explain_slow_query(self, query_id, REQUEST=None):  # pragma: no cover
+        """ZMI action: run EXPLAIN on a slow query and return the plan."""
+        from plone.pgcatalog.suggestions import explain_query
+
+        try:
+            pool = get_pool(self)
+            pg_conn = pool.getconn()
+            try:
+                with pg_conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT query_text, params FROM pgcatalog_slow_queries "
+                        "WHERE id = %(id)s",
+                        {"id": int(query_id)},
+                    )
+                    row = cur.fetchone()
+                if row and row["query_text"]:
+                    return explain_query(pg_conn, row["query_text"], row["params"])
+            finally:
+                pool.putconn(pg_conn)
+        except Exception as exc:
+            return {"error": str(exc)}
+        return {"error": "Query not found"}
+
+    def manage_apply_index(self, ddl, REQUEST=None):  # pragma: no cover
+        """ZMI action: create a suggested index."""
+        from plone.pgcatalog.suggestions import apply_index
+
+        msg = "No action taken"
+        try:
+            pool = get_pool(self)
+            pg_conn = pool.getconn()
+            try:
+                _success, msg, _duration = apply_index(pg_conn, ddl)
+            finally:
+                pool.putconn(pg_conn)
+        except Exception as exc:
+            msg = f"Error: {exc}"
+
+        if REQUEST is not None:
+            from urllib.parse import quote
+
+            REQUEST.RESPONSE.redirect(
+                f"{self.absolute_url()}/manage_slowQueries"
+                f"?manage_tabs_message={quote(msg)}"
+            )
+        return msg
+
+    def manage_drop_index(self, index_name, REQUEST=None):  # pragma: no cover
+        """ZMI action: drop a suggestion-system index."""
+        from plone.pgcatalog.suggestions import drop_index
+
+        msg = "No action taken"
+        try:
+            pool = get_pool(self)
+            pg_conn = pool.getconn()
+            try:
+                _success, msg, _duration = drop_index(pg_conn, index_name)
+            finally:
+                pool.putconn(pg_conn)
+        except Exception as exc:
+            msg = f"Error: {exc}"
+
+        if REQUEST is not None:
+            from urllib.parse import quote
+
+            REQUEST.RESPONSE.redirect(
+                f"{self.absolute_url()}/manage_slowQueries"
+                f"?manage_tabs_message={quote(msg)}"
+            )
+        return msg
 
     def manage_clear_slow_queries(self, REQUEST=None):
         """ZMI action: clear all slow query records."""

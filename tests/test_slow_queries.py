@@ -1,49 +1,10 @@
-"""Tests for slow query logging and suggestion."""
+"""Tests for slow query logging."""
 
-from plone.pgcatalog.catalog import _suggest_index
 from plone.pgcatalog.search import _record_slow_query
 from plone.pgcatalog.search import _SLOW_QUERY_MS
 from unittest import mock
 
 import os
-
-
-class TestSuggestIndex:
-    """Test composite index suggestion from query keys."""
-
-    def test_two_keys(self):
-        result = _suggest_index(["path_parent", "portal_type"])
-        assert "idx_os_cat_path_parent_portal_type" in result
-        assert "(idx->>'path_parent')" in result
-        assert "(idx->>'portal_type')" in result
-
-    def test_three_keys(self):
-        result = _suggest_index(["path_parent", "portal_type", "review_state"])
-        assert "path_parent" in result
-        assert "portal_type" in result
-        assert "review_state" in result
-
-    def test_single_key_returns_none(self):
-        assert _suggest_index(["portal_type"]) is None
-
-    def test_filters_non_idx_fields(self):
-        result = _suggest_index(
-            ["portal_type", "sort_on", "SearchableText", "review_state"]
-        )
-        assert result is not None
-        assert "sort_on" not in result
-        assert "SearchableText" not in result
-        assert "portal_type" in result
-        assert "review_state" in result
-
-    def test_all_non_idx_returns_none(self):
-        assert _suggest_index(["sort_on", "b_size", "b_start"]) is None
-
-    def test_caps_at_three_fields(self):
-        result = _suggest_index(["aaa", "bbb", "ccc", "ddd", "eee"])
-        # Should only include first 3
-        assert "(idx->>'aaa'), (idx->>'bbb'), (idx->>'ccc')" in result
-        assert "ddd" not in result
 
 
 class TestSlowQueryThreshold:
