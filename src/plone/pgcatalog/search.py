@@ -108,19 +108,18 @@ def _run_search(conn, query, catalog=None, lazy_conn=None):
 
     cache = get_query_cache()
 
-    # Get current TID for cache validation.
-    # Only cache when called via the catalog tool (catalog is not None).
-    # Direct _run_search() calls (tests, scripts) skip caching to avoid
-    # stale results within a single PG transaction.
+    # Get catalog change counter for cache validation.
+    # Uses pgcatalog_change_seq (incremented only on catalog writes) instead
+    # of MAX(tid) which changes on every ZODB write (#94).
     current_tid = None
     if cache.max_entries > 0 and catalog is not None:
         try:
             with conn.cursor() as cur:
-                cur.execute("SELECT MAX(tid) AS tid FROM object_state")
+                cur.execute("SELECT last_value FROM pgcatalog_change_seq")
                 row = cur.fetchone()
-            current_tid = row["tid"] if row and row["tid"] else None
+            current_tid = row["last_value"] if row else None
         except Exception:
-            log.warning("Query cache: TID lookup failed", exc_info=True)
+            log.warning("Query cache: change counter lookup failed", exc_info=True)
 
     # Cache lookup
     cache_key = normalize_query(query)

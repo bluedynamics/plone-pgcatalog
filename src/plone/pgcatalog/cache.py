@@ -1,8 +1,9 @@
-"""Process-wide query result cache with TID-based invalidation.
+"""Process-wide query result cache with catalog change counter invalidation.
 
-Caches catalog query results in memory. Invalidated when MAX(tid)
-changes (any ZODB commit). Cost-based eviction keeps expensive
-queries in cache while cheap ones are evicted first.
+Caches catalog query results in memory. Invalidated when the
+``pgcatalog_change_seq`` counter changes (only on actual catalog
+writes, not on unrelated ZODB commits). Cost-based eviction keeps
+expensive queries in cache while cheap ones are evicted first.
 
 Configured via environment variables:
 - PGCATALOG_QUERY_CACHE_SIZE: max entries (default 200, 0 = disabled)

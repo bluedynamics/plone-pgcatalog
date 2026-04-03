@@ -10,6 +10,7 @@ from plone.pgcatalog.pending import _MISSING
 from plone.pgcatalog.pending import pop_all_partial_pending
 from plone.pgcatalog.pending import pop_all_pending_moves
 from plone.pgcatalog.pending import pop_pending
+from plone.pgcatalog.schema import CATALOG_CHANGE_SEQ
 from plone.pgcatalog.schema import CATALOG_COLUMNS
 from plone.pgcatalog.schema import CATALOG_FUNCTIONS
 from plone.pgcatalog.schema import CATALOG_INDEXES
@@ -142,6 +143,7 @@ class CatalogStateProcessor:
             + RRULE_FUNCTIONS
             + backend.get_schema_sql()
         )
+        base += CATALOG_CHANGE_SEQ
         base += SLOW_QUERY_TABLE
         if TIKA_URL:
             base += TEXT_EXTRACTION_QUEUE
@@ -152,6 +154,10 @@ class CatalogStateProcessor:
         # Accumulated per-transaction Tika extraction candidates.
         # Populated during process(), consumed during finalize().
         self._tika_candidates = []
+        # Flag: did this transaction modify catalog data?
+        # Set by process() when it returns column data.
+        # Consumed by finalize() to increment pgcatalog_change_seq.
+        self._catalog_changed = False
 
     def process(self, zoid, class_mod, class_name, state):
         # Look up pending data from the thread-local store (set by
@@ -178,6 +184,8 @@ class CatalogStateProcessor:
             class_mod,
             class_name,
         )
+
+        self._catalog_changed = True
 
         if pending is None:
             # Uncatalog sentinel: NULL all catalog columns
@@ -286,6 +294,17 @@ class CatalogStateProcessor:
         # Enqueue Tika extraction jobs for blobs in this transaction
         if TIKA_URL and self._tika_candidates:
             self._enqueue_tika_jobs(cursor)
+
+        # Increment catalog change counter if any catalog data was modified.
+        # Used by the query cache instead of MAX(tid) — avoids invalidation
+        # on non-catalog ZODB writes (scales, sessions, etc.) (#94).
+        catalog_changed = self._catalog_changed or partial or moves
+        self._catalog_changed = False
+        if catalog_changed:
+            try:
+                cursor.execute("SELECT nextval('pgcatalog_change_seq')")
+            except Exception:
+                pass  # sequence may not exist yet (first startup)
 
     def _enqueue_tika_jobs(self, cursor):
         """Enqueue text extraction jobs for blobs committed in this txn.
