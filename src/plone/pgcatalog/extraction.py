@@ -17,6 +17,8 @@ import pickle
 
 log = logging.getLogger(__name__)
 
+_MISSING = object()  # sentinel for "attribute not found"
+
 
 def _is_json_native(value):
     """Check if *value* survives a JSON/JSONB round-trip unchanged.
@@ -105,22 +107,28 @@ def extract_idx(wrapper, idxs=None):
     registry = get_registry()
     idx = {}
 
-    # Extract index values
+    # Extract index values.
+    # AttributeError means "not applicable" (ZCatalog convention) — skip
+    # the key entirely instead of storing null (#81).
     for name, (idx_type, idx_key, source_attrs) in registry.items():
         if idx_key is None:
             continue  # composite/special (path, SearchableText, effectiveRange)
         if idxs and name not in idxs:
             continue  # partial reindex — skip unrequested indexes
         try:
-            value = None
+            value = _MISSING
             for attr in source_attrs:
-                value = getattr(wrapper, attr, None)
+                try:
+                    value = getattr(wrapper, attr)
+                except AttributeError:
+                    continue
                 if callable(value):
                     value = value()
                 if value is not None:
                     break
+            if value is _MISSING:
+                continue  # attribute not found — don't store in idx
             if idx_type == IndexType.PATH:
-                # Additional path index — store path + parent + depth
                 path_str = _path_value_to_string(value)
                 if path_str:
                     parent, depth = compute_path_info(path_str)
@@ -143,7 +151,10 @@ def extract_idx(wrapper, idxs=None):
         if idxs and meta_name not in idxs:
             continue
         try:
-            value = getattr(wrapper, meta_name, None)
+            try:
+                value = getattr(wrapper, meta_name)
+            except AttributeError:
+                continue  # attribute not found — skip (#81)
             if callable(value):
                 value = value()
             if value is None:
