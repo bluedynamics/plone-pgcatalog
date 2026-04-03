@@ -160,3 +160,48 @@ class TestLanguageToRegconfig:
     def test_case_insensitive(self):
         assert language_to_regconfig("DE") == "german"
         assert language_to_regconfig("En-US") == "english"
+
+
+class TestEnsureDateParam:
+    """Test ensure_date_param handles various date-like inputs."""
+
+    def test_datetime_passthrough(self):
+        from datetime import datetime
+        from plone.pgcatalog.columns import ensure_date_param
+
+        dt = datetime(2026, 4, 1, 12, 0, tzinfo=UTC)
+        assert ensure_date_param(dt) is dt
+
+    def test_date_to_datetime(self):
+        from datetime import date
+        from datetime import datetime
+        from plone.pgcatalog.columns import ensure_date_param
+
+        d = date(2026, 4, 1)
+        result = ensure_date_param(d)
+        assert isinstance(result, datetime)
+        assert result.year == 2026
+
+    def test_epoch_float(self):
+        from datetime import datetime
+        from plone.pgcatalog.columns import ensure_date_param
+
+        epoch = 1775181821.433933  # a time.time() value
+        result = ensure_date_param(epoch)
+        assert isinstance(result, datetime)
+        assert result.tzinfo == UTC
+
+    def test_epoch_int(self):
+        from datetime import datetime
+        from plone.pgcatalog.columns import ensure_date_param
+
+        epoch = 1775181821
+        result = ensure_date_param(epoch)
+        assert isinstance(result, datetime)
+        assert result.tzinfo == UTC
+
+    def test_string_passthrough(self):
+        from plone.pgcatalog.columns import ensure_date_param
+
+        result = ensure_date_param("2026-04-01T00:00:00+00:00")
+        assert result == "2026-04-01T00:00:00+00:00"

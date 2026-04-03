@@ -12,6 +12,7 @@ This keeps query mapping trivial and brain attribute access natural.
 
 from datetime import date
 from datetime import datetime
+from datetime import UTC
 from enum import Enum
 
 import logging
@@ -286,7 +287,8 @@ def ensure_date_param(value):
     """Convert a date-like value to something psycopg can bind as timestamptz.
 
     Handles Python datetime, date, Zope DateTime (duck-typed via
-    asdatetime/ISO8601), and falls back to str().
+    asdatetime/ISO8601), Unix epoch floats/ints (from time.time()),
+    and falls back to str().
     """
     if isinstance(value, datetime):
         return value
@@ -297,6 +299,9 @@ def ensure_date_param(value):
         return value.asdatetime()
     if hasattr(value, "ISO8601"):
         return value.ISO8601()
+    # Unix epoch timestamp (e.g. from time.time())
+    if isinstance(value, (int, float)):
+        return datetime.fromtimestamp(value, tz=UTC)
     return str(value)
 
 
