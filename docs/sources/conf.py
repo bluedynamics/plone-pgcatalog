@@ -41,6 +41,37 @@ html_theme_options = {
     "dark_code": True,
     "nav_links": [
         {
+            "title": "Ecosystem",
+            "url": "https://bluedynamics.github.io/zodb-pgjsonb/ecosystem.html",
+            "children": [
+                {
+                    "title": "Dashboard",
+                    "url": "https://bluedynamics.github.io/zodb-pgjsonb/ecosystem.html",
+                    "summary": "Overview of all packages",
+                },
+                {
+                    "title": "zodb-pgjsonb",
+                    "url": "https://bluedynamics.github.io/zodb-pgjsonb/",
+                    "summary": "PostgreSQL JSONB storage",
+                },
+                {
+                    "title": "zodb-json-codec",
+                    "url": "https://bluedynamics.github.io/zodb-json-codec/",
+                    "summary": "Rust pickle↔JSON transcoder",
+                },
+                {
+                    "title": "plone-pgcatalog",
+                    "url": "https://bluedynamics.github.io/plone-pgcatalog/",
+                    "summary": "PostgreSQL-backed catalog",
+                },
+                {
+                    "title": "plone-pgthumbor",
+                    "url": "https://bluedynamics.github.io/plone-pgthumbor/",
+                    "summary": "Thumbor image scaling",
+                },
+            ],
+        },
+        {
             "title": "GitHub",
             "url": "https://github.com/bluedynamics/plone-pgcatalog",
         },
