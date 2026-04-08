@@ -73,7 +73,7 @@ def _btree_expr(field, idx_type):
     if idx_type == IndexType.DATE:
         return f"pgcatalog_to_timestamptz(idx->>'{field}')"
     if idx_type == IndexType.BOOLEAN:
-        return f"(idx->>'{field}')::boolean"
+        return f"((idx->>'{field}')::boolean)"
     if idx_type == IndexType.PATH:
         return f"(idx->>'{field}') text_pattern_ops"
     # FIELD, UUID — plain text expression

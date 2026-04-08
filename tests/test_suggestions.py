@@ -90,7 +90,7 @@ class TestSuggestIndexes:
         registry = _reg(is_folderish=IndexType.BOOLEAN)
         result = suggest_indexes(["is_folderish"], registry, {})
         new = [s for s in result if s["status"] == "new"]
-        assert any("::boolean" in s["ddl"] for s in new)
+        assert any("((idx->>'is_folderish')::boolean)" in s["ddl"] for s in new)
 
     def test_uuid_uses_text_expression(self):
         registry = _reg(UID=IndexType.UUID)
