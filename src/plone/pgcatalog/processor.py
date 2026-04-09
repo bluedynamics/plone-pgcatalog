@@ -116,12 +116,18 @@ class CatalogStateProcessor:
     """
 
     def get_extra_columns(self):
+        from plone.pgcatalog.columns import get_extra_idx_columns
+
+        extra = [
+            ExtraColumn(col.column_name, col.value_expr)
+            for col in get_extra_idx_columns()
+        ]
         return [
             ExtraColumn("path", "%(path)s"),
             ExtraColumn("parent_path", "%(parent_path)s"),
             ExtraColumn("path_depth", "%(path_depth)s"),
             ExtraColumn("idx", "%(idx)s"),
-            ExtraColumn("allowed_roles", "%(allowed_roles)s"),
+            *extra,
             *get_backend().get_extra_columns(),
         ]
 
@@ -189,14 +195,17 @@ class CatalogStateProcessor:
 
         if pending is None:
             # Uncatalog sentinel: NULL all catalog columns
+            from plone.pgcatalog.columns import get_extra_idx_columns
+
             result = {
                 "path": None,
                 "parent_path": None,
                 "path_depth": None,
                 "idx": None,
                 "searchable_text": None,
-                "allowed_roles": None,
             }
+            for col in get_extra_idx_columns():
+                result[col.column_name] = None
             result.update(get_backend().uncatalog_extra())
             return result
 
@@ -217,17 +226,29 @@ class CatalogStateProcessor:
                         }
                     )
 
-        # Normal catalog: return column values
+        # Normal catalog: extract registered extra idx columns
+        from plone.pgcatalog.columns import get_extra_idx_columns
+
         idx = pending.get("idx")
-        # Extract allowedRolesAndUsers as a dedicated TEXT[] column
-        allowed = idx.get("allowedRolesAndUsers") if idx else None
+        extra_values = {}
+        if idx:
+            for col in get_extra_idx_columns():
+                value = idx.pop(col.idx_key, None)
+                if value is not None:
+                    if col.column_type == "JSONB":
+                        extra_values[col.column_name] = Json(value)
+                    else:
+                        extra_values[col.column_name] = value
+                else:
+                    extra_values[col.column_name] = None
+
         result = {
             "path": pending.get("path"),
             "parent_path": idx.get("path_parent") if idx else None,
             "path_depth": idx.get("path_depth") if idx else None,
             "idx": Json(idx) if idx else None,
             "searchable_text": pending.get("searchable_text"),
-            "allowed_roles": allowed if isinstance(allowed, list) else None,
+            **extra_values,
         }
         result.update(get_backend().process_search_data(pending))
         return result

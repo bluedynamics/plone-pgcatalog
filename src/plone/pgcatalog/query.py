@@ -322,15 +322,16 @@ class _QueryBuilder:
 
         query_val = [query_val] if isinstance(query_val, str) else list(query_val)
 
-        # allowedRolesAndUsers uses a dedicated TEXT[] column for
-        # direct GIN queries without JSONB decompression.
-        # Uses array operators: && (overlap/or), @> (contains/and).
-        if idx_key == "allowedRolesAndUsers":
+        # Check for dedicated TEXT[] column (generic ExtraIdxColumn mechanism)
+        from plone.pgcatalog.columns import get_extra_idx_column_for_key
+
+        extra_col = get_extra_idx_column_for_key(idx_key)
+        if extra_col is not None and extra_col.column_type == "TEXT[]":
             p = self._pname(name)
             if operator == "and":
-                self.clauses.append(f"allowed_roles @> %({p})s::text[]")
+                self.clauses.append(f"{extra_col.column_name} @> %({p})s::text[]")
             else:
-                self.clauses.append(f"allowed_roles && %({p})s::text[]")
+                self.clauses.append(f"{extra_col.column_name} && %({p})s::text[]")
             self.params[p] = query_val
             return
 

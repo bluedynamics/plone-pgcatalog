@@ -15,18 +15,23 @@ from datetime import datetime
 from datetime import UTC
 from enum import Enum
 
+import dataclasses
 import logging
 import re
 
 
 __all__ = [
+    "ExtraIdxColumn",
     "IndexRegistry",
     "IndexType",
     "compute_path_info",
     "convert_value",
     "ensure_date_param",
+    "get_extra_idx_column_for_key",
+    "get_extra_idx_columns",
     "get_registry",
     "language_to_regconfig",
+    "register_extra_idx_column",
     "validate_identifier",
 ]
 
@@ -383,3 +388,76 @@ def compute_path_info(path):
     parent = "/" if depth <= 1 else "/" + "/".join(parts[:-1])
 
     return parent, depth
+
+
+# --------------------------------------------------------------------------
+# Extra idx column extraction
+# --------------------------------------------------------------------------
+
+
+@dataclasses.dataclass(frozen=True)
+class ExtraIdxColumn:
+    """Declare an idx key to be extracted into a dedicated PG column.
+
+    When registered, the key is popped from the idx dict at write time
+    and stored in its own column.  Queries and brain attribute access
+    are redirected transparently.
+    """
+
+    idx_key: str  # key in the idx dict (e.g. "object_provides", "@meta")
+    column_name: str  # PG column name (e.g. "object_provides", "meta")
+    column_type: str  # PG type (e.g. "TEXT[]", "JSONB")
+    value_expr: str  # SQL value expression for psycopg (e.g. "%(meta)s")
+    gin_index: bool = False
+
+
+# Module-level registry
+_extra_idx_columns: list[ExtraIdxColumn] = []
+
+
+def register_extra_idx_column(col):
+    """Register an ExtraIdxColumn for extraction."""
+    _extra_idx_columns.append(col)
+
+
+def get_extra_idx_columns():
+    """Return all registered ExtraIdxColumn declarations."""
+    return list(_extra_idx_columns)
+
+
+def get_extra_idx_column_for_key(idx_key):
+    """Look up an ExtraIdxColumn by its idx_key.  Returns None if not found."""
+    for col in _extra_idx_columns:
+        if col.idx_key == idx_key:
+            return col
+    return None
+
+
+# -- Default extra idx columns ------------------------------------------------
+
+_DEFAULT_EXTRA_IDX_COLUMNS = [
+    ExtraIdxColumn(
+        idx_key="@meta",
+        column_name="meta",
+        column_type="JSONB",
+        value_expr="%(meta)s",
+        gin_index=False,
+    ),
+    ExtraIdxColumn(
+        idx_key="object_provides",
+        column_name="object_provides",
+        column_type="TEXT[]",
+        value_expr="%(object_provides)s",
+        gin_index=True,
+    ),
+    ExtraIdxColumn(
+        idx_key="allowedRolesAndUsers",
+        column_name="allowed_roles",
+        column_type="TEXT[]",
+        value_expr="%(allowed_roles)s",
+        gin_index=True,
+    ),
+]
+
+for _col in _DEFAULT_EXTRA_IDX_COLUMNS:
+    register_extra_idx_column(_col)

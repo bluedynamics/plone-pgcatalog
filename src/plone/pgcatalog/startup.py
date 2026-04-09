@@ -128,7 +128,6 @@ def register_catalog_processor(event):
         _sync_registry_from_db(db)
         _ensure_text_indexes(storage)
         _ensure_field_indexes(storage)
-        _backfill_allowed_roles(storage)
 
         # Enable refs prefetch for cataloged content objects only.
         # Non-content objects (BTrees, PersistentMappings, etc.) have
@@ -288,78 +287,6 @@ def _ensure_field_indexes(storage):  # pragma: no cover
             "(lock timeout or other error) --- "
             "custom field queries may be slow until indexes are created. "
             "Indexes will be retried on next startup.",
-            exc_info=True,
-        )
-
-
-_BACKFILL_BATCH = 5000
-
-
-def _backfill_allowed_roles(storage):  # pragma: no cover
-    """Backfill the allowed_roles TEXT[] column from idx JSONB in batches.
-
-    Runs at startup after schema DDL.  Processes rows where
-    ``allowed_roles IS NULL`` but ``idx->'allowedRolesAndUsers'`` exists.
-    Each batch is a small UPDATE with autocommit (short lock, no long
-    transactions).  Safe to re-run (idempotent via IS NULL check).
-    """
-    dsn = getattr(storage, "_dsn", None)
-    if not dsn:
-        return
-
-    try:
-        with psycopg.connect(dsn, autocommit=True) as conn:
-            conn.execute("SET lock_timeout = '5s'")
-
-            # Check if there's anything to backfill
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT COUNT(*) AS cnt FROM object_state "
-                    "WHERE idx IS NOT NULL "
-                    "AND idx ? 'allowedRolesAndUsers' "
-                    "AND allowed_roles IS NULL"
-                )
-                total = cur.fetchone()[0]
-
-            if total == 0:
-                return
-
-            log.info(
-                "Backfilling allowed_roles for %d rows (batch size %d)",
-                total,
-                _BACKFILL_BATCH,
-            )
-
-            done = 0
-            while True:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        "UPDATE object_state SET allowed_roles = ("
-                        "  SELECT array_agg(value::text)"
-                        "  FROM jsonb_array_elements_text("
-                        "    idx->'allowedRolesAndUsers')"
-                        ") WHERE zoid IN ("
-                        "  SELECT zoid FROM object_state"
-                        "  WHERE idx IS NOT NULL"
-                        "  AND idx ? 'allowedRolesAndUsers'"
-                        "  AND allowed_roles IS NULL"
-                        "  LIMIT %s"
-                        ")",
-                        (_BACKFILL_BATCH,),
-                    )
-                    updated = cur.rowcount
-
-                if updated == 0:
-                    break
-                done += updated
-                log.info("Backfill allowed_roles: %d / %d rows", done, total)
-
-            log.info("Backfill allowed_roles complete: %d rows", done)
-    except Exception:
-        log.warning(
-            "Failed to backfill allowed_roles "
-            "(lock timeout or other error). "
-            "Will retry on next startup.",
             exc_info=True,
         )
 

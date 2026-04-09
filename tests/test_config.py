@@ -441,12 +441,13 @@ class TestCatalogStateProcessor:
 
         processor = CatalogStateProcessor()
         columns = processor.get_extra_columns()
-        assert len(columns) == 6
         names = [c.name for c in columns]
         assert "path" in names
         assert "parent_path" in names
         assert "path_depth" in names
         assert "idx" in names
+        assert "meta" in names
+        assert "object_provides" in names
         assert "allowed_roles" in names
         assert "searchable_text" in names
 
@@ -496,6 +497,8 @@ class TestCatalogStateProcessor:
             "path_depth": None,
             "idx": None,
             "searchable_text": None,
+            "meta": None,
+            "object_provides": None,
             "allowed_roles": None,
         }
 
