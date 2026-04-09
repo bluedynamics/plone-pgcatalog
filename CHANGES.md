@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.0.0b49
+## 1.0.0b48
 
 ### Fixed
 
@@ -9,8 +9,6 @@
   `ObjectManager.__class_init__` calls `InitializeClass` at class creation
   time, so stub methods must be defined in the class body, not via post-hoc
   `setattr`.
-
-## 1.0.0b48
 
 ### Changed
 

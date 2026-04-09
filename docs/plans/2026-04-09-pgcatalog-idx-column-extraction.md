@@ -56,9 +56,9 @@ Top offenders inside `@meta`:
 
 `ExtraColumn(name, value_expr, update_expr=None)` — declares a PG column written alongside object state. The `CatalogStateProcessor` already uses this for `path`, `idx`, and `searchable_text`. DDL is applied via `get_schema_sql()`.
 
-### Note on existing `allowed_roles` column
+### Existing `allowed_roles` column
 
-The DB has a `allowed_roles text[]` column with GIN index, but it is **not declared or used by pgcatalog**. It appears to be from a previous experiment. The `allowedRolesAndUsers` index currently lives in `idx` JSONB and is queried via `_handle_keyword()`. This plan does NOT touch `allowed_roles` — it can be addressed in a follow-up.
+The DB already has a `allowed_roles text[]` column with GIN index, and pgcatalog already uses it for queries (`_handle_keyword` redirects to it) and writes (processor + indexing extract it). However, `allowedRolesAndUsers` is **copied** to `allowed_roles` but **not removed from idx** — it's stored twice. This plan subsumes the existing hardcoded handling into the generic `ExtraIdxColumn` mechanism and pops the key from idx to eliminate the redundancy. The existing column name (`allowed_roles`) is kept; the startup backfill (`_backfill_allowed_roles`) is removed as it becomes unnecessary after `clear_and_rebuild`.
 
 ---
 
@@ -93,7 +93,15 @@ This allows future extractions (e.g. `allowedRolesAndUsers`) without code change
 - Query rewritten from `idx->'object_provides' ?| ...` to `object_provides ?| ...` (native GIN on `text[]`)
 - Faster than JSONB GIN for array containment/overlap queries
 
-### 4. Migration strategy
+### 4. `allowedRolesAndUsers` → reuse existing `allowed_roles TEXT[]` column
+
+- Column, GIN index, and query handling already exist — but implemented as hardcoded special cases
+- This plan replaces all hardcoded `allowed_roles` handling with the generic `ExtraIdxColumn` mechanism
+- Key change: `allowedRolesAndUsers` is **popped** from idx (currently only copied, leaving redundant data)
+- The startup `_backfill_allowed_roles()` function becomes unnecessary and is removed
+- Uses `idx_key="allowedRolesAndUsers"` → `column_name="allowed_roles"` (name mapping, like `@meta` → `meta`)
+
+### 5. Migration strategy
 
 - DDL via `get_schema_sql()` — columns added with `IF NOT EXISTS`
 - Old data still works (idx still contains the keys until full reindex)
@@ -112,10 +120,11 @@ All changes in the `plone.pgcatalog` package (https://github.com/bluedynamics/pl
 | `schema.py` | DDL for new PG columns + indexes | **Modify**: add DDL strings for `meta` and `object_provides` columns |
 | `processor.py` | `CatalogStateProcessor` | **Modify**: declare new `ExtraColumn`s, extract keys from idx dict in `process()` |
 | `extraction.py` | `extract_idx()` | **Modify**: pop extracted keys from idx dict before returning |
-| `query.py` | `_QueryBuilder` | **Modify**: `_handle_keyword()` checks if idx_key has a dedicated column |
+| `query.py` | `_QueryBuilder` | **Modify**: `_handle_keyword()` uses generic column lookup (replaces hardcoded `allowedRolesAndUsers` check) |
 | `brain.py` | `PGCatalogBrain` | **Modify**: `_resolve_from_idx()` checks `meta` column; `_load_idx_batch()` also fetches `meta` |
 | `search.py` | `_run_search()` | **Modify**: include `meta` in SELECT columns |
-| `indexing.py` | `catalog_object()` / `reindex_object()` | **Modify**: extract keys before writing idx |
+| `indexing.py` | `catalog_object()` / `reindex_object()` | **Modify**: replace hardcoded `allowed_roles` extraction with generic `_extract_extra_columns()` |
+| `startup.py` | `_backfill_allowed_roles()` | **Remove**: no longer needed (generic mechanism + `clear_and_rebuild`) |
 | `tests/test_extra_idx_columns.py` | Tests for the new mechanism | **New file** |
 
 ---
@@ -293,6 +302,14 @@ class TestDefaultRegistrations:
         assert col.column_name == "object_provides"
         assert col.column_type == "TEXT[]"
         assert col.gin_index is True
+
+    def test_allowed_roles_column_registered(self):
+        from plone.pgcatalog.columns import get_extra_idx_column_for_key
+        col = get_extra_idx_column_for_key("allowedRolesAndUsers")
+        assert col is not None
+        assert col.column_name == "allowed_roles"
+        assert col.column_type == "TEXT[]"
+        assert col.gin_index is True
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -320,6 +337,13 @@ _DEFAULT_EXTRA_IDX_COLUMNS = [
         column_name="object_provides",
         column_type="TEXT[]",
         value_expr="%(object_provides)s",
+        gin_index=True,
+    ),
+    ExtraIdxColumn(
+        idx_key="allowedRolesAndUsers",
+        column_name="allowed_roles",
+        column_type="TEXT[]",
+        value_expr="%(allowed_roles)s",
         gin_index=True,
     ),
 ]
@@ -397,12 +421,15 @@ EXPECTED_COLUMNS = {
     "path_depth": "integer",
     "idx": "jsonb",
     "searchable_text": "tsvector",
+    "allowed_roles": "ARRAY",  # already exists
     "meta": "jsonb",
-    "object_provides": "text[]",
+    "object_provides": "ARRAY",
 }
 ```
 
 Add `"idx_os_object_provides"` to `EXPECTED_INDEXES`.
+
+Note: `allowed_roles` column and its GIN index (`idx_os_allowed_roles`) already exist — no new DDL needed for it.
 
 - [ ] **Step 4: Run test to verify it passes**
 
@@ -441,6 +468,7 @@ class TestProcessorExtraction:
             "portal_type": "Document",
             "@meta": meta_data,
             "object_provides": ["IFolderish", "IContentish"],
+            "allowedRolesAndUsers": ["Anonymous", "user:admin"],
         }
         set_pending(42, {"path": "/plone/test", "idx": idx, "searchable_text": None})
 
@@ -454,11 +482,15 @@ class TestProcessorExtraction:
         # object_provides extracted into "object_provides" key
         assert result["object_provides"] == ["IFolderish", "IContentish"]
 
+        # allowedRolesAndUsers extracted into "allowed_roles" key
+        assert result["allowed_roles"] == ["Anonymous", "user:admin"]
+
         # Keys removed from idx
         idx_result = result["idx"]
         assert isinstance(idx_result, Json)
         assert "@meta" not in idx_result.obj
         assert "object_provides" not in idx_result.obj
+        assert "allowedRolesAndUsers" not in idx_result.obj
         assert idx_result.obj["Title"] == "Test"
 
     def test_process_handles_missing_keys(self):
@@ -473,6 +505,7 @@ class TestProcessorExtraction:
 
         assert result["meta"] is None
         assert result["object_provides"] is None
+        assert result["allowed_roles"] is None
 
     def test_uncatalog_nulls_extra_columns(self):
         from plone.pgcatalog.processor import CatalogStateProcessor
@@ -484,6 +517,7 @@ class TestProcessorExtraction:
         result = processor.process(44, "my.module", "MyClass", {})
         assert result["meta"] is None
         assert result["object_provides"] is None
+        assert result["allowed_roles"] is None
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -493,23 +527,25 @@ Expected: FAIL — extra keys not in result
 
 - [ ] **Step 3: Implement extraction in processor.py**
 
-In `CatalogStateProcessor.get_extra_columns()`, add the new columns:
+In `CatalogStateProcessor.get_extra_columns()`, replace the hardcoded `allowed_roles` `ExtraColumn` with the generic registry loop:
 
 ```python
 def get_extra_columns(self):
     from plone.pgcatalog.columns import get_extra_idx_columns
-    extra = []
-    for col in get_extra_idx_columns():
-        extra.append(ExtraColumn(col.column_name, col.value_expr))
+    extra = [ExtraColumn(col.column_name, col.value_expr) for col in get_extra_idx_columns()]
     return [
         ExtraColumn("path", "%(path)s"),
+        ExtraColumn("parent_path", "%(parent_path)s"),
+        ExtraColumn("path_depth", "%(path_depth)s"),
         ExtraColumn("idx", "%(idx)s"),
         *extra,
         *get_backend().get_extra_columns(),
     ]
 ```
 
-In `CatalogStateProcessor.process()`, extract registered keys from idx before wrapping as Json:
+This replaces the existing hardcoded `ExtraColumn("allowed_roles", ...)` — it's now generated from the registry.
+
+In `CatalogStateProcessor.process()`, replace the hardcoded `allowed_roles` extraction with a generic loop that pops all registered keys from idx:
 
 ```python
 def process(self, zoid, class_mod, class_name, state):
@@ -519,6 +555,8 @@ def process(self, zoid, class_mod, class_name, state):
         # Uncatalog sentinel: NULL all catalog columns
         result = {
             "path": None,
+            "parent_path": None,
+            "path_depth": None,
             "idx": None,
             "searchable_text": None,
         }
@@ -530,7 +568,7 @@ def process(self, zoid, class_mod, class_name, state):
 
     # ... existing Tika code ...
 
-    # Normal catalog: extract registered extra idx columns
+    # Extract registered extra idx columns (pops from idx → dedicated columns)
     idx = pending.get("idx")
     extra_values = {}
     if idx:
@@ -546,6 +584,8 @@ def process(self, zoid, class_mod, class_name, state):
 
     result = {
         "path": pending.get("path"),
+        "parent_path": idx.get("path_parent") if idx else None,
+        "path_depth": idx.get("path_depth") if idx else None,
         "idx": Json(idx) if idx else None,
         "searchable_text": pending.get("searchable_text"),
         **extra_values,
@@ -553,6 +593,8 @@ def process(self, zoid, class_mod, class_name, state):
     result.update(get_backend().process_search_data(pending))
     return result
 ```
+
+This removes the hardcoded `allowed = idx.get("allowedRolesAndUsers")` / `"allowed_roles": allowed ...` lines. The `allowedRolesAndUsers` key is now popped (not just copied) from idx by the generic loop.
 
 Add import at top:
 
@@ -574,7 +616,9 @@ git commit -m "feat: extract registered extra idx columns in CatalogStateProcess
 
 ---
 
-### Task 5: Redirect `object_provides` queries to dedicated column in `query.py`
+### Task 5: Redirect keyword queries to dedicated columns in `query.py`
+
+This replaces the existing **hardcoded** `if idx_key == "allowedRolesAndUsers"` check with a **generic** lookup via `get_extra_idx_column_for_key()`. Both `object_provides` and `allowedRolesAndUsers` will be handled by the same code path.
 
 **Files:**
 - Modify: `src/plone/pgcatalog/query.py`
@@ -587,8 +631,7 @@ class TestQueryRedirection:
     def test_object_provides_queries_column_not_idx(self):
         """object_provides query should use the dedicated column, not idx JSONB."""
         from plone.pgcatalog.query import build_query
-        # Need registry to have object_provides as KeywordIndex
-        from plone.pgcatalog.columns import get_registry
+        from plone.pgcatalog.columns import get_registry, IndexType
         registry = get_registry()
         if "object_provides" not in registry:
             registry.register(
@@ -606,10 +649,34 @@ class TestQueryRedirection:
         })
 
         # Should query the column directly, not idx->'object_provides'
-        assert "object_provides ?|" in result["where"]
+        assert "object_provides &&" in result["where"] or "object_provides ?|" in result["where"]
         assert "idx->'object_provides'" not in result["where"]
 
-    def test_object_provides_and_operator(self):
+    def test_allowed_roles_queries_column_not_idx(self):
+        """allowedRolesAndUsers should use dedicated column via generic mechanism."""
+        from plone.pgcatalog.query import build_query
+        from plone.pgcatalog.columns import get_registry, IndexType
+        registry = get_registry()
+        if "allowedRolesAndUsers" not in registry:
+            registry.register(
+                "allowedRolesAndUsers",
+                IndexType.KEYWORD,
+                "allowedRolesAndUsers",
+                ["allowedRolesAndUsers"],
+            )
+
+        result = build_query({
+            "allowedRolesAndUsers": {
+                "query": ["Anonymous"],
+                "operator": "or",
+            }
+        })
+
+        # Should query allowed_roles column, not idx->'allowedRolesAndUsers'
+        assert "allowed_roles" in result["where"]
+        assert "idx->'allowedRolesAndUsers'" not in result["where"]
+
+    def test_keyword_and_operator_on_dedicated_column(self):
         from plone.pgcatalog.query import build_query
         from plone.pgcatalog.columns import get_registry, IndexType
         registry = get_registry()
@@ -630,17 +697,16 @@ class TestQueryRedirection:
 
         # AND: column @> ARRAY[...]
         assert "object_provides @>" in result["where"]
-        assert "idx" not in result["where"] or "idx IS NOT NULL" == result["where"].split(" AND ")[0]
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `pytest tests/test_extra_idx_columns.py::TestQueryRedirection -v`
-Expected: FAIL — still generates `idx->'object_provides'`
+Expected: FAIL — `object_provides` still goes through JSONB path; `allowedRolesAndUsers` passes but via hardcoded check (not generic)
 
 - [ ] **Step 3: Modify `_handle_keyword()` in query.py**
 
-In `_handle_keyword()`, check if `idx_key` has a dedicated column:
+Replace the hardcoded `if idx_key == "allowedRolesAndUsers"` block with a generic lookup:
 
 ```python
 def _handle_keyword(self, name, idx_key, spec):
@@ -651,30 +717,37 @@ def _handle_keyword(self, name, idx_key, spec):
     operator = spec.get("operator", "or")
     query_val = [query_val] if isinstance(query_val, str) else list(query_val)
 
-    # Check for dedicated column
+    # Check for dedicated TEXT[] column (generic mechanism)
     from plone.pgcatalog.columns import get_extra_idx_column_for_key
     extra_col = get_extra_idx_column_for_key(idx_key)
 
     if extra_col is not None and extra_col.column_type == "TEXT[]":
         # Query the dedicated TEXT[] column directly
+        # Uses array operators: && (overlap/or), @> (contains/and)
         p = self._pname(name)
         if operator == "and":
-            self.clauses.append(f"{extra_col.column_name} @> %({p})s")
-            self.params[p] = query_val
+            self.clauses.append(f"{extra_col.column_name} @> %({p})s::text[]")
         else:
-            self.clauses.append(f"{extra_col.column_name} ?| %({p})s")
-            self.params[p] = query_val
+            self.clauses.append(f"{extra_col.column_name} && %({p})s::text[]")
+        self.params[p] = query_val
     elif operator == "and":
         # All values must be present → JSONB containment
         p = self._pname(name)
         self.clauses.append(f"idx @> %({p})s::jsonb")
         self.params[p] = Json({idx_key: query_val})
+    elif len(query_val) == 1:
+        # Single value "or" — use @> containment (GIN-friendly)
+        p = self._pname(name)
+        self.clauses.append(f"idx @> %({p})s::jsonb")
+        self.params[p] = Json({idx_key: query_val})
     else:
-        # Any value present → ?| overlap
+        # Multiple values "or" — use ?| overlap
         p = self._pname(name)
         self.clauses.append(f"idx->'{idx_key}' ?| %({p})s")
         self.params[p] = query_val
 ```
+
+This removes the `if idx_key == "allowedRolesAndUsers":` special case entirely. Both `allowedRolesAndUsers` and `object_provides` now go through the same generic `get_extra_idx_column_for_key()` path.
 
 - [ ] **Step 4: Run test to verify it passes**
 
@@ -850,34 +923,37 @@ git commit -m "feat: brain reads @meta from dedicated column with idx fallback"
 - Modify: `src/plone/pgcatalog/indexing.py`
 - Extend: `tests/test_extra_idx_columns.py`
 
-The `indexing.py` functions (`catalog_object`, `uncatalog_object`, `reindex_object`) write directly via SQL (used for non-batch operations). They need to extract registered keys from idx and write them to dedicated columns.
+The `indexing.py` functions (`catalog_object`, `uncatalog_object`, `reindex_object`) currently have **hardcoded** `allowed_roles` extraction. This replaces it with the generic `_extract_extra_columns()` helper that handles all registered `ExtraIdxColumn`s.
 
 - [ ] **Step 1: Write failing test**
 
 ```python
 class TestIndexingExtraction:
-    def test_catalog_object_extracts_meta(self, pg_conn):
-        """catalog_object should pop @meta from idx and write to meta column."""
+    def test_catalog_object_extracts_all_extra_columns(self, pg_conn):
+        """catalog_object should pop @meta, object_provides, and allowedRolesAndUsers from idx."""
         from plone.pgcatalog.indexing import catalog_object
 
         idx = {
             "Title": "Test",
             "@meta": {"image_scales": {"preview": {}}},
             "object_provides": ["IContentish"],
+            "allowedRolesAndUsers": ["Anonymous", "user:admin"],
         }
         catalog_object(pg_conn, zoid=100, path="/plone/test", idx=idx)
 
         row = pg_conn.execute(
-            "SELECT idx, meta, object_provides FROM object_state WHERE zoid = 100"
+            "SELECT idx, meta, object_provides, allowed_roles FROM object_state WHERE zoid = 100"
         ).fetchone()
 
-        # @meta should NOT be in idx anymore
+        # All three keys should NOT be in idx anymore
         assert "@meta" not in row["idx"]
         assert "object_provides" not in row["idx"]
+        assert "allowedRolesAndUsers" not in row["idx"]
 
         # Should be in dedicated columns
         assert row["meta"] == {"image_scales": {"preview": {}}}
         assert row["object_provides"] == ["IContentish"]
+        assert row["allowed_roles"] == ["Anonymous", "user:admin"]
 ```
 
 Note: This test requires a PG fixture (`pg_conn`). Adapt to the project's existing test infrastructure.
@@ -889,7 +965,7 @@ Expected: FAIL
 
 - [ ] **Step 3: Modify indexing.py**
 
-Add a helper and modify `catalog_object()`:
+Add a helper and modify `catalog_object()`. This replaces the hardcoded `allowed = idx.get("allowedRolesAndUsers")` / `allowed_roles = ...` lines:
 
 ```python
 from plone.pgcatalog.columns import get_extra_idx_columns
@@ -969,6 +1045,8 @@ def catalog_object(conn, zoid, path, idx, searchable_text=None, language="simple
 
 Apply same pattern to `uncatalog_object()` (NULL the extra columns) and `reindex_object()` (extract from `idx_updates` if present).
 
+Note: `uncatalog_object()` currently doesn't NULL `allowed_roles` — fix this by including extra columns in the NULL set.
+
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `pytest tests/test_extra_idx_columns.py::TestIndexingExtraction -v`
@@ -1017,7 +1095,35 @@ git commit -m "test: verify DDL includes extra idx columns"
 
 ---
 
-### Task 9: Integration test with full write-query-read cycle
+### Task 9: Remove `_backfill_allowed_roles` from `startup.py`
+
+**Files:**
+- Modify: `src/plone/pgcatalog/startup.py`
+
+The `_backfill_allowed_roles()` function was a transitional mechanism to populate the `allowed_roles` column from `idx->'allowedRolesAndUsers'` at startup. With the generic `ExtraIdxColumn` mechanism, this is no longer needed — `allowedRolesAndUsers` is popped from idx and written to `allowed_roles` at catalog time. A `clear_and_rebuild` after deployment handles existing rows.
+
+- [ ] **Step 1: Remove `_backfill_allowed_roles` function and its call**
+
+In `startup.py`:
+- Remove the `_backfill_allowed_roles()` function definition (~lines 298-363)
+- Remove the call `_backfill_allowed_roles(storage)` (~line 131)
+- Remove `_BACKFILL_BATCH` constant
+
+- [ ] **Step 2: Verify tests still pass**
+
+Run: `pytest tests/ -v -k "not plone"`
+Expected: PASS (no test depends on the backfill function)
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add src/plone/pgcatalog/startup.py
+git commit -m "cleanup: remove _backfill_allowed_roles (replaced by ExtraIdxColumn mechanism)"
+```
+
+---
+
+### Task 10: Integration test with full write-query-read cycle
 
 **Files:**
 - Extend: `tests/test_extra_idx_columns.py` (or dedicated integration test file)
@@ -1028,8 +1134,8 @@ git commit -m "test: verify DDL includes extra idx columns"
 class TestIntegration:
     """Full cycle: write object → query → read brain metadata."""
 
-    def test_full_cycle_object_provides(self, pg_conn):
-        """Write with object_provides, query it, verify brain access."""
+    def test_full_cycle_all_extra_columns(self, pg_conn):
+        """Write with all extra columns, query them, verify brain access."""
         from plone.pgcatalog.indexing import catalog_object
         from plone.pgcatalog.query import build_query
 
@@ -1037,6 +1143,7 @@ class TestIntegration:
             "Title": "Integration Test",
             "portal_type": "Document",
             "object_provides": ["IFolderish", "IContentish"],
+            "allowedRolesAndUsers": ["Anonymous", "user:admin"],
             "@meta": {"image_scales": {"preview": {"w": 400}}},
         }
         catalog_object(pg_conn, zoid=200, path="/plone/integration", idx=idx)
@@ -1046,7 +1153,7 @@ class TestIntegration:
             "object_provides": {"query": ["IFolderish"], "operator": "or"}
         })
         row = pg_conn.execute(
-            f"SELECT zoid, path, idx, meta, object_provides "
+            f"SELECT zoid, path, idx, meta, object_provides, allowed_roles "
             f"FROM object_state WHERE {qr['where']}",
             qr["params"],
         ).fetchone()
@@ -1054,26 +1161,57 @@ class TestIntegration:
         assert row is not None
         assert row["zoid"] == 200
 
-        # Verify idx is clean
+        # Verify idx is clean — all three keys popped
         assert "@meta" not in row["idx"]
         assert "object_provides" not in row["idx"]
+        assert "allowedRolesAndUsers" not in row["idx"]
 
         # Verify dedicated columns
         assert row["object_provides"] == ["IFolderish", "IContentish"]
+        assert row["allowed_roles"] == ["Anonymous", "user:admin"]
         assert row["meta"]["image_scales"]["preview"]["w"] == 400
 
-    def test_pre_migration_data_still_works(self, pg_conn):
-        """Objects with @meta and object_provides still in idx should still be queryable."""
+    def test_allowed_roles_query_via_generic_mechanism(self, pg_conn):
+        """allowedRolesAndUsers query should work via generic ExtraIdxColumn."""
+        from plone.pgcatalog.indexing import catalog_object
+        from plone.pgcatalog.query import build_query
+
+        idx = {
+            "Title": "Secure Doc",
+            "allowedRolesAndUsers": ["user:editor", "Manager"],
+        }
+        catalog_object(pg_conn, zoid=201, path="/plone/secure", idx=idx)
+
+        qr = build_query({
+            "allowedRolesAndUsers": {"query": ["user:editor"], "operator": "or"}
+        })
+        row = pg_conn.execute(
+            f"SELECT zoid FROM object_state WHERE {qr['where']}",
+            qr["params"],
+        ).fetchone()
+
+        assert row is not None
+        assert row["zoid"] == 201
+
+    def test_pre_migration_data_brain_fallback(self, pg_conn):
+        """Objects with @meta still in idx (pre-migration) should still work for brain access."""
         # Simulate pre-migration row (written before this feature)
         pg_conn.execute(
             """UPDATE object_state SET
-                idx = '{"Title":"Old","object_provides":["IContentish"],"@meta":{"image_scales":{}}}'::jsonb,
+                idx = '{"Title":"Old","@meta":{"image_scales":{}}}'::jsonb,
                 meta = NULL,
                 object_provides = NULL
-            WHERE zoid = 201"""
+            WHERE zoid = 202"""
         )
-        # Query should still find it via idx fallback
-        # (This depends on whether we add OR-fallback in queries — see design notes)
+        # Brain should fall back to idx["@meta"] when meta column is NULL
+        from plone.pgcatalog.brain import PGCatalogBrain
+        row_data = pg_conn.execute(
+            "SELECT zoid, path, idx, meta FROM object_state WHERE zoid = 202"
+        ).fetchone()
+        if row_data:
+            brain = PGCatalogBrain(dict(row_data))
+            # Should fall back to idx["@meta"]
+            assert brain.Title == "Old"
 ```
 
 - [ ] **Step 2: Run and iterate**
@@ -1084,7 +1222,7 @@ Run: `pytest tests/test_extra_idx_columns.py::TestIntegration -v`
 
 ```bash
 git add tests/test_extra_idx_columns.py
-git commit -m "test: integration test for full write-query-read cycle"
+git commit -m "test: integration test for full write-query-read cycle with all extra columns"
 ```
 
 ---
@@ -1095,21 +1233,14 @@ git commit -m "test: integration test for full write-query-read cycle"
 
 After deploying this code, existing rows will have:
 - `meta` = NULL, `object_provides` = NULL (new columns empty)
-- `idx` still contains `@meta` and `object_provides` (old data)
+- `idx` still contains `@meta`, `object_provides`, and `allowedRolesAndUsers` (old data)
 
-The brain fallback (`_resolve_from_idx` checking `idx["@meta"]`) handles this transparently.
+The brain fallback (`_resolve_from_idx` checking `idx["@meta"]`) handles metadata access transparently.
 
-For queries: `object_provides` queries on old rows won't match the dedicated column. Two options:
+For queries: `object_provides` and `allowedRolesAndUsers` queries on old rows won't match the dedicated columns. **Run `clear_and_rebuild` after deployment** — this rewrites all rows with the new column layout. This is the standard approach for pgcatalog schema changes.
 
-**Option A (recommended):** Run `clear_and_rebuild` after deployment — rewrites all rows with the new column layout. This is the standard approach for pgcatalog schema changes.
+Note: `allowed_roles` was already partially populated by the old `_backfill_allowed_roles` mechanism, so existing production data likely already has this column filled. The key improvement is that `allowedRolesAndUsers` is now **popped** from idx (not just copied), reducing idx size.
 
-**Option B (gradual):** Add an OR-fallback in `_handle_keyword()`: `(object_provides ?| ... OR idx->'object_provides' ?| ...)`. Remove after full reindex. More complex, only needed if downtime for reindex is unacceptable.
+### Removed: `_backfill_allowed_roles`
 
-### Cleanup of old `allowed_roles` column
-
-The existing `allowed_roles text[]` column is unused by pgcatalog. After this feature is stable, consider:
-1. Registering `allowedRolesAndUsers` as an `ExtraIdxColumn` (same pattern)
-2. Dropping the old `allowed_roles` column (it uses a different name than the idx key)
-3. Or renaming the column and wiring it up
-
-This is explicitly out of scope for this plan.
+The startup backfill function is removed. It was a transitional mechanism that is superseded by the generic `ExtraIdxColumn` extraction + `clear_and_rebuild`.
