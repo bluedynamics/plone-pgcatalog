@@ -126,8 +126,22 @@ def register_catalog_processor(event):
         storage.register_state_processor(processor)
         log.info("Registered CatalogStateProcessor on %s", storage)
         _sync_registry_from_db(db)
-        _ensure_text_indexes(storage)
-        _ensure_field_indexes(storage)
+        # Defer index creation to first write transaction (#100).
+        # At this point a ZODB Connection holds an open REPEATABLE READ
+        # snapshot (ACCESS SHARE), which would block CREATE INDEX (needs
+        # ACCESS EXCLUSIVE).  defer_startup_action() queues the work for
+        # tpc_begin() when the read snapshot has been committed.
+        if hasattr(storage, "defer_startup_action"):
+            storage.defer_startup_action(
+                _make_ensure_text_indexes_action(), "ensure_text_indexes"
+            )
+            storage.defer_startup_action(
+                _make_ensure_field_indexes_action(), "ensure_field_indexes"
+            )
+        else:
+            # Fallback for older zodb-pgjsonb without defer_startup_action
+            _ensure_text_indexes(storage)
+            _ensure_field_indexes(storage)
         _backfill_allowed_roles(storage)
 
         # Enable refs prefetch for cataloged content objects only.
@@ -150,6 +164,116 @@ def register_catalog_processor(event):
             _start_inprocess_worker(dsn, tika_url, storage)
     else:
         log.debug("Storage %s does not support state processors", storage)
+
+
+def _make_ensure_text_indexes_action():
+    """Return a callable(dsn) that creates text indexes when invoked.
+
+    Captures the current IndexRegistry state.  The callable is passed
+    to ``storage.defer_startup_action()`` and executed during the first
+    write transaction when REPEATABLE READ locks are released.
+    """
+    registry = get_registry()
+    text_indexes = [
+        (name, idx_key)
+        for name, (idx_type, idx_key, _) in registry.items()
+        if idx_type == IndexType.TEXT and idx_key is not None
+    ]
+    if not text_indexes:
+        return lambda dsn: None
+
+    def _action(dsn):  # pragma: no cover
+        try:
+            from psycopg import sql as pgsql
+
+            with psycopg.connect(dsn, autocommit=True) as conn:
+                conn.execute("SET lock_timeout = '30s'")
+                for name, idx_key in text_indexes:
+                    validate_identifier(idx_key)
+                    idx_name = f"idx_os_cat_{idx_key.lower()}_tsv"
+                    stmt = pgsql.SQL(
+                        "CREATE INDEX IF NOT EXISTS {idx_name} "
+                        "ON object_state USING gin ("
+                        "to_tsvector('simple'::regconfig, "
+                        "COALESCE(idx->>{idx_key}, ''))) "
+                        "WHERE idx IS NOT NULL"
+                    ).format(
+                        idx_name=pgsql.Identifier(idx_name),
+                        idx_key=pgsql.Literal(idx_key),
+                    )
+                    conn.execute(stmt)
+                    log.info("Ensured GIN text index %s for %s", idx_name, name)
+        except Exception:
+            log.warning(
+                "Failed to create text expression indexes "
+                "(lock timeout or other error) — "
+                "text field queries may be slow until indexes are created. "
+                "Indexes will be retried on next startup.",
+                exc_info=True,
+            )
+
+    return _action
+
+
+def _make_ensure_field_indexes_action():
+    """Return a callable(dsn) that creates field indexes when invoked.
+
+    Captures the current IndexRegistry state.  The callable is passed
+    to ``storage.defer_startup_action()`` and executed during the first
+    write transaction when REPEATABLE READ locks are released.
+    """
+    registry = get_registry()
+    candidates = [
+        (name, idx_type, idx_key)
+        for name, (idx_type, idx_key, _) in registry.items()
+        if idx_type in _BTREE_INDEX_TYPES
+        and idx_key is not None
+        and idx_key not in _HARDCODED_IDX_KEYS
+    ]
+    if not candidates:
+        return lambda dsn: None
+
+    def _action(dsn):  # pragma: no cover
+        try:
+            from psycopg import sql as pgsql
+
+            with psycopg.connect(dsn, autocommit=True) as conn:
+                conn.execute("SET lock_timeout = '30s'")
+                for name, idx_type, idx_key in candidates:
+                    validate_identifier(idx_key)
+                    idx_name = f"idx_os_cat_{idx_key.lower()}"
+
+                    if idx_type == IndexType.DATE:
+                        expr = pgsql.SQL(
+                            "pgcatalog_to_timestamptz(idx->>{key})"
+                        ).format(key=pgsql.Literal(idx_key))
+                    else:
+                        expr = pgsql.SQL("(idx->>{key})").format(
+                            key=pgsql.Literal(idx_key)
+                        )
+
+                    stmt = pgsql.SQL(
+                        "CREATE INDEX IF NOT EXISTS {idx_name} "
+                        "ON object_state ({expr}) "
+                        "WHERE idx IS NOT NULL"
+                    ).format(idx_name=pgsql.Identifier(idx_name), expr=expr)
+                    conn.execute(stmt)
+                    log.info(
+                        "Ensured btree index %s for %s (%s)",
+                        idx_name,
+                        name,
+                        idx_type.value,
+                    )
+        except Exception:
+            log.warning(
+                "Failed to create field expression indexes "
+                "(lock timeout or other error) — "
+                "custom field queries may be slow until indexes are created. "
+                "Indexes will be retried on next startup.",
+                exc_info=True,
+            )
+
+    return _action
 
 
 def _ensure_text_indexes(storage):  # pragma: no cover
