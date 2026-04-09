@@ -346,9 +346,15 @@ def apply_index(conn, ddl, timeout=_DEFAULT_INDEX_TIMEOUT):  # pragma: no cover
     if "OBJECT_STATE" not in ddl_upper:
         return (False, "DDL must target object_state table", 0.0)
 
-    # Extract index name for logging
+    # Extract and validate index name
     m = re.search(r"(?:CREATE INDEX\s+(?:CONCURRENTLY\s+)?)(\S+)", ddl, re.I)
     idx_name = m.group(1) if m else "unknown"
+    if not _SAFE_NAME_RE.match(idx_name):
+        return (False, f"Invalid index name: {idx_name!r}", 0.0)
+
+    # Validate timeout format (e.g. "5min", "300s", "300000ms")
+    if not re.match(r"^\d+\s*(ms|s|min|h)?$", timeout):
+        return (False, f"Invalid timeout format: {timeout!r}", 0.0)
 
     old_autocommit = conn.autocommit
     try:
@@ -356,7 +362,7 @@ def apply_index(conn, ddl, timeout=_DEFAULT_INDEX_TIMEOUT):  # pragma: no cover
 
         # Drop INVALID index from a previously aborted CONCURRENTLY build.
         # An INVALID index blocks new CREATE INDEX on the same name and
-        # wastes disk space.
+        # wastes disk space.  idx_name is validated above.
         with conn.cursor() as cur:
             cur.execute(
                 "SELECT 1 FROM pg_index i "
