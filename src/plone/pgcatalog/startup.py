@@ -128,7 +128,7 @@ def register_catalog_processor(event):
         _sync_registry_from_db(db)
         _ensure_text_indexes(storage)
         _ensure_field_indexes(storage)
-        _backfill_allowed_roles(storage)
+        _backfill_extra_idx_columns(storage)
 
         # Enable refs prefetch for cataloged content objects only.
         # Non-content objects (BTrees, PersistentMappings, etc.) have
@@ -295,69 +295,115 @@ def _ensure_field_indexes(storage):  # pragma: no cover
 _BACKFILL_BATCH = 5000
 
 
-def _backfill_allowed_roles(storage):  # pragma: no cover
-    """Backfill the allowed_roles TEXT[] column from idx JSONB in batches.
+def _backfill_extra_idx_columns(storage):  # pragma: no cover
+    """Backfill dedicated columns from idx JSONB for extracted keys.
 
-    Runs at startup after schema DDL.  Processes rows where
-    ``allowed_roles IS NULL`` but ``idx->'allowedRolesAndUsers'`` exists.
-    Each batch is a small UPDATE with autocommit (short lock, no long
-    transactions).  Safe to re-run (idempotent via IS NULL check).
+    Runs at startup after schema DDL.  Processes rows where the dedicated
+    column is NULL but the key exists in idx JSONB.  Each batch is a small
+    UPDATE with autocommit (short lock, no long transactions).
+    Safe to re-run (idempotent via IS NULL check).
     """
     dsn = getattr(storage, "_dsn", None)
     if not dsn:
         return
 
+    # Define backfill queries for each extracted column.
+    # Each tuple: (column_name, idx_key, SQL to extract value from idx)
+    backfills = [
+        (
+            "object_provides",
+            "object_provides",
+            "SELECT array_agg(value::text) "
+            "FROM jsonb_array_elements_text(idx->'object_provides')",
+        ),
+        (
+            "allowed_roles",
+            "allowedRolesAndUsers",
+            "SELECT array_agg(value::text) "
+            "FROM jsonb_array_elements_text(idx->'allowedRolesAndUsers')",
+        ),
+        (
+            "meta",
+            "@meta",
+            None,  # JSONB: direct assignment idx->'@meta'
+        ),
+    ]
+
     try:
         with psycopg.connect(dsn, autocommit=True) as conn:
             conn.execute("SET lock_timeout = '5s'")
 
-            # Check if there's anything to backfill
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT COUNT(*) AS cnt FROM object_state "
-                    "WHERE idx IS NOT NULL "
-                    "AND idx ? 'allowedRolesAndUsers' "
-                    "AND allowed_roles IS NULL"
-                )
-                total = cur.fetchone()[0]
+            for col_name, idx_key, extract_sql in backfills:
+                # Check if column exists (may not if DDL hasn't run yet)
+                try:
+                    conn.execute(
+                        f"SELECT 1 FROM object_state WHERE {col_name} IS NULL LIMIT 1"
+                    )
+                except Exception:
+                    continue
 
-            if total == 0:
-                return
-
-            log.info(
-                "Backfilling allowed_roles for %d rows (batch size %d)",
-                total,
-                _BACKFILL_BATCH,
-            )
-
-            done = 0
-            while True:
                 with conn.cursor() as cur:
                     cur.execute(
-                        "UPDATE object_state SET allowed_roles = ("
-                        "  SELECT array_agg(value::text)"
-                        "  FROM jsonb_array_elements_text("
-                        "    idx->'allowedRolesAndUsers')"
-                        ") WHERE zoid IN ("
-                        "  SELECT zoid FROM object_state"
-                        "  WHERE idx IS NOT NULL"
-                        "  AND idx ? 'allowedRolesAndUsers'"
-                        "  AND allowed_roles IS NULL"
-                        "  LIMIT %s"
-                        ")",
-                        (_BACKFILL_BATCH,),
+                        "SELECT COUNT(*) AS cnt FROM object_state "
+                        "WHERE idx IS NOT NULL "
+                        f"AND idx ? %s "
+                        f"AND {col_name} IS NULL",
+                        (idx_key,),
                     )
-                    updated = cur.rowcount
+                    total = cur.fetchone()[0]
 
-                if updated == 0:
-                    break
-                done += updated
-                log.info("Backfill allowed_roles: %d / %d rows", done, total)
+                if total == 0:
+                    continue
 
-            log.info("Backfill allowed_roles complete: %d rows", done)
+                log.info(
+                    "Backfilling %s for %d rows (batch size %d)",
+                    col_name,
+                    total,
+                    _BACKFILL_BATCH,
+                )
+
+                done = 0
+                while True:
+                    with conn.cursor() as cur:
+                        if extract_sql:
+                            # TEXT[] columns: use subquery extraction
+                            cur.execute(
+                                f"UPDATE object_state SET {col_name} = ("
+                                f"  {extract_sql}"
+                                ") WHERE zoid IN ("
+                                "  SELECT zoid FROM object_state"
+                                "  WHERE idx IS NOT NULL"
+                                f"  AND idx ? %s"
+                                f"  AND {col_name} IS NULL"
+                                "  LIMIT %s"
+                                ")",
+                                (idx_key, _BACKFILL_BATCH),
+                            )
+                        else:
+                            # JSONB columns: direct assignment
+                            cur.execute(
+                                f"UPDATE object_state SET {col_name} = "
+                                f"idx->%s "
+                                "WHERE zoid IN ("
+                                "  SELECT zoid FROM object_state"
+                                "  WHERE idx IS NOT NULL"
+                                f"  AND idx ? %s"
+                                f"  AND {col_name} IS NULL"
+                                "  LIMIT %s"
+                                ")",
+                                (idx_key, idx_key, _BACKFILL_BATCH),
+                            )
+                        updated = cur.rowcount
+
+                    if updated == 0:
+                        break
+                    done += updated
+                    log.info("Backfill %s: %d / %d rows", col_name, done, total)
+
+                log.info("Backfill %s complete: %d rows", col_name, done)
     except Exception:
         log.warning(
-            "Failed to backfill allowed_roles "
+            "Failed to backfill extra idx columns "
             "(lock timeout or other error). "
             "Will retry on next startup.",
             exc_info=True,

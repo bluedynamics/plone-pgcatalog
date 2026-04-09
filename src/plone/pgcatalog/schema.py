@@ -16,9 +16,14 @@ ALTER TABLE object_state ADD COLUMN IF NOT EXISTS idx JSONB;
 ALTER TABLE object_state ADD COLUMN IF NOT EXISTS searchable_text TSVECTOR;
 
 -- Dedicated column for security filter (used in EVERY query).
--- Stored as TEXT[] for direct GIN ?| queries without JSONB decompression.
--- Backfill is done in batches at startup (_backfill_allowed_roles).
+-- Stored as TEXT[] for direct GIN queries without JSONB decompression.
 ALTER TABLE object_state ADD COLUMN IF NOT EXISTS allowed_roles TEXT[];
+
+-- Dedicated column for non-JSON-native metadata (image_scales, DateTime, etc.)
+ALTER TABLE object_state ADD COLUMN IF NOT EXISTS meta JSONB;
+
+-- Dedicated column for interface-based lookups (object_provides KeywordIndex)
+ALTER TABLE object_state ADD COLUMN IF NOT EXISTS object_provides TEXT[];
 """
 
 CATALOG_FUNCTIONS = """\
@@ -179,10 +184,10 @@ DROP INDEX IF EXISTS idx_os_cat_allowed_gin;
 CREATE INDEX IF NOT EXISTS idx_os_allowed_roles
     ON object_state USING gin (allowed_roles) WHERE allowed_roles IS NOT NULL;
 
--- Interface-based lookups (object_provides)
-CREATE INDEX IF NOT EXISTS idx_os_cat_provides_gin
-    ON object_state USING gin ((idx->'object_provides'))
-    WHERE idx IS NOT NULL AND idx ? 'object_provides';
+-- Interface-based lookups (object_provides) — dedicated TEXT[] column
+DROP INDEX IF EXISTS idx_os_cat_provides_gin;
+CREATE INDEX IF NOT EXISTS idx_os_object_provides
+    ON object_state USING gin (object_provides) WHERE object_provides IS NOT NULL;
 
 -- Subject keywords
 CREATE INDEX IF NOT EXISTS idx_os_cat_subject_gin
@@ -216,6 +221,8 @@ EXPECTED_COLUMNS = {
     "idx": "jsonb",
     "searchable_text": "tsvector",
     "allowed_roles": "ARRAY",
+    "meta": "jsonb",
+    "object_provides": "ARRAY",
 }
 
 # All expected catalog indexes
@@ -239,6 +246,7 @@ EXPECTED_INDEXES = [
     "idx_os_searchable_text",
     "idx_os_cat_title_tsv",
     "idx_os_cat_description_tsv",
+    "idx_os_object_provides",
 ]
 
 

@@ -68,8 +68,8 @@ class _PendingBrain:
 # Eager mode: includes idx (backward compat for direct _run_search calls).
 _SELECT_COLS_LAZY = "zoid, path"
 _SELECT_COLS_LAZY_COUNTED = "zoid, path, COUNT(*) OVER() AS _total_count"
-_SELECT_COLS_EAGER = "zoid, path, idx"
-_SELECT_COLS_EAGER_COUNTED = "zoid, path, idx, COUNT(*) OVER() AS _total_count"
+_SELECT_COLS_EAGER = "zoid, path, idx, meta"
+_SELECT_COLS_EAGER_COUNTED = "zoid, path, idx, meta, COUNT(*) OVER() AS _total_count"
 
 
 def _build_results(rows, actual_count, catalog, lazy_conn):

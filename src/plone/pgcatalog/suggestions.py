@@ -42,7 +42,7 @@ _NON_IDX_FIELDS = frozenset(
 _DEDICATED_FIELDS = {
     "allowedRolesAndUsers": "allowed_roles (dedicated TEXT[] column + GIN)",
     "SearchableText": "searchable_text (dedicated tsvector column + GIN)",
-    "object_provides": "idx_os_cat_provides_gin (dedicated GIN index)",
+    "object_provides": "object_provides (dedicated TEXT[] column + GIN)",
     "Subject": "idx_os_cat_subject_gin (dedicated GIN index)",
 }
 

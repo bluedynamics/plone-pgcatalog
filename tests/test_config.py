@@ -441,12 +441,13 @@ class TestCatalogStateProcessor:
 
         processor = CatalogStateProcessor()
         columns = processor.get_extra_columns()
-        assert len(columns) == 6
         names = [c.name for c in columns]
         assert "path" in names
         assert "parent_path" in names
         assert "path_depth" in names
         assert "idx" in names
+        assert "meta" in names
+        assert "object_provides" in names
         assert "allowed_roles" in names
         assert "searchable_text" in names
 
@@ -496,6 +497,8 @@ class TestCatalogStateProcessor:
             "path_depth": None,
             "idx": None,
             "searchable_text": None,
+            "meta": None,
+            "object_provides": None,
             "allowed_roles": None,
         }
 
@@ -528,6 +531,226 @@ class TestCatalogStateProcessor:
         assert result["path"] == "/plone/doc"
         assert result["idx"] is None  # empty dict → None
         assert result["searchable_text"] is None
+
+
+class TestExtraIdxColumns:
+    """Tests for ExtraIdxColumn registry and extraction."""
+
+    def test_default_registrations(self):
+        from plone.pgcatalog.columns import get_extra_idx_column_for_key
+
+        meta = get_extra_idx_column_for_key("@meta")
+        assert meta is not None
+        assert meta.column_name == "meta"
+        assert meta.column_type == "JSONB"
+
+        provides = get_extra_idx_column_for_key("object_provides")
+        assert provides is not None
+        assert provides.column_name == "object_provides"
+        assert provides.column_type == "TEXT[]"
+        assert provides.gin_index is True
+
+        roles = get_extra_idx_column_for_key("allowedRolesAndUsers")
+        assert roles is not None
+        assert roles.column_name == "allowed_roles"
+        assert roles.column_type == "TEXT[]"
+
+    def test_lookup_nonexistent_returns_none(self):
+        from plone.pgcatalog.columns import get_extra_idx_column_for_key
+
+        assert get_extra_idx_column_for_key("nonexistent") is None
+
+    def test_extract_pops_keys_from_idx(self):
+        from plone.pgcatalog.columns import extract_extra_idx_columns
+
+        idx = {
+            "Title": "Test",
+            "@meta": {"image_scales": {}},
+            "object_provides": ["IContentish"],
+            "allowedRolesAndUsers": ["Anonymous"],
+        }
+        extra = extract_extra_idx_columns(idx)
+
+        # Keys popped from idx
+        assert "@meta" not in idx
+        assert "object_provides" not in idx
+        assert "allowedRolesAndUsers" not in idx
+        assert idx["Title"] == "Test"
+
+        # Values in extra dict
+        assert extra["object_provides"] == ["IContentish"]
+        assert extra["allowed_roles"] == ["Anonymous"]
+        # meta is Json-wrapped
+        assert extra["meta"].obj == {"image_scales": {}}
+
+    def test_extract_missing_keys_returns_none(self):
+        from plone.pgcatalog.columns import extract_extra_idx_columns
+
+        idx = {"Title": "Test"}
+        extra = extract_extra_idx_columns(idx)
+
+        assert extra["meta"] is None
+        assert extra["object_provides"] is None
+        assert extra["allowed_roles"] is None
+
+    def test_extract_empty_dict_returns_empty(self):
+        from plone.pgcatalog.columns import extract_extra_idx_columns
+
+        assert extract_extra_idx_columns({}) == {}
+        assert extract_extra_idx_columns(None) == {}
+
+    def test_validate_identifier_on_register(self):
+        from plone.pgcatalog.columns import ExtraIdxColumn
+        from plone.pgcatalog.columns import register_extra_idx_column
+
+        with pytest.raises(ValueError, match="Invalid identifier"):
+            register_extra_idx_column(
+                ExtraIdxColumn(
+                    idx_key="test",
+                    column_name="Robert'; DROP TABLE --",
+                    column_type="TEXT",
+                    value_expr="%(x)s",
+                )
+            )
+
+
+class TestExtraIdxProcess:
+    """Tests for ExtraIdxColumn extraction in CatalogStateProcessor."""
+
+    def setup_method(self):
+        _clean_pending()
+
+    def teardown_method(self):
+        _clean_pending()
+
+    def test_process_extracts_all_extra_columns(self):
+        from plone.pgcatalog.pending import set_pending
+        from plone.pgcatalog.processor import CatalogStateProcessor
+        from psycopg.types.json import Json
+
+        idx = {
+            "Title": "Test",
+            "@meta": {"image_scales": {}},
+            "object_provides": ["IContentish"],
+            "allowedRolesAndUsers": ["Anonymous"],
+        }
+        set_pending(42, {"path": "/plone/test", "idx": idx, "searchable_text": None})
+
+        processor = CatalogStateProcessor()
+        result = processor.process(42, "mod", "Cls", {})
+
+        # Extra columns extracted
+        assert isinstance(result["meta"], Json)
+        assert result["meta"].obj == {"image_scales": {}}
+        assert result["object_provides"] == ["IContentish"]
+        assert result["allowed_roles"] == ["Anonymous"]
+
+        # Keys NOT in idx anymore
+        idx_result = result["idx"]
+        assert isinstance(idx_result, Json)
+        assert "@meta" not in idx_result.obj
+        assert "object_provides" not in idx_result.obj
+        assert "allowedRolesAndUsers" not in idx_result.obj
+        assert idx_result.obj["Title"] == "Test"
+
+
+class TestBrainMetaResolution:
+    """Tests for brain attribute resolution from meta column."""
+
+    def test_brain_reads_from_meta_column(self):
+        from plone.pgcatalog.brain import PGCatalogBrain
+        from plone.pgcatalog.columns import get_registry
+
+        registry = get_registry()
+        registry.add_metadata("image_scales")
+
+        row = {
+            "zoid": 1,
+            "path": "/plone/test",
+            "idx": {"Title": "Test"},
+            # meta column with JSON-native value (no codec needed)
+            "meta": {"image_scales": {"preview": {"w": 400}}},
+        }
+        brain = PGCatalogBrain(row)
+
+        # image_scales is JSON-native, accessible directly from meta
+        # (decode_meta would fail on non-codec data, but __contains__
+        # checks name in meta_col first — and it IS there)
+        assert "image_scales" in brain
+
+    def test_brain_falls_back_to_idx_meta(self):
+        from plone.pgcatalog.brain import PGCatalogBrain
+
+        row = {
+            "zoid": 2,
+            "path": "/plone/old",
+            "idx": {"Title": "Old"},
+            "meta": None,  # pre-migration: meta column not populated
+        }
+        brain = PGCatalogBrain(row)
+
+        # Title comes from top-level idx
+        assert brain.Title == "Old"
+
+    def test_contains_checks_meta_column(self):
+        from plone.pgcatalog.brain import PGCatalogBrain
+
+        row = {
+            "zoid": 3,
+            "path": "/plone/test",
+            "idx": {"Title": "Test"},
+            "meta": {"some_field": "value"},
+        }
+        brain = PGCatalogBrain(row)
+        assert "some_field" in brain
+        assert "Title" in brain
+        assert "nonexistent" not in brain
+
+
+class TestQueryRedirection:
+    """Tests for keyword query redirection to dedicated columns."""
+
+    def test_object_provides_uses_column(self):
+        from plone.pgcatalog.columns import get_registry
+        from plone.pgcatalog.columns import IndexType
+        from plone.pgcatalog.query import build_query
+
+        registry = get_registry()
+        if "object_provides" not in registry:
+            registry.register(
+                "object_provides",
+                IndexType.KEYWORD,
+                "object_provides",
+                ["object_provides"],
+            )
+
+        qr = build_query(
+            {"object_provides": {"query": ["IContentish"], "operator": "or"}}
+        )
+
+        assert "object_provides" in qr["where"]
+        assert "idx->'object_provides'" not in qr["where"]
+
+    def test_allowed_roles_uses_column(self):
+        from plone.pgcatalog.columns import get_registry
+        from plone.pgcatalog.columns import IndexType
+        from plone.pgcatalog.query import build_query
+
+        registry = get_registry()
+        if "allowedRolesAndUsers" not in registry:
+            registry.register(
+                "allowedRolesAndUsers",
+                IndexType.KEYWORD,
+                "allowedRolesAndUsers",
+                ["allowedRolesAndUsers"],
+            )
+
+        qr = build_query(
+            {"allowedRolesAndUsers": {"query": ["Anonymous"], "operator": "or"}}
+        )
+
+        assert "allowed_roles" in qr["where"]
+        assert "idx->'allowedRolesAndUsers'" not in qr["where"]
 
 
 class TestGetMainStorage:

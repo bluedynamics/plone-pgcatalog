@@ -15,13 +15,16 @@ with the following columns:
 | `path` | `TEXT` | Physical object path (for example, `/plone/folder/doc`) |
 | `parent_path` | `TEXT` | Parent path (for path queries) |
 | `path_depth` | `INTEGER` | Path depth (for depth-limited queries) |
-| `idx` | `JSONB` | All index and metadata values |
+| `idx` | `JSONB` | Index and metadata values (lightweight after extraction) |
 | `searchable_text` | `TSVECTOR` | Weighted full-text search vector |
+| `meta` | `JSONB` | Non-JSON-native metadata (`DateTime`, `image_scales`, etc.) |
+| `object_provides` | `TEXT[]` | Interface-based lookups (extracted from idx) |
 | `allowed_roles` | `TEXT[]` | Dedicated security filter column (allowedRolesAndUsers) |
 | `search_bm25` | `BM25VECTOR` | BM25 fallback column (when BM25 active) |
 | `search_bm25_{lang}` | `BM25VECTOR` | Per-language BM25 column (when BM25 active) |
 
-The first six columns are always present.
+The first eight columns are present after schema DDL has been applied
+(automatically on first startup with a registered `CatalogStateProcessor`).
 
 `parent_path` and `path_depth` are derived from `path` (the parent is
 the path with its last segment removed; the depth is the number of
@@ -86,7 +89,7 @@ VectorChord-BM25 extensions are detected at startup.
 | Index Name | Type | Expression | Purpose |
 |---|---|---|---|
 | `idx_os_allowed_roles` | GIN | `allowed_roles` | Security filter (every query) |
-| `idx_os_cat_provides_gin` | GIN | `idx->'object_provides'` | Interface-based lookups |
+| `idx_os_object_provides` | GIN | `object_provides` | Interface-based lookups |
 | `idx_os_cat_subject_gin` | GIN | `idx->'Subject'` | Subject keyword queries |
 
 ### Partial indexes
@@ -128,8 +131,10 @@ partial index predicates to exclude uncataloged rows.
 
 ## idx JSONB structure
 
-All standard Plone catalog indexes and metadata columns are stored
+Standard Plone catalog indexes and JSON-native metadata are stored
 together in a single JSONB document.
+Heavy or high-cardinality keys are extracted into dedicated columns
+(see {ref}`extracted-columns` below).
 Example for a typical Plone Page:
 
 ```json
@@ -148,13 +153,11 @@ Example for a typical Plone Page:
   "is_folderish": false,
   "is_default_page": false,
   "sortable_title": "my document",
-  "allowedRolesAndUsers": ["Anonymous"],
   "Language": "en",
   "path": "/plone/my-document",
   "path_parent": "/plone",
   "path_depth": 2,
-  "getObjPositionInParent": 5,
-  "image_scales": null
+  "getObjPositionInParent": 5
 }
 ```
 
@@ -165,15 +168,7 @@ Key conventions:
   These live at the top level of idx.
 - **Metadata values** that are JSON-native (str, int, float, bool, None,
   and lists/dicts of these) also live at the top level of idx.
-- **Non-JSON-native metadata** (Zope `DateTime`, stdlib `datetime`, `date`,
-  etc.) is encoded via the Rust codec (`zodb-json-codec`) into a nested
-  `"@meta"` key.
-  This preserves original Python types so that
-  `brain.effective` returns a `DateTime` object, not a string.
-  The `@meta` dict uses codec type markers (for example `@dt`, `@cls`+`@s`) and
-  is decoded once per brain on first access (cached thereafter).
-- Multi-value fields (for example, `Subject`, `allowedRolesAndUsers`) are
-  stored as JSON arrays.
+- Multi-value fields (for example, `Subject`) are stored as JSON arrays.
 - Boolean fields are stored as JSON `true`/`false`.
 - `null` values are stored explicitly where the object has no value
   for that field.
@@ -182,8 +177,48 @@ Key conventions:
   path query support.
 - Fields that are both indexes and metadata (for example `effective`) appear
   in both places: top-level idx holds the converted ISO string (for
-  PG queries), while `@meta` holds the original `DateTime` (for brain
-  attribute access).
+  PG queries), while the `meta` column holds the original `DateTime`
+  (for brain attribute access).
+
+(extracted-columns)=
+## Extracted columns (`ExtraIdxColumn`)
+
+To keep `idx` compact (below the PostgreSQL TOAST threshold of ~2 KB),
+heavy or high-cardinality keys are **extracted** from the idx dict at
+write time and stored in dedicated columns.
+The extraction is managed by a
+generic `ExtraIdxColumn` registry in `columns.py`.
+
+| idx key | Column | Type | Reason |
+|---|---|---|---|
+| `@meta` | `meta` | `JSONB` | Non-JSON-native metadata (`DateTime`, etc.); never queried via SQL, only used for brain attribute access |
+| `object_provides` | `object_provides` | `TEXT[]` | Interface-based lookups; native GIN on `TEXT[]` is faster than JSONB containment |
+| `allowedRolesAndUsers` | `allowed_roles` | `TEXT[]` | Security filter in every query; same optimization as `object_provides` |
+
+Extracted keys are **popped** from the idx dict before it is written to
+the `idx` column.
+They do not appear in `idx` for newly written rows.
+Pre-migration rows (written before this feature) may still contain these
+keys in `idx`; the brain falls back to `idx["@meta"]` when the `meta`
+column is `NULL`.
+
+The `meta` column stores codec-encoded non-JSON-native metadata (Zope
+`DateTime`, stdlib `datetime`, `date`, `image_scales`, etc.) via the Rust
+codec (`zodb-json-codec`).
+This preserves original Python types so that
+`brain.effective` returns a `DateTime` object, not a string.
+The `meta` dict uses codec type markers (for example `@dt`, `@cls`+`@s`) and
+is decoded once per brain on first access (cached thereafter).
+
+```{note}
+Extracted keys are no longer accessible via `brain.object_provides` or
+`brain.allowedRolesAndUsers`.
+These are query-only index fields — not
+catalog metadata — so brain attribute access is not needed.
+If a custom addon registers one of these as metadata, the data is still in
+the database (in its dedicated column) but would need a brain extension to
+be surfaced.
+```
 
 ## Text Extraction Queue (Optional)
 

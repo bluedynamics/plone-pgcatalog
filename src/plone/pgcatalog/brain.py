@@ -150,9 +150,14 @@ class PGCatalogBrain:
             if result_set is not None:
                 result_set._load_idx_batch()
                 idx = self._row.get("idx")
+        # Check dedicated meta column first
+        meta_col = self._row.get("meta")
+        if meta_col is not None and name in meta_col:
+            return True
         if idx:
             if name in idx:
                 return True
+            # Fallback: pre-migration data with @meta still in idx
             meta = idx.get("@meta")
             if meta is not None and name in meta:
                 return True
@@ -165,20 +170,27 @@ class PGCatalogBrain:
 
         Resolution order:
 
-        1. ``idx["@meta"]`` — codec-encoded non-JSON-native metadata values
-           (DateTime, datetime, date, …).  Decoded once via the Rust codec
-           and cached in ``_row["_meta_decoded"]``.
-        2. Top-level ``idx[name]`` — JSON-native values (str, int, bool, …)
+        1. Dedicated ``meta`` column (codec-encoded non-JSON-native metadata).
+        2. Fallback: ``idx["@meta"]`` (pre-migration data still in idx).
+        3. Top-level ``idx[name]`` — JSON-native values (str, int, bool, …)
            and converted index data.
-        3. Known field not present → ``None`` (Missing Value, matching ZCatalog).
-        4. Unknown field → ``AttributeError`` (lets callers fall back to
+        4. Known field not present → ``None`` (Missing Value, matching ZCatalog).
+        5. Unknown field → ``AttributeError`` (lets callers fall back to
            ``getObject()``).
         """
+        row = object.__getattribute__(self, "_row")
+
+        # Check dedicated meta column first (new path)
+        meta_col = row.get("meta")
+        if meta_col is not None and name in meta_col:
+            decoded = self._decode_meta_source(meta_col)
+            return decoded.get(name)
+
         if idx is not None:
-            # Check @meta first (codec-encoded non-native types)
+            # Fallback: pre-migration data with @meta still in idx
             meta = idx.get("@meta")
             if meta is not None and name in meta:
-                decoded = self._decode_meta(idx)
+                decoded = self._decode_meta_source(meta)
                 return decoded.get(name)
             # Fall back to top-level idx (JSON-native values + index data)
             if name in idx:
@@ -188,18 +200,18 @@ class PGCatalogBrain:
             return None
         raise AttributeError(name)
 
-    def _decode_meta(self, idx):
-        """Decode the ``@meta`` sub-dict via the Rust codec (cached).
+    def _decode_meta_source(self, meta_dict):
+        """Decode a meta dict via the Rust codec (cached).
 
-        First call: ``dict_to_pickle(@meta) → pickle.loads()`` restores
-        original Python types.  Result is cached in ``_row["_meta_decoded"]``
-        so subsequent attribute accesses skip the codec round-trip.
+        Works with both the dedicated ``meta`` column and the legacy
+        ``idx["@meta"]`` sub-dict.  Result is cached in
+        ``_row["_meta_decoded"]`` so subsequent accesses skip the codec.
         """
         row = object.__getattribute__(self, "_row")
         cached = row.get("_meta_decoded")
         if cached is not None:
             return cached
-        decoded = decode_meta(idx["@meta"])
+        decoded = decode_meta(meta_dict)
         row["_meta_decoded"] = decoded
         return decoded
 
@@ -277,7 +289,7 @@ class CatalogSearchResults(Lazy):
 
         with self._conn.cursor() as cur:
             cur.execute(
-                "SELECT zoid, idx FROM object_state WHERE zoid = ANY(%(zoids)s)",
+                "SELECT zoid, idx, meta FROM object_state WHERE zoid = ANY(%(zoids)s)",
                 {"zoids": zoids},
                 prepare=True,
             )
@@ -285,6 +297,8 @@ class CatalogSearchResults(Lazy):
                 brain = brain_map.get(row["zoid"])
                 if brain is not None:
                     brain._row["idx"] = row["idx"]
+                    if "meta" in row:
+                        brain._row["meta"] = row["meta"]
 
     def _maybe_prefetch_objects(self, brain):
         """Prefetch ZODB objects for a batch of brains around *brain*.
