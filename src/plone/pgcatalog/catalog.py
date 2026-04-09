@@ -128,13 +128,29 @@ class PlonePGCatalogTool(UniqueObject, Folder):
     security.declareProtected(search_zcatalog, "search")
     security.declareProtected(search_zcatalog, "all_meta_types")
     # Unsupported stubs — same permission as ZCatalog so callers get
-    # NotImplementedError, not Unauthorized
+    # NotImplementedError, not Unauthorized.
+    # Methods MUST be defined in the class body (not via post-hoc setattr)
+    # because ObjectManager.__class_init__ calls InitializeClass at class
+    # creation time, before module-level code after the class block runs.
+    getAllBrains = _make_unsupported("getAllBrains", _UNSUPPORTED["getAllBrains"])
     security.declareProtected(search_zcatalog, "getAllBrains")
+    searchAll = _make_unsupported("searchAll", _UNSUPPORTED["searchAll"])
     security.declareProtected(search_zcatalog, "searchAll")
+    getobject = _make_unsupported("getobject", _UNSUPPORTED["getobject"])
     security.declareProtected(search_zcatalog, "getobject")
+    getMetadataForUID = _make_unsupported(
+        "getMetadataForUID", _UNSUPPORTED["getMetadataForUID"]
+    )
     security.declareProtected(search_zcatalog, "getMetadataForUID")
+    getMetadataForRID = _make_unsupported(
+        "getMetadataForRID", _UNSUPPORTED["getMetadataForRID"]
+    )
     security.declareProtected(search_zcatalog, "getMetadataForRID")
+    getIndexDataForUID = _make_unsupported(
+        "getIndexDataForUID", _UNSUPPORTED["getIndexDataForUID"]
+    )
     security.declareProtected(search_zcatalog, "getIndexDataForUID")
+    index_objects = _make_unsupported("index_objects", _UNSUPPORTED["index_objects"])
     security.declareProtected(search_zcatalog, "index_objects")
 
     # -- Write access: Manage ZCatalog Entries -------------------------------
@@ -1382,9 +1398,5 @@ class PlonePGCatalogTool(UniqueObject, Folder):
         """Extract SearchableText from a wrapped indexable object."""
         return extract_searchable_text(wrapper)
 
-
-# Attach unsupported method stubs (security already declared in class body)
-for _name, _msg in _UNSUPPORTED.items():
-    setattr(PlonePGCatalogTool, _name, _make_unsupported(_name, _msg))
 
 InitializeClass(PlonePGCatalogTool)
