@@ -96,16 +96,19 @@ index._index.get("Document")   # PG query returning matching ZOIDs
 
 | Attribute Type | Resolution Order |
 |---|---|
-| Known index or metadata (in `IndexRegistry`) | 1. `idx["@meta"]` (codec-decoded, for non-JSON-native types like `DateTime`) → 2. top-level `idx` JSONB → 3. `None` if missing from both |
+| Known index or metadata (in `IndexRegistry`) | 1. `meta` column (codec-decoded, for non-JSON-native types like `DateTime`) → 2. `idx["@meta"]` fallback (pre-migration data) → 3. top-level `idx` JSONB → 4. `None` if missing from all |
 | Unknown attribute | Raises `AttributeError` |
 
 Non-JSON-native metadata values (Zope `DateTime`, `datetime`, `date`,
-etc.) are stored under `idx["@meta"]` at write time via the Rust codec
-(`pickle_to_dict`).  On first access, the `@meta` dict is decoded via
-`dict_to_pickle` + `pickle.loads` and cached per brain for the lifetime
+`image_scales`, etc.) are stored in a dedicated `meta` JSONB column
+(extracted from `idx` at write time via the `ExtraIdxColumn` mechanism).
+On first access, the `meta` dict is decoded via the Rust codec
+(`dict_to_pickle` + `pickle.loads`) and cached per brain for the lifetime
 of the result set.
 This ensures `brain.effective` returns a `DateTime`
 object, not an ISO string.
+For pre-migration data (where `meta` is `NULL`), the brain falls back to
+`idx["@meta"]`.
 
 The `AttributeError` for unknown attributes is intentional:
 `CatalogContentListingObject.__getattr__()` catches it and falls back to

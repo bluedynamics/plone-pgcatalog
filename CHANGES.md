@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.0.0b48
+
+### Changed
+
+- Extract `@meta`, `object_provides`, and `allowedRolesAndUsers` from
+  `idx` JSONB into dedicated columns via generic `ExtraIdxColumn` mechanism.
+  Reduces `idx` size by ~85% (from ~3.2 KB to ~400 B avg, below TOAST
+  threshold). Run `clear_and_rebuild` after upgrading. (#98)
+- `object_provides` queries now use a dedicated `TEXT[]` column with GIN
+  index instead of JSONB containment.
+- Removed `_backfill_allowed_roles` startup function (superseded by
+  generic extraction mechanism).
+
 ## 1.0.0b47
 
 ### Fixed

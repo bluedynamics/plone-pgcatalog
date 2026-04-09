@@ -21,8 +21,11 @@ All catalog data lives in `object_state` alongside ZODB object pickles:
 | `path` | `TEXT` | Physical path (for example, `/plone/folder/doc`) |
 | `parent_path` | `TEXT` | Parent's path (for example, `/plone/folder`) |
 | `path_depth` | `INTEGER` | Number of path components |
-| `idx` | `JSONB` | All index and metadata values |
+| `idx` | `JSONB` | Index and metadata values |
 | `searchable_text` | `TSVECTOR` | Weighted full-text vector |
+| `meta` | `JSONB` | Non-JSON-native metadata (`DateTime`, etc.) |
+| `object_provides` | `TEXT[]` | Interface-based lookups |
+| `allowed_roles` | `TEXT[]` | Security filter (allowedRolesAndUsers) |
 
 ## Common query patterns
 
@@ -62,7 +65,15 @@ ORDER BY pgcatalog_to_timestamptz(idx->>'modified') DESC;
 SELECT path, idx->>'Title' AS title
 FROM object_state
 WHERE idx @> '{"portal_type": "Document"}'::jsonb
-  AND idx->'allowedRolesAndUsers' ?| ARRAY['Anonymous', 'Member'];
+  AND allowed_roles && ARRAY['Anonymous', 'Member'];
+```
+
+### Interface query (`object_provides`)
+
+```sql
+SELECT path, idx->>'Title' AS title
+FROM object_state
+WHERE object_provides && ARRAY['Products.CMFCore.interfaces._content.IContentish'];
 ```
 
 ### Keyword query (Subject)

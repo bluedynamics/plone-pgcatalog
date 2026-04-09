@@ -205,7 +205,8 @@ class TestCounter:
     def test_counter_with_pg(self, pg_conn, tool):
         """getCounter returns last_value from pgcatalog_change_seq."""
         tool._get_pg_read_connection = lambda: pg_conn
-        pg_conn.execute("CREATE SEQUENCE IF NOT EXISTS pgcatalog_change_seq")
+        pg_conn.execute("DROP SEQUENCE IF EXISTS pgcatalog_change_seq")
+        pg_conn.execute("CREATE SEQUENCE pgcatalog_change_seq")
         pg_conn.commit()
         # Advance the sequence
         pg_conn.execute("SELECT nextval('pgcatalog_change_seq')")
