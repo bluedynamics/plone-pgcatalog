@@ -7,6 +7,8 @@ these after extracting values via plone.indexer.
 """
 
 from plone.pgcatalog.columns import compute_path_info
+from plone.pgcatalog.columns import extract_extra_idx_columns
+from plone.pgcatalog.columns import get_extra_idx_columns
 from psycopg.types.json import Json
 
 
@@ -43,9 +45,20 @@ def catalog_object(conn, zoid, path, idx, searchable_text=None, language="simple
     idx.setdefault("path_parent", parent_path)
     idx.setdefault("path_depth", path_depth)
 
-    # Extract allowedRolesAndUsers for the dedicated TEXT[] column
-    allowed = idx.get("allowedRolesAndUsers")
-    allowed_roles = allowed if isinstance(allowed, list) else None
+    # Extract registered extra idx columns (pops from idx → dedicated columns)
+    extra = extract_extra_idx_columns(idx)
+    extra_set_clauses = "".join(
+        f",\n                {col} = %({col})s" for col in extra
+    )
+
+    params = {
+        "zoid": zoid,
+        "path": path,
+        "parent_path": parent_path,
+        "path_depth": path_depth,
+        "idx": Json(idx),
+        **extra,
+    }
 
     if searchable_text is not None:
         tsvector_sql = _WEIGHTED_TSVECTOR.format(
@@ -53,6 +66,8 @@ def catalog_object(conn, zoid, path, idx, searchable_text=None, language="simple
             lang_expr="%(lang)s",
             text_expr="%(text)s",
         )
+        params["text"] = searchable_text
+        params["lang"] = language
         conn.execute(
             f"""
             UPDATE object_state SET
@@ -60,49 +75,31 @@ def catalog_object(conn, zoid, path, idx, searchable_text=None, language="simple
                 parent_path = %(parent_path)s,
                 path_depth = %(path_depth)s,
                 idx = %(idx)s,
-                allowed_roles = %(allowed_roles)s,
-                searchable_text = {tsvector_sql}
+                searchable_text = {tsvector_sql}{extra_set_clauses}
             WHERE zoid = %(zoid)s
             """,
-            {
-                "zoid": zoid,
-                "path": path,
-                "parent_path": parent_path,
-                "path_depth": path_depth,
-                "idx": Json(idx),
-                "allowed_roles": allowed_roles,
-                "text": searchable_text,
-                "lang": language,
-            },
+            params,
         )
     else:
         conn.execute(
-            """
+            f"""
             UPDATE object_state SET
                 path = %(path)s,
                 parent_path = %(parent_path)s,
                 path_depth = %(path_depth)s,
                 idx = %(idx)s,
-                allowed_roles = %(allowed_roles)s,
-                searchable_text = NULL
+                searchable_text = NULL{extra_set_clauses}
             WHERE zoid = %(zoid)s
             """,
-            {
-                "zoid": zoid,
-                "path": path,
-                "parent_path": parent_path,
-                "path_depth": path_depth,
-                "allowed_roles": allowed_roles,
-                "idx": Json(idx),
-            },
+            params,
         )
 
 
 def uncatalog_object(conn, zoid):
     """Clear all catalog data for an object.
 
-    Sets path, parent_path, path_depth, idx, searchable_text (and
-    search_bm25 if BM25 backend is active) to NULL.
+    Sets path, parent_path, path_depth, idx, searchable_text, and all
+    extra idx columns to NULL.
     The base object_state row (zoid, tid, state, etc.) is preserved.
 
     Args:
@@ -113,6 +110,10 @@ def uncatalog_object(conn, zoid):
 
     extra_nulls = get_backend().uncatalog_extra()
     extra_sql = "".join(f",\n            {col} = NULL" for col in extra_nulls)
+
+    # Also NULL all extra idx columns
+    for col in get_extra_idx_columns():
+        extra_sql += f",\n            {col.column_name} = NULL"
 
     conn.execute(
         f"""
@@ -136,6 +137,9 @@ def reindex_object(
     Merges idx_updates into the existing idx JSONB (||).  Keys present in
     idx_updates overwrite existing values; keys not mentioned are preserved.
 
+    If idx_updates contains registered extra idx column keys, those are
+    extracted and written to their dedicated columns as well.
+
     Args:
         conn: psycopg connection
         zoid: integer object id
@@ -143,16 +147,26 @@ def reindex_object(
         searchable_text: if provided, update the tsvector; if omitted, leave unchanged
         language: PostgreSQL text search config name (default "simple")
     """
+    # Extract any extra idx columns from updates
+    extra = extract_extra_idx_columns(idx_updates)
+    extra_set_clauses = "".join(
+        f",\n                {col} = %({col})s"
+        for col, val in extra.items()
+        if val is not None
+    )
+    extra_params = {col: val for col, val in extra.items() if val is not None}
+
     if searchable_text is _SENTINEL:
         conn.execute(
-            """
+            f"""
             UPDATE object_state SET
-                idx = COALESCE(idx, '{}'::jsonb) || %(updates)s::jsonb
+                idx = COALESCE(idx, '{{}}'::jsonb) || %(updates)s::jsonb{extra_set_clauses}
             WHERE zoid = %(zoid)s
             """,
             {
                 "zoid": zoid,
                 "updates": Json(idx_updates),
+                **extra_params,
             },
         )
     elif searchable_text is not None:
@@ -166,7 +180,7 @@ def reindex_object(
             f"""
             UPDATE object_state SET
                 idx = {merged_idx},
-                searchable_text = {tsvector_sql}
+                searchable_text = {tsvector_sql}{extra_set_clauses}
             WHERE zoid = %(zoid)s
             """,
             {
@@ -174,18 +188,20 @@ def reindex_object(
                 "updates": Json(idx_updates),
                 "text": searchable_text,
                 "lang": language,
+                **extra_params,
             },
         )
     else:
         conn.execute(
-            """
+            f"""
             UPDATE object_state SET
-                idx = COALESCE(idx, '{}'::jsonb) || %(updates)s::jsonb,
-                searchable_text = NULL
+                idx = COALESCE(idx, '{{}}'::jsonb) || %(updates)s::jsonb,
+                searchable_text = NULL{extra_set_clauses}
             WHERE zoid = %(zoid)s
             """,
             {
                 "zoid": zoid,
                 "updates": Json(idx_updates),
+                **extra_params,
             },
         )

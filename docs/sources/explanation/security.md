@@ -120,8 +120,9 @@ reaches `build_query()`:
 - **`allowedRolesAndUsers`**: Plone's security index. The current user's roles and
   group memberships are passed as a keyword query, filtering results to objects the
   user is allowed to see.
-  This is a KeywordIndex query using JSONB `?|` overlap,
-  matching the same semantics as ZCatalog's `allowedRolesAndUsers` index.
+  This index is stored in a dedicated `allowed_roles TEXT[]`
+  column (extracted from `idx` at write time) with a GIN index for fast array
+  overlap queries.
 
 - **`effectiveRange`**: Plone's publication date filtering. Content with a future
   `effective` date or a past `expires` date is excluded unless the user has the

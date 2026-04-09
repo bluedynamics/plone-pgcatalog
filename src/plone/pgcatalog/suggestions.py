@@ -7,6 +7,7 @@ the IndexRegistry and existing indexes as input and returns suggestions.
 
 from plone.pgcatalog.columns import IndexType
 
+import contextlib
 import logging
 import re
 import time
@@ -42,7 +43,7 @@ _NON_IDX_FIELDS = frozenset(
 _DEDICATED_FIELDS = {
     "allowedRolesAndUsers": "allowed_roles (dedicated TEXT[] column + GIN)",
     "SearchableText": "searchable_text (dedicated tsvector column + GIN)",
-    "object_provides": "idx_os_cat_provides_gin (dedicated GIN index)",
+    "object_provides": "object_provides (dedicated TEXT[] column + GIN)",
     "Subject": "idx_os_cat_subject_gin (dedicated GIN index)",
 }
 
@@ -313,15 +314,27 @@ def explain_query(conn, sql, params):  # pragma: no cover
         return {"error": str(exc)}
 
 
-def apply_index(conn, ddl):  # pragma: no cover
+_DEFAULT_INDEX_TIMEOUT = "5min"
+
+
+def apply_index(conn, ddl, timeout=_DEFAULT_INDEX_TIMEOUT):  # pragma: no cover
     """Create an index using CREATE INDEX CONCURRENTLY.
 
     The connection must support autocommit (CONCURRENTLY cannot run
     inside a transaction block).
 
+    Before building, checks for and drops any INVALID index with the
+    same name (left behind by a previously aborted CONCURRENTLY build).
+
+    Sets ``statement_timeout`` to prevent indefinite hangs when other
+    sessions hold long-running REPEATABLE READ transactions (#100).
+    The default timeout is 5 minutes; if exceeded, the build is aborted
+    and can be retried later.
+
     Args:
         conn: psycopg connection
         ddl: full CREATE INDEX CONCURRENTLY statement
+        timeout: PG interval string for statement_timeout (default 5min)
 
     Returns:
         tuple (success: bool, message: str, duration_seconds: float)
@@ -333,14 +346,39 @@ def apply_index(conn, ddl):  # pragma: no cover
     if "OBJECT_STATE" not in ddl_upper:
         return (False, "DDL must target object_state table", 0.0)
 
-    # Extract index name for logging
+    # Extract and validate index name
     m = re.search(r"(?:CREATE INDEX\s+(?:CONCURRENTLY\s+)?)(\S+)", ddl, re.I)
     idx_name = m.group(1) if m else "unknown"
+    if not _SAFE_NAME_RE.match(idx_name):
+        return (False, f"Invalid index name: {idx_name!r}", 0.0)
+
+    # Validate timeout format (e.g. "5min", "300s", "300000ms")
+    if not re.match(r"^\d+\s*(ms|s|min|h)?$", timeout):
+        return (False, f"Invalid timeout format: {timeout!r}", 0.0)
 
     old_autocommit = conn.autocommit
     try:
         conn.autocommit = True
-        log.info("Creating index: %s", ddl)
+
+        # Drop INVALID index from a previously aborted CONCURRENTLY build.
+        # An INVALID index blocks new CREATE INDEX on the same name and
+        # wastes disk space.  idx_name is validated above.
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT 1 FROM pg_index i "
+                "JOIN pg_class c ON c.oid = i.indexrelid "
+                "WHERE c.relname = %s AND NOT i.indisvalid",
+                (idx_name,),
+            )
+            if cur.fetchone():
+                log.warning(
+                    "Dropping INVALID index %s (aborted previous build)",
+                    idx_name,
+                )
+                conn.execute(f"DROP INDEX CONCURRENTLY IF EXISTS {idx_name}")
+
+        conn.execute(f"SET statement_timeout = '{timeout}'")
+        log.info("Creating index (timeout=%s): %s", timeout, ddl)
         t0 = time.monotonic()
         conn.execute(ddl)
         duration = time.monotonic() - t0
@@ -354,6 +392,8 @@ def apply_index(conn, ddl):  # pragma: no cover
         log.error("Index creation failed: %s — %s", idx_name, exc)
         return (False, f"Index creation failed: {exc}", 0.0)
     finally:
+        with contextlib.suppress(Exception):
+            conn.execute("SET statement_timeout = 0")
         conn.autocommit = old_autocommit
 
 

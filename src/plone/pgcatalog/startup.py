@@ -126,9 +126,23 @@ def register_catalog_processor(event):
         storage.register_state_processor(processor)
         log.info("Registered CatalogStateProcessor on %s", storage)
         _sync_registry_from_db(db)
-        _ensure_text_indexes(storage)
-        _ensure_field_indexes(storage)
-        _backfill_allowed_roles(storage)
+        # Defer index creation to first write transaction (#100).
+        # At this point a ZODB Connection holds an open REPEATABLE READ
+        # snapshot (ACCESS SHARE), which would block CREATE INDEX (needs
+        # ACCESS EXCLUSIVE).  defer_startup_action() queues the work for
+        # tpc_begin() when the read snapshot has been committed.
+        if hasattr(storage, "defer_startup_action"):
+            storage.defer_startup_action(
+                _make_ensure_text_indexes_action(), "ensure_text_indexes"
+            )
+            storage.defer_startup_action(
+                _make_ensure_field_indexes_action(), "ensure_field_indexes"
+            )
+        else:
+            # Fallback for older zodb-pgjsonb without defer_startup_action
+            _ensure_text_indexes(storage)
+            _ensure_field_indexes(storage)
+        _backfill_extra_idx_columns(storage)
 
         # Enable refs prefetch for cataloged content objects only.
         # Non-content objects (BTrees, PersistentMappings, etc.) have
@@ -150,6 +164,116 @@ def register_catalog_processor(event):
             _start_inprocess_worker(dsn, tika_url, storage)
     else:
         log.debug("Storage %s does not support state processors", storage)
+
+
+def _make_ensure_text_indexes_action():
+    """Return a callable(dsn) that creates text indexes when invoked.
+
+    Captures the current IndexRegistry state.  The callable is passed
+    to ``storage.defer_startup_action()`` and executed during the first
+    write transaction when REPEATABLE READ locks are released.
+    """
+    registry = get_registry()
+    text_indexes = [
+        (name, idx_key)
+        for name, (idx_type, idx_key, _) in registry.items()
+        if idx_type == IndexType.TEXT and idx_key is not None
+    ]
+    if not text_indexes:
+        return lambda dsn: None
+
+    def _action(dsn):  # pragma: no cover
+        try:
+            from psycopg import sql as pgsql
+
+            with psycopg.connect(dsn, autocommit=True) as conn:
+                conn.execute("SET lock_timeout = '30s'")
+                for name, idx_key in text_indexes:
+                    validate_identifier(idx_key)
+                    idx_name = f"idx_os_cat_{idx_key.lower()}_tsv"
+                    stmt = pgsql.SQL(
+                        "CREATE INDEX IF NOT EXISTS {idx_name} "
+                        "ON object_state USING gin ("
+                        "to_tsvector('simple'::regconfig, "
+                        "COALESCE(idx->>{idx_key}, ''))) "
+                        "WHERE idx IS NOT NULL"
+                    ).format(
+                        idx_name=pgsql.Identifier(idx_name),
+                        idx_key=pgsql.Literal(idx_key),
+                    )
+                    conn.execute(stmt)
+                    log.info("Ensured GIN text index %s for %s", idx_name, name)
+        except Exception:
+            log.warning(
+                "Failed to create text expression indexes "
+                "(lock timeout or other error) — "
+                "text field queries may be slow until indexes are created. "
+                "Indexes will be retried on next startup.",
+                exc_info=True,
+            )
+
+    return _action
+
+
+def _make_ensure_field_indexes_action():
+    """Return a callable(dsn) that creates field indexes when invoked.
+
+    Captures the current IndexRegistry state.  The callable is passed
+    to ``storage.defer_startup_action()`` and executed during the first
+    write transaction when REPEATABLE READ locks are released.
+    """
+    registry = get_registry()
+    candidates = [
+        (name, idx_type, idx_key)
+        for name, (idx_type, idx_key, _) in registry.items()
+        if idx_type in _BTREE_INDEX_TYPES
+        and idx_key is not None
+        and idx_key not in _HARDCODED_IDX_KEYS
+    ]
+    if not candidates:
+        return lambda dsn: None
+
+    def _action(dsn):  # pragma: no cover
+        try:
+            from psycopg import sql as pgsql
+
+            with psycopg.connect(dsn, autocommit=True) as conn:
+                conn.execute("SET lock_timeout = '30s'")
+                for name, idx_type, idx_key in candidates:
+                    validate_identifier(idx_key)
+                    idx_name = f"idx_os_cat_{idx_key.lower()}"
+
+                    if idx_type == IndexType.DATE:
+                        expr = pgsql.SQL(
+                            "pgcatalog_to_timestamptz(idx->>{key})"
+                        ).format(key=pgsql.Literal(idx_key))
+                    else:
+                        expr = pgsql.SQL("(idx->>{key})").format(
+                            key=pgsql.Literal(idx_key)
+                        )
+
+                    stmt = pgsql.SQL(
+                        "CREATE INDEX IF NOT EXISTS {idx_name} "
+                        "ON object_state ({expr}) "
+                        "WHERE idx IS NOT NULL"
+                    ).format(idx_name=pgsql.Identifier(idx_name), expr=expr)
+                    conn.execute(stmt)
+                    log.info(
+                        "Ensured btree index %s for %s (%s)",
+                        idx_name,
+                        name,
+                        idx_type.value,
+                    )
+        except Exception:
+            log.warning(
+                "Failed to create field expression indexes "
+                "(lock timeout or other error) — "
+                "custom field queries may be slow until indexes are created. "
+                "Indexes will be retried on next startup.",
+                exc_info=True,
+            )
+
+    return _action
 
 
 def _ensure_text_indexes(storage):  # pragma: no cover
@@ -295,69 +419,115 @@ def _ensure_field_indexes(storage):  # pragma: no cover
 _BACKFILL_BATCH = 5000
 
 
-def _backfill_allowed_roles(storage):  # pragma: no cover
-    """Backfill the allowed_roles TEXT[] column from idx JSONB in batches.
+def _backfill_extra_idx_columns(storage):  # pragma: no cover
+    """Backfill dedicated columns from idx JSONB for extracted keys.
 
-    Runs at startup after schema DDL.  Processes rows where
-    ``allowed_roles IS NULL`` but ``idx->'allowedRolesAndUsers'`` exists.
-    Each batch is a small UPDATE with autocommit (short lock, no long
-    transactions).  Safe to re-run (idempotent via IS NULL check).
+    Runs at startup after schema DDL.  Processes rows where the dedicated
+    column is NULL but the key exists in idx JSONB.  Each batch is a small
+    UPDATE with autocommit (short lock, no long transactions).
+    Safe to re-run (idempotent via IS NULL check).
     """
     dsn = getattr(storage, "_dsn", None)
     if not dsn:
         return
 
+    # Define backfill queries for each extracted column.
+    # Each tuple: (column_name, idx_key, SQL to extract value from idx)
+    backfills = [
+        (
+            "object_provides",
+            "object_provides",
+            "SELECT array_agg(value::text) "
+            "FROM jsonb_array_elements_text(idx->'object_provides')",
+        ),
+        (
+            "allowed_roles",
+            "allowedRolesAndUsers",
+            "SELECT array_agg(value::text) "
+            "FROM jsonb_array_elements_text(idx->'allowedRolesAndUsers')",
+        ),
+        (
+            "meta",
+            "@meta",
+            None,  # JSONB: direct assignment idx->'@meta'
+        ),
+    ]
+
     try:
         with psycopg.connect(dsn, autocommit=True) as conn:
             conn.execute("SET lock_timeout = '5s'")
 
-            # Check if there's anything to backfill
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT COUNT(*) AS cnt FROM object_state "
-                    "WHERE idx IS NOT NULL "
-                    "AND idx ? 'allowedRolesAndUsers' "
-                    "AND allowed_roles IS NULL"
-                )
-                total = cur.fetchone()[0]
+            for col_name, idx_key, extract_sql in backfills:
+                # Check if column exists (may not if DDL hasn't run yet)
+                try:
+                    conn.execute(
+                        f"SELECT 1 FROM object_state WHERE {col_name} IS NULL LIMIT 1"
+                    )
+                except Exception:
+                    continue
 
-            if total == 0:
-                return
-
-            log.info(
-                "Backfilling allowed_roles for %d rows (batch size %d)",
-                total,
-                _BACKFILL_BATCH,
-            )
-
-            done = 0
-            while True:
                 with conn.cursor() as cur:
                     cur.execute(
-                        "UPDATE object_state SET allowed_roles = ("
-                        "  SELECT array_agg(value::text)"
-                        "  FROM jsonb_array_elements_text("
-                        "    idx->'allowedRolesAndUsers')"
-                        ") WHERE zoid IN ("
-                        "  SELECT zoid FROM object_state"
-                        "  WHERE idx IS NOT NULL"
-                        "  AND idx ? 'allowedRolesAndUsers'"
-                        "  AND allowed_roles IS NULL"
-                        "  LIMIT %s"
-                        ")",
-                        (_BACKFILL_BATCH,),
+                        "SELECT COUNT(*) AS cnt FROM object_state "
+                        "WHERE idx IS NOT NULL "
+                        f"AND idx ? %s "
+                        f"AND {col_name} IS NULL",
+                        (idx_key,),
                     )
-                    updated = cur.rowcount
+                    total = cur.fetchone()[0]
 
-                if updated == 0:
-                    break
-                done += updated
-                log.info("Backfill allowed_roles: %d / %d rows", done, total)
+                if total == 0:
+                    continue
 
-            log.info("Backfill allowed_roles complete: %d rows", done)
+                log.info(
+                    "Backfilling %s for %d rows (batch size %d)",
+                    col_name,
+                    total,
+                    _BACKFILL_BATCH,
+                )
+
+                done = 0
+                while True:
+                    with conn.cursor() as cur:
+                        if extract_sql:
+                            # TEXT[] columns: use subquery extraction
+                            cur.execute(
+                                f"UPDATE object_state SET {col_name} = ("
+                                f"  {extract_sql}"
+                                ") WHERE zoid IN ("
+                                "  SELECT zoid FROM object_state"
+                                "  WHERE idx IS NOT NULL"
+                                f"  AND idx ? %s"
+                                f"  AND {col_name} IS NULL"
+                                "  LIMIT %s"
+                                ")",
+                                (idx_key, _BACKFILL_BATCH),
+                            )
+                        else:
+                            # JSONB columns: direct assignment
+                            cur.execute(
+                                f"UPDATE object_state SET {col_name} = "
+                                f"idx->%s "
+                                "WHERE zoid IN ("
+                                "  SELECT zoid FROM object_state"
+                                "  WHERE idx IS NOT NULL"
+                                f"  AND idx ? %s"
+                                f"  AND {col_name} IS NULL"
+                                "  LIMIT %s"
+                                ")",
+                                (idx_key, idx_key, _BACKFILL_BATCH),
+                            )
+                        updated = cur.rowcount
+
+                    if updated == 0:
+                        break
+                    done += updated
+                    log.info("Backfill %s: %d / %d rows", col_name, done, total)
+
+                log.info("Backfill %s complete: %d rows", col_name, done)
     except Exception:
         log.warning(
-            "Failed to backfill allowed_roles "
+            "Failed to backfill extra idx columns "
             "(lock timeout or other error). "
             "Will retry on next startup.",
             exc_info=True,

@@ -264,12 +264,25 @@ suggests composite index DDL for frequent patterns.
 This is a self-tuning feedback loop: deploy the site, let it accumulate
 slow query data under real load, then add the suggested indexes.
 
-### Dedicated security column
+### Extracted columns (`ExtraIdxColumn`)
 
-`allowedRolesAndUsers` is in every catalog query (security filter). Storing
-it as a dedicated `allowed_roles TEXT[]` column with its own GIN index
-eliminates JSONB decompression from query evaluation. PG can BitmapAnd the
-security GIN with btree composite indexes directly.
+Heavy keys are extracted from the `idx` JSONB into dedicated columns to
+keep `idx` below the PostgreSQL TOAST threshold (~2 KB). This avoids
+TOAST decompression on every `idx` access.
+Three keys are extracted by default:
+
+- **`allowedRolesAndUsers`** → `allowed_roles TEXT[]` with GIN index.
+  Present in every catalog query (security filter).
+  PG can BitmapAnd the
+  security GIN with btree composite indexes directly.
+- **`object_provides`** → `object_provides TEXT[]` with GIN index.
+  Interface-based lookups are faster on native `TEXT[]` than JSONB containment.
+- **`@meta`** → `meta JSONB`.
+  Non-JSON-native metadata (`DateTime`, etc.)
+  that is only accessed by brains, never queried via SQL.
+
+On a production site with 137k cataloged objects, this reduces `idx` from
+~3.2 KB to ~400 B average per row (85% reduction, ~370 MB saved).
 
 ### Partial indexes for common patterns
 
