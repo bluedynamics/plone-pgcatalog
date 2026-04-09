@@ -346,18 +346,19 @@ Implements
 All registered indexes and metadata columns are accessible as
 attributes (for example, `brain.portal_type`, `brain.Title`, `brain.Subject`).
 
-- Non-JSON-native metadata (Zope `DateTime`, `datetime`, `date`, etc.)
-  is stored in `idx["@meta"]` via the Rust codec and decoded on first
-  access with per-brain caching.
-  This means `brain.effective` returns
-  a `DateTime` object, not an ISO string.
-  See {doc}`schema` for the
-  `@meta` JSONB structure.
+- Non-JSON-native metadata (Zope `DateTime`, `datetime`, `date`,
+  `image_scales`, etc.) is stored in a dedicated `meta` JSONB column
+  (extracted from `idx` at write time) and decoded on first access via
+  the Rust codec with per-brain caching.
+  This means `brain.effective`
+  returns a `DateTime` object, not an ISO string.
+  See {doc}`schema` for
+  the extracted columns mechanism.
 - JSON-native metadata (str, int, float, bool, None, lists/dicts of
   these) is stored directly in the top-level `idx` JSONB.
 - For registered indexes/metadata: returns `None` if the field is
-  missing from both `@meta` and top-level `idx` (Missing Value
-  behavior, matching ZCatalog).
+  missing from `meta`, `idx["@meta"]` (pre-migration fallback), and
+  top-level `idx` (Missing Value behavior, matching ZCatalog).
 - For unknown attributes: raises `AttributeError`. This is intentional:
   `CatalogContentListingObject.__getattr__()` catches `AttributeError`
   and falls back to `getObject()`, loading the real content object.

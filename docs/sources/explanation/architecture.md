@@ -232,9 +232,10 @@ query, and returns lightweight `_PendingBrain` instances with just enough interf
    `ICatalogBrain` for Plone compatibility and supports attribute access into the
    `idx` JSONB for catalog metadata.
    Non-JSON-native metadata (such as Zope
-   `DateTime` objects) is stored under `idx["@meta"]` via the Rust codec and
-   decoded on first access with per-brain caching (see {doc}`../reference/schema`
-   for the `@meta` structure).
+   `DateTime` objects) is stored in a dedicated `meta` JSONB column
+   (extracted from `idx` at write time) and decoded on first access with
+   per-brain caching (see {doc}`../reference/schema` for the extracted
+   columns mechanism).
 
 ## Lazy loading
 
@@ -410,10 +411,11 @@ with PG-backed implementations:
 
 - **Brain attribute resolution** distinguishes known from unknown fields. Known
   catalog fields (registered indexes or metadata) are resolved first from the
-  `idx["@meta"]` dict (for non-JSON-native types like `DateTime`), then from the
-  top-level `idx` JSONB.
-  Fields missing from both return `None` -- matching
-  ZCatalog's Missing Value behavior.
+  dedicated `meta` column (for non-JSON-native types like `DateTime`), then
+  from `idx["@meta"]` (pre-migration fallback), then from the top-level `idx`
+  JSONB.
+  Fields missing from all return `None` -- matching ZCatalog's Missing
+  Value behavior.
   Unknown fields raise `AttributeError`,
   which triggers the `getObject()` fallback in
   `CatalogContentListingObject.__getattr__()`.
