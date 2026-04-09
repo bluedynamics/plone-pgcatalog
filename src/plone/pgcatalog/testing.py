@@ -24,7 +24,6 @@ from plone.testing import Layer
 from zope.configuration import xmlconfig
 
 import logging
-import os
 
 
 log = logging.getLogger(__name__)
@@ -100,14 +99,12 @@ class PGCatalogPGFixture(Layer):
     def setUp(self):
         from plone.pgcatalog.schema import install_catalog_schema
         from zodb_pgjsonb.storage import PGJsonbStorage
+        from zodb_pgjsonb.testing import get_test_dsn
         from zodb_pgjsonb.testing import PGTestDB
 
         import ZODB
 
-        dsn = os.environ.get(
-            "ZODB_TEST_DSN",
-            "dbname=zodb_test user=zodb password=zodb host=localhost port=5433",
-        )
+        dsn = get_test_dsn()
 
         # 1. Set up PG database with base + catalog schema
         self._test_db = PGTestDB(dsn)

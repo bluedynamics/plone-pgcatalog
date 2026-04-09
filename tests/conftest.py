@@ -8,6 +8,7 @@ from plone.pgcatalog.testing import PGCATALOG_INTEGRATION_TESTING
 from psycopg.rows import dict_row
 from psycopg.types.json import Json
 from zodb_pgjsonb.schema import HISTORY_FREE_SCHEMA
+from zodb_pgjsonb.testing import get_test_dsn
 from zope.pytestlayer import fixture
 
 import os
@@ -136,12 +137,8 @@ def populated_registry():
     return registry
 
 
-# Allow DSN override via environment variable for CI.
-# Default: local Docker on port 5433 (development setup).
-DSN = os.environ.get(
-    "ZODB_TEST_DSN",
-    "dbname=zodb_test user=zodb password=zodb host=localhost port=5433",
-)
+# Resolved once at import time (testcontainers auto-start if needed).
+DSN = get_test_dsn()
 
 # BM25 tests need vchord_bm25 + pg_tokenizer extensions.
 # Default: vchord-suite container on port 5434.
