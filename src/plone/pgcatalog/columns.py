@@ -27,6 +27,7 @@ __all__ = [
     "compute_path_info",
     "convert_value",
     "ensure_date_param",
+    "extract_extra_idx_columns",
     "get_extra_idx_column_for_key",
     "get_extra_idx_columns",
     "get_registry",
@@ -416,7 +417,13 @@ _extra_idx_columns: list[ExtraIdxColumn] = []
 
 
 def register_extra_idx_column(col):
-    """Register an ExtraIdxColumn for extraction."""
+    """Register an ExtraIdxColumn for extraction.
+
+    Must be called at import time only (module-level).  The registry
+    is not protected by a lock and is assumed to be immutable after
+    all modules have loaded.
+    """
+    validate_identifier(col.column_name)
     _extra_idx_columns.append(col)
 
 
@@ -461,3 +468,30 @@ _DEFAULT_EXTRA_IDX_COLUMNS = [
 
 for _col in _DEFAULT_EXTRA_IDX_COLUMNS:
     register_extra_idx_column(_col)
+
+
+def extract_extra_idx_columns(idx):
+    """Pop registered extra idx keys from *idx* dict, return column values.
+
+    Returns a dict mapping column_name → value (Json-wrapped for JSONB
+    columns, plain value for others, None if key absent).
+
+    This is the single source of truth for extraction logic — used by
+    ``CatalogStateProcessor.process()``, ``finalize()`` (partial reindex),
+    and ``indexing.py`` (direct SQL writes).
+    """
+    from psycopg.types.json import Json
+
+    if not idx:
+        return {}
+    extra = {}
+    for col in _extra_idx_columns:
+        value = idx.pop(col.idx_key, None)
+        if value is not None:
+            if col.column_type == "JSONB":
+                extra[col.column_name] = Json(value)
+            else:
+                extra[col.column_name] = value
+        else:
+            extra[col.column_name] = None
+    return extra

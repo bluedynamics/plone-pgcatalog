@@ -7,6 +7,7 @@ these after extracting values via plone.indexer.
 """
 
 from plone.pgcatalog.columns import compute_path_info
+from plone.pgcatalog.columns import extract_extra_idx_columns
 from plone.pgcatalog.columns import get_extra_idx_columns
 from psycopg.types.json import Json
 
@@ -24,23 +25,6 @@ _WEIGHTED_TSVECTOR = (
     "COALESCE({idx_expr}->>'Description', '')), 'B') || "
     "setweight(to_tsvector({lang_expr}::regconfig, {text_expr}), 'D')"
 )
-
-
-def _extract_extra_columns(idx):
-    """Pop registered extra idx keys from idx dict, return column values."""
-    if not idx:
-        return {}
-    extra = {}
-    for col in get_extra_idx_columns():
-        value = idx.pop(col.idx_key, None)
-        if value is not None:
-            if col.column_type == "JSONB":
-                extra[col.column_name] = Json(value)
-            else:
-                extra[col.column_name] = value
-        else:
-            extra[col.column_name] = None
-    return extra
 
 
 def catalog_object(conn, zoid, path, idx, searchable_text=None, language="simple"):
@@ -62,7 +46,7 @@ def catalog_object(conn, zoid, path, idx, searchable_text=None, language="simple
     idx.setdefault("path_depth", path_depth)
 
     # Extract registered extra idx columns (pops from idx → dedicated columns)
-    extra = _extract_extra_columns(idx)
+    extra = extract_extra_idx_columns(idx)
     extra_set_clauses = "".join(
         f",\n                {col} = %({col})s" for col in extra
     )
@@ -164,7 +148,7 @@ def reindex_object(
         language: PostgreSQL text search config name (default "simple")
     """
     # Extract any extra idx columns from updates
-    extra = _extract_extra_columns(idx_updates)
+    extra = extract_extra_idx_columns(idx_updates)
     extra_set_clauses = "".join(
         f",\n                {col} = %({col})s"
         for col, val in extra.items()

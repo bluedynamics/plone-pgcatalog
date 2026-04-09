@@ -23,7 +23,8 @@ with the following columns:
 | `search_bm25` | `BM25VECTOR` | BM25 fallback column (when BM25 active) |
 | `search_bm25_{lang}` | `BM25VECTOR` | Per-language BM25 column (when BM25 active) |
 
-The first eight columns are always present.
+The first eight columns are present after schema DDL has been applied
+(automatically on first startup with a registered `CatalogStateProcessor`).
 
 `parent_path` and `path_depth` are derived from `path` (the parent is
 the path with its last segment removed; the depth is the number of

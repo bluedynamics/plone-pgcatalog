@@ -6,6 +6,8 @@ state during tpc_vote.
 """
 
 from plone.pgcatalog.backends import get_backend
+from plone.pgcatalog.columns import extract_extra_idx_columns
+from plone.pgcatalog.columns import get_extra_idx_columns
 from plone.pgcatalog.pending import _MISSING
 from plone.pgcatalog.pending import pop_all_partial_pending
 from plone.pgcatalog.pending import pop_all_pending_moves
@@ -116,8 +118,6 @@ class CatalogStateProcessor:
     """
 
     def get_extra_columns(self):
-        from plone.pgcatalog.columns import get_extra_idx_columns
-
         extra = [
             ExtraColumn(col.column_name, col.value_expr)
             for col in get_extra_idx_columns()
@@ -195,8 +195,6 @@ class CatalogStateProcessor:
 
         if pending is None:
             # Uncatalog sentinel: NULL all catalog columns
-            from plone.pgcatalog.columns import get_extra_idx_columns
-
             result = {
                 "path": None,
                 "parent_path": None,
@@ -227,20 +225,8 @@ class CatalogStateProcessor:
                     )
 
         # Normal catalog: extract registered extra idx columns
-        from plone.pgcatalog.columns import get_extra_idx_columns
-
         idx = pending.get("idx")
-        extra_values = {}
-        if idx:
-            for col in get_extra_idx_columns():
-                value = idx.pop(col.idx_key, None)
-                if value is not None:
-                    if col.column_type == "JSONB":
-                        extra_values[col.column_name] = Json(value)
-                    else:
-                        extra_values[col.column_name] = value
-                else:
-                    extra_values[col.column_name] = None
+        extra_values = extract_extra_idx_columns(idx)
 
         result = {
             "path": pending.get("path"),
@@ -271,11 +257,22 @@ class CatalogStateProcessor:
         partial = pop_all_partial_pending()
         if partial:
             for zoid, idx_updates in partial.items():
+                # Extract extra idx columns before merging into idx JSONB
+                extra = extract_extra_idx_columns(idx_updates)
+                extra_set = "".join(
+                    f", {col} = %({col})s"
+                    for col, val in extra.items()
+                    if val is not None
+                )
+                extra_params = {
+                    col: val for col, val in extra.items() if val is not None
+                }
                 cursor.execute(
                     "UPDATE object_state SET "
-                    "idx = COALESCE(idx, '{}'::jsonb) || %(patch)s::jsonb "
+                    "idx = COALESCE(idx, '{}'::jsonb) || %(patch)s::jsonb"
+                    f"{extra_set} "
                     "WHERE zoid = %(zoid)s AND idx IS NOT NULL",
-                    {"zoid": zoid, "patch": Json(idx_updates)},
+                    {"zoid": zoid, "patch": Json(idx_updates), **extra_params},
                 )
 
         # Execute bulk path moves (one SQL per moved subtree)
