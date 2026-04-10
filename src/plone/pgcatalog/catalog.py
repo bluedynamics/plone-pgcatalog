@@ -1190,11 +1190,12 @@ class PlonePGCatalogTool(UniqueObject, Folder):
         from plone.pgcatalog.suggestions import apply_index
 
         msg = "No action taken"
+        success = False
         try:
             pool = get_pool(self)
             pg_conn = pool.getconn()
             try:
-                _success, msg, _duration = apply_index(pg_conn, ddl)
+                success, msg, _duration = apply_index(pg_conn, ddl)
             finally:
                 pool.putconn(pg_conn)
         except Exception as exc:
@@ -1203,10 +1204,15 @@ class PlonePGCatalogTool(UniqueObject, Folder):
         if REQUEST is not None:
             from urllib.parse import quote
 
-            REQUEST.RESPONSE.redirect(
-                f"{self.absolute_url()}/manage_slowQueries"
-                f"?manage_tabs_message={quote(msg)}"
-            )
+            if success:
+                REQUEST.RESPONSE.redirect(
+                    f"{self.absolute_url()}/manage_slowQueries"
+                    f"?manage_tabs_message={quote(msg)}"
+                )
+            else:
+                REQUEST.RESPONSE.redirect(
+                    f"{self.absolute_url()}/manage_slowQueries?index_error={quote(msg)}"
+                )
         return msg
 
     def manage_drop_index(self, index_name, REQUEST=None):  # pragma: no cover
@@ -1214,11 +1220,12 @@ class PlonePGCatalogTool(UniqueObject, Folder):
         from plone.pgcatalog.suggestions import drop_index
 
         msg = "No action taken"
+        success = False
         try:
             pool = get_pool(self)
             pg_conn = pool.getconn()
             try:
-                _success, msg, _duration = drop_index(pg_conn, index_name)
+                success, msg, _duration = drop_index(pg_conn, index_name)
             finally:
                 pool.putconn(pg_conn)
         except Exception as exc:
@@ -1227,10 +1234,15 @@ class PlonePGCatalogTool(UniqueObject, Folder):
         if REQUEST is not None:
             from urllib.parse import quote
 
-            REQUEST.RESPONSE.redirect(
-                f"{self.absolute_url()}/manage_slowQueries"
-                f"?manage_tabs_message={quote(msg)}"
-            )
+            if success:
+                REQUEST.RESPONSE.redirect(
+                    f"{self.absolute_url()}/manage_slowQueries"
+                    f"?manage_tabs_message={quote(msg)}"
+                )
+            else:
+                REQUEST.RESPONSE.redirect(
+                    f"{self.absolute_url()}/manage_slowQueries?index_error={quote(msg)}"
+                )
         return msg
 
     def manage_clear_slow_queries(self, REQUEST=None):
