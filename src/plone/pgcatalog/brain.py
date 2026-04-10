@@ -288,11 +288,23 @@ class CatalogSearchResults(Lazy):
         zoids = list(brain_map.keys())
 
         with self._conn.cursor() as cur:
-            cur.execute(
-                "SELECT zoid, idx, meta FROM object_state WHERE zoid = ANY(%(zoids)s)",
-                {"zoids": zoids},
-                prepare=True,
-            )
+            try:
+                cur.execute(
+                    "SELECT zoid, idx, meta FROM object_state"
+                    " WHERE zoid = ANY(%(zoids)s)",
+                    {"zoids": zoids},
+                    prepare=True,
+                )
+            except Exception:
+                # Column 'meta' may not exist yet if DDL was deferred and
+                # not yet applied (e.g. first read after upgrade).  Fall
+                # back to querying without it (#105).
+                self._conn.rollback()
+                cur.execute(
+                    "SELECT zoid, idx FROM object_state WHERE zoid = ANY(%(zoids)s)",
+                    {"zoids": zoids},
+                    prepare=True,
+                )
             for row in cur:
                 brain = brain_map.get(row["zoid"])
                 if brain is not None:
