@@ -92,6 +92,30 @@ class TestSuggestIndexes:
         new = [s for s in result if s["status"] == "new"]
         assert any("((idx->>'is_folderish')::boolean)" in s["ddl"] for s in new)
 
+    def test_boolean_in_composite_has_outer_parens(self):
+        """Boolean cast in composite index must be wrapped in expression parens.
+
+        Without outer parens, PG parser sees (idx->>'field')::boolean and
+        interprets ')' as closing the index expression, leaving ::boolean
+        as an invalid token.  Regression test for #104.
+        """
+        registry = _reg(
+            portal_type=IndexType.FIELD,
+            exclude_from_nav=IndexType.BOOLEAN,
+        )
+        result = suggest_indexes(["portal_type", "exclude_from_nav"], registry, {})
+        composites = [
+            s for s in result if s["status"] == "new" and len(s["fields"]) > 1
+        ]
+        assert len(composites) == 1
+        ddl = composites[0]["ddl"]
+        # The boolean expression must have double parens so ::boolean is
+        # inside the CREATE INDEX expression grouping:
+        #   ... ((idx->>'exclude_from_nav')::boolean) ...
+        # NOT:
+        #   ... (idx->>'exclude_from_nav')::boolean ...
+        assert "((idx->>'exclude_from_nav')::boolean)" in ddl
+
     def test_uuid_uses_text_expression(self):
         registry = _reg(UID=IndexType.UUID)
         result = suggest_indexes(["UID"], registry, {})

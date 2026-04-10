@@ -3,6 +3,12 @@
 
 <main class="container-fluid">
 
+<dtml-if "REQUEST.get('index_error')">
+<div class="alert alert-danger mt-3" role="alert">
+  <dtml-var "REQUEST['index_error']" html_quote>
+</div>
+</dtml-if>
+
 <dtml-let stats="manage_get_slow_query_stats()">
 
 <div class="card mt-3 mb-3">
