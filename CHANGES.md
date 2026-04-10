@@ -1,19 +1,5 @@
 # Changelog
 
-## 1.0.0b49
-
-### Fixed
-
-- Gracefully handle missing `meta` column in `_load_idx_batch()` (#105).
-  Falls back to `SELECT zoid, idx` if the column does not exist yet,
-  preventing `UndefinedColumn` crash on first read after upgrade.
-  Root cause fix is in zodb-pgjsonb 1.10.4 (`poll_invalidations` now
-  applies deferred DDL before the read snapshot).
-
-- Show index creation errors in red instead of green in ZMI (#104).
-  `manage_apply_index` / `manage_drop_index` now redirect with
-  `index_error` param on failure, rendered as Bootstrap `alert-danger`.
-
 ## 1.0.0b48
 
 ### Fixed
