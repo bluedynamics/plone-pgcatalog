@@ -190,6 +190,29 @@ class TestUUIDIndex:
         param = _find_str_param(qr["params"])
         assert param == "abc123def456"
 
+    def test_list_uses_any(self):
+        """UID=list should use ``= ANY`` so plone.app.querystring
+        ``list.contains`` operator matches any element in the list.
+        Regression test for empty @@getVocabulary results.
+        """
+        qr = build_query({"UID": ["uid-a", "uid-b", "uid-c"]})
+        assert "idx->>'UID' = ANY(" in qr["where"]
+        vals = _find_list_param(qr["params"])
+        assert vals == ["uid-a", "uid-b", "uid-c"]
+
+    def test_tuple_uses_any(self):
+        qr = build_query({"UID": ("uid-a", "uid-b")})
+        assert "idx->>'UID' = ANY(" in qr["where"]
+        vals = _find_list_param(qr["params"])
+        assert vals == ["uid-a", "uid-b"]
+
+    def test_single_element_list(self):
+        """Single-element list still uses ANY (consistent with _handle_field)."""
+        qr = build_query({"UID": ["only-one"]})
+        assert "idx->>'UID' = ANY(" in qr["where"]
+        vals = _find_list_param(qr["params"])
+        assert vals == ["only-one"]
+
 
 # ---------------------------------------------------------------------------
 # SearchableText (ZCTextIndex)

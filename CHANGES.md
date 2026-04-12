@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.0.0b50
+
+### Fixed
+
+- `_handle_uuid` now accepts list/tuple queries (uses `= ANY(...)`),
+  matching `_handle_field` semantics.  Previously a list query such as
+  `catalog.searchResults(UID=['f852...'])` was stringified as
+  `str(['f852...'])` → `"['f852...']"` and the JSONB `->>` comparison
+  never matched, so `@@getVocabulary?name=plone.app.vocabularies.Catalog`
+  with a `plone.app.querystring.operation.list.contains` criterion on
+  UID returned an empty vocabulary.
+
 ## 1.0.0b49
 
 ### Added
