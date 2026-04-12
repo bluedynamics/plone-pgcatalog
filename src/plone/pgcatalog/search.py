@@ -17,11 +17,37 @@ import time
 log = logging.getLogger(__name__)
 
 _SLOW_QUERY_MS = float(os.environ.get("PGCATALOG_SLOW_QUERY_MS", "10"))
-_LOG_ALL_QUERIES = os.environ.get("PGCATALOG_LOG_ALL_QUERIES", "").lower() in (
-    "1",
-    "true",
-    "yes",
-)
+
+# Max length of the params repr included in log lines.  Larger payloads
+# (e.g. 10k-entry path lists) are truncated to keep log output bounded.
+_LOG_PARAMS_MAX_LEN = 2000
+
+
+def _log_all_queries_enabled():
+    """Return True if PGCATALOG_LOG_ALL_QUERIES is set to a truthy value.
+
+    Checked on every query rather than cached at import time so the
+    setting can be toggled at runtime (e.g. temporarily for production
+    debugging) without a restart.  The overhead is a single dict lookup
+    per query, negligible compared to the PG round trip.
+    """
+    return os.environ.get("PGCATALOG_LOG_ALL_QUERIES", "").lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
+
+def _truncate_params_repr(params):
+    """Return a bounded ``repr()`` of *params* for log output.
+
+    Guards against a single log line blowing up when a query uses huge
+    parameter values (e.g. ``path IN (...)`` with thousands of entries).
+    """
+    s = repr(params)
+    if len(s) > _LOG_PARAMS_MAX_LEN:
+        return s[:_LOG_PARAMS_MAX_LEN] + "... (truncated)"
+    return s
 
 
 def _record_slow_query(conn, query_keys, duration_ms, sql, params):
@@ -158,7 +184,8 @@ def _run_search(conn, query, catalog=None, lazy_conn=None):
     duration_ms = (time.monotonic() - t0) * 1000
 
     is_slow = duration_ms > _SLOW_QUERY_MS
-    if is_slow or _LOG_ALL_QUERIES:
+    log_all = _log_all_queries_enabled()
+    if is_slow or log_all:
         query_keys = sorted(query.keys())
         msg = "SQL catalog query (%.2f ms): %s | params: %s | keys: %s"
         msg = f"Slow {msg}" if is_slow else msg
@@ -168,7 +195,7 @@ def _run_search(conn, query, catalog=None, lazy_conn=None):
             msg,
             duration_ms,
             sql,
-            qr["params"],
+            _truncate_params_repr(qr["params"]),
             query_keys or [],
         )
         if is_slow:

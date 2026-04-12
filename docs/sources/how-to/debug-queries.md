@@ -2,6 +2,18 @@
 
 # Debug SQL queries
 
+```{warning}
+Query parameters can contain user-supplied values, including search
+terms, UUIDs, or filter values that qualify as PII in some jurisdictions.
+Logging them at INFO level and shipping those logs to aggregators such
+as Elasticsearch or Loki creates a data-leak risk.
+
+Enable `PGCATALOG_LOG_ALL_QUERIES` only in development or for short-lived
+production debugging sessions, and review your log retention and
+aggregation policies before enabling it anywhere that logs leave the
+host.
+```
+
 ## Overview
 
 PlonePGCatalog provides multiple ways to debug and monitor SQL queries generated from catalog searches. This is useful when troubleshooting performance issues or understanding how catalog queries are translated to PostgreSQL.
@@ -27,6 +39,10 @@ INFO plone.pgcatalog.search SQL catalog query (1.23 ms): SELECT zoid, path FROM 
 ```
 
 **Performance impact:** Minimal when disabled (single environment variable check). When enabled, adds ~0.1ms per query for logging overhead.
+
+**Runtime toggle:** The setting is read on every query, not cached at import time. You can enable and disable logging without restarting the process, for example via `os.environ` in a debug console.
+
+**Parameter truncation:** The parameter string representation is truncated at 2000 characters with a `... (truncated)` suffix. This keeps log lines bounded when a query has huge values (for example, `path IN (...)` with thousands of entries).
 
 ### PGCATALOG_SLOW_QUERY_MS
 
