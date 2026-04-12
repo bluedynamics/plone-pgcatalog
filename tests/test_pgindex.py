@@ -334,3 +334,78 @@ class TestUUIDToPathFlow:
         assert catalog.getrid("/plone/doc1") is not None
         # Missing path → returns None
         assert catalog.getrid("/plone/nonexistent") is None
+
+
+class TestMaybeWrapIndex:
+    """Test the _maybe_wrap_index() helper."""
+
+    def test_wraps_field_index(self, pg_conn_with_catalog):
+        from plone.pgcatalog.interfaces import IPGCatalogTool
+        from plone.pgcatalog.pgindex import _maybe_wrap_index
+        from unittest import mock
+        from zope.interface import directlyProvides
+
+        catalog = mock.Mock()
+        directlyProvides(catalog, IPGCatalogTool)
+        catalog._get_pg_read_connection = lambda: pg_conn_with_catalog
+        raw_index = mock.Mock()
+        raw_index.id = "portal_type"
+        raw_index.meta_type = "FieldIndex"
+
+        wrapped = _maybe_wrap_index(catalog, "portal_type", raw_index)
+        assert isinstance(wrapped, PGIndex)
+
+    def test_returns_raw_for_non_pg_catalog(self):
+        """Non-IPGCatalogTool catalogs get the raw index back."""
+        from plone.pgcatalog.pgindex import _maybe_wrap_index
+        from unittest import mock
+
+        # A catalog that does NOT implement IPGCatalogTool
+        from zope.interface import Interface
+
+        class IOtherCatalog(Interface):
+            pass
+
+        catalog = mock.Mock()
+        from zope.interface import directlyProvides
+
+        directlyProvides(catalog, IOtherCatalog)
+        raw_index = mock.Mock()
+
+        wrapped = _maybe_wrap_index(catalog, "portal_type", raw_index)
+        assert wrapped is raw_index
+
+    def test_returns_raw_for_none_index(self):
+        """None stays None."""
+        from plone.pgcatalog.pgindex import _maybe_wrap_index
+
+        assert _maybe_wrap_index(object(), "x", None) is None
+
+    def test_special_index_not_wrapped(self, pg_conn_with_catalog):
+        """Indexes registered with idx_key=None (SearchableText,
+        path, effectiveRange) return the raw index unchanged.
+        """
+        from plone.pgcatalog.columns import get_registry
+        from plone.pgcatalog.columns import IndexType
+        from plone.pgcatalog.pgindex import _maybe_wrap_index
+        from unittest import mock
+
+        # Register SearchableText with idx_key=None
+        registry = get_registry()
+        registry.register(
+            name="SearchableText",
+            idx_type=IndexType.TEXT,
+            idx_key=None,
+            source_attrs=[],
+        )
+
+        from plone.pgcatalog.interfaces import IPGCatalogTool
+        from zope.interface import directlyProvides
+
+        catalog = mock.Mock()
+        directlyProvides(catalog, IPGCatalogTool)
+        catalog._get_pg_read_connection = lambda: pg_conn_with_catalog
+        raw_index = mock.Mock()
+
+        wrapped = _maybe_wrap_index(catalog, "SearchableText", raw_index)
+        assert wrapped is raw_index
