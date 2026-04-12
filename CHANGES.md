@@ -2,6 +2,22 @@
 
 ## 1.0.0b49
 
+### Added
+
+- Log all catalog queries for debugging via
+  `PGCATALOG_LOG_ALL_QUERIES=1` (also accepts `true`/`yes`).  Enabled
+  queries are logged at INFO level with duration, SQL, params, and
+  query keys.  Params are truncated at 2000 chars to bound log size.
+  The env var is re-checked on every query, so the setting can be
+  toggled at runtime without a restart.  See
+  `docs/how-to/debug-queries.md` for details and a production-safety
+  warning about logging user-supplied query values.
+
+- Slow-query log format changed slightly: the prefix is now
+  `Slow SQL catalog query (%.2f ms)` instead of
+  `Slow catalog query (%.1f ms)` — log-aggregation grep patterns may
+  need an update.
+
 ### Fixed
 
 - `clearFindAndRebuild()` now works on fresh installs and after refactorings

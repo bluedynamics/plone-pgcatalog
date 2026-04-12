@@ -18,6 +18,37 @@ log = logging.getLogger(__name__)
 
 _SLOW_QUERY_MS = float(os.environ.get("PGCATALOG_SLOW_QUERY_MS", "10"))
 
+# Max length of the params repr included in log lines.  Larger payloads
+# (e.g. 10k-entry path lists) are truncated to keep log output bounded.
+_LOG_PARAMS_MAX_LEN = 2000
+
+
+def _log_all_queries_enabled():
+    """Return True if PGCATALOG_LOG_ALL_QUERIES is set to a truthy value.
+
+    Checked on every query rather than cached at import time so the
+    setting can be toggled at runtime (e.g. temporarily for production
+    debugging) without a restart.  The overhead is a single dict lookup
+    per query, negligible compared to the PG round trip.
+    """
+    return os.environ.get("PGCATALOG_LOG_ALL_QUERIES", "").lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
+
+def _truncate_params_repr(params):
+    """Return a bounded ``repr()`` of *params* for log output.
+
+    Guards against a single log line blowing up when a query uses huge
+    parameter values (e.g. ``path IN (...)`` with thousands of entries).
+    """
+    s = repr(params)
+    if len(s) > _LOG_PARAMS_MAX_LEN:
+        return s[:_LOG_PARAMS_MAX_LEN] + "... (truncated)"
+    return s
+
 
 def _record_slow_query(conn, query_keys, duration_ms, sql, params):
     """Insert a slow query record into pgcatalog_slow_queries.
@@ -152,15 +183,23 @@ def _run_search(conn, query, catalog=None, lazy_conn=None):
         rows = cur.fetchall()
     duration_ms = (time.monotonic() - t0) * 1000
 
-    if duration_ms > _SLOW_QUERY_MS:
+    is_slow = duration_ms > _SLOW_QUERY_MS
+    log_all = _log_all_queries_enabled()
+    if is_slow or log_all:
         query_keys = sorted(query.keys())
-        log.warning(
-            "Slow catalog query (%.1f ms): keys=%s sql=%s",
+        msg = "SQL catalog query (%.2f ms): %s | params: %s | keys: %s"
+        msg = f"Slow {msg}" if is_slow else msg
+        logger = log.warning if is_slow else log.info
+
+        logger(
+            msg,
             duration_ms,
-            query_keys,
             sql,
+            _truncate_params_repr(qr["params"]),
+            query_keys or [],
         )
-        _record_slow_query(conn, query_keys, duration_ms, sql, qr["params"])
+        if is_slow:
+            _record_slow_query(conn, query_keys, duration_ms, sql, qr["params"])
 
     actual_count = None
     if has_limit and rows:
