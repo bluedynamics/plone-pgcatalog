@@ -2,6 +2,10 @@
 
 ## 1.0.0b49
 
+- Show metadata columns in the object information page.
+
+## 1.0.0b49
+
 ### Fixed
 
 - Gracefully handle missing `meta` column in `_load_idx_batch()` (#105).
