@@ -16,6 +16,7 @@ from plone.app.testing import TEST_USER_ID
 from plone.pgcatalog.testing import PGCATALOG_PG_FIXTURE
 from zope.pytestlayer import fixture
 
+import pytest
 import transaction
 
 
@@ -1246,6 +1247,179 @@ class TestMaintenanceOps:
         results = catalog.unrestrictedSearchResults(portal_type="Document")
         paths = [b.getPath() for b in results]
         assert any(p.endswith("/cfr-doc") for p in paths)
+
+    def test_clear_find_and_rebuild_hierarchy(self, pg_functional):
+        """clearFindAndRebuild() re-indexes ALL content in a hierarchy.
+
+        Regression test for a bug where only the Plone root was re-indexed
+        because path iteration failed — e.g. when the ``path`` column on
+        ``object_state`` is not populated for content objects (only root),
+        or when the snapshot query excludes real content.
+
+        Creates a non-trivial hierarchy (folder + documents), runs
+        clearFindAndRebuild, and verifies EVERY object is findable again.
+        """
+        portal = pg_functional["portal"]
+        setRoles(portal, TEST_USER_ID, ["Manager"])
+        catalog = portal["portal_catalog"]
+
+        # Build a small hierarchy: folder with two documents inside.
+        portal.invokeFactory("Folder", "a-folder", title="A Folder")
+        folder = portal["a-folder"]
+        folder.invokeFactory("Document", "doc-1", title="Document One")
+        folder.invokeFactory("Document", "doc-2", title="Document Two")
+        portal.invokeFactory("Document", "top-doc", title="Top Level Document")
+        transaction.commit()
+
+        # Capture the expected path set BEFORE rebuild.
+        expected_paths = {
+            "/plone/a-folder",
+            "/plone/a-folder/doc-1",
+            "/plone/a-folder/doc-2",
+            "/plone/top-doc",
+        }
+        before_rows = _query_pg(
+            pg_functional,
+            "SELECT path FROM object_state WHERE path IS NOT NULL AND path LIKE %s",
+            ("/plone/%",),
+        )
+        before_paths = {r[0] for r in before_rows}
+        assert expected_paths <= before_paths, (
+            f"Pre-rebuild: missing {expected_paths - before_paths}"
+        )
+
+        # Rebuild.
+        catalog.clearFindAndRebuild()
+        transaction.commit()
+
+        # Verify ALL objects are back, not just the Plone root.
+        after_rows = _query_pg(
+            pg_functional,
+            "SELECT path FROM object_state WHERE path IS NOT NULL AND path LIKE %s",
+            ("/plone/%",),
+        )
+        after_paths = {r[0] for r in after_rows}
+        missing = expected_paths - after_paths
+        assert not missing, (
+            f"Post-rebuild: these paths were NOT re-indexed: {missing}. "
+            f"Got only: {after_paths}"
+        )
+
+        # Also verify each object has a non-NULL idx (fully indexed, not
+        # just path stub).
+        idx_rows = _query_pg(
+            pg_functional,
+            "SELECT path FROM object_state WHERE idx IS NOT NULL AND path LIKE %s",
+            ("/plone/a-folder%",),
+        )
+        idx_paths = {r[0] for r in idx_rows}
+        for expected in ("/plone/a-folder", "/plone/a-folder/doc-1"):
+            assert expected in idx_paths, f"{expected} has no idx after rebuild"
+
+    def test_clear_find_and_rebuild_survives_missing_path_column(self, pg_functional):
+        """clearFindAndRebuild() must re-index even if object_state.path is
+        empty at the start (simulates a refactoring where path is no longer
+        populated for content objects).
+
+        This is a regression guard for the scenario from the production
+        issue: only the Plone root was indexed because the path-snapshot
+        query returned an empty result set, so the rebuild loop had
+        nothing to traverse.
+        """
+        portal = pg_functional["portal"]
+        setRoles(portal, TEST_USER_ID, ["Manager"])
+        catalog = portal["portal_catalog"]
+
+        # Create a few content objects.
+        portal.invokeFactory("Document", "doc-a", title="Doc A")
+        portal.invokeFactory("Document", "doc-b", title="Doc B")
+        transaction.commit()
+
+        # Simulate refactoring: NULL out the path column for all content
+        # (but keep idx intact — so the rows still exist).
+        test_db = pg_functional["pgTestDB"]
+        with test_db.connection.cursor() as cur:
+            cur.execute(
+                "UPDATE object_state SET path = NULL WHERE path LIKE %s",
+                ("/plone/doc-%",),
+            )
+        # Note: autocommit=True on test_db.connection, so no commit needed.
+
+        # Sanity: paths are now NULL for our docs.
+        rows = _query_pg(
+            pg_functional,
+            "SELECT path FROM object_state WHERE path LIKE %s",
+            ("/plone/doc-%",),
+        )
+        # The rows still exist but path column is NULL.
+        assert not rows, "Expected no rows with non-NULL path after UPDATE"
+
+        # Rebuild should still succeed — EITHER via fallback traversal
+        # OR should log/raise loud enough for operators to notice.
+        catalog.clearFindAndRebuild()
+        transaction.commit()
+
+        # Post-rebuild: expect paths to be re-populated OR the test fails
+        # loudly so we know the current impl doesn't handle this case.
+        after_rows = _query_pg(
+            pg_functional,
+            "SELECT path FROM object_state WHERE path IS NOT NULL AND path LIKE %s",
+            ("/plone/doc-%",),
+        )
+        after_paths = {r[0] for r in after_rows}
+        expected = {"/plone/doc-a", "/plone/doc-b"}
+        assert expected <= after_paths, (
+            f"clearFindAndRebuild did not recover from missing path column. "
+            f"Missing after rebuild: {expected - after_paths}. "
+            f"Got: {after_paths}"
+        )
+
+    def test_clear_find_and_rebuild_indexes_discussion_items(self, pg_functional):
+        """clearFindAndRebuild indexes discussion items on content.
+
+        Discussion items live in IAnnotations under ``++conversation++default``
+        and are not reachable via ``objectValues()``.  The rebuild walker
+        must yield them explicitly via the ``IConversation`` adapter.
+
+        Skipped when ``plone.app.discussion`` is not available.
+        """
+        pytest.importorskip("plone.app.discussion")
+        from plone.app.discussion.interfaces import IConversation
+        from zope.component import queryAdapter
+
+        portal = pg_functional["portal"]
+        setRoles(portal, TEST_USER_ID, ["Manager"])
+        catalog = portal["portal_catalog"]
+
+        # Create a document and a comment on it.
+        portal.invokeFactory("Document", "disc-doc", title="Discussed")
+        doc = portal["disc-doc"]
+        conversation = queryAdapter(doc, IConversation)
+        assert conversation is not None, "IConversation adapter missing"
+
+        from plone.app.discussion.comment import CommentFactory
+
+        comment = CommentFactory()
+        comment.text = "This is a comment"
+        comment.author_username = TEST_USER_ID
+        conversation.addComment(comment)
+        transaction.commit()
+
+        # Rebuild from scratch.
+        catalog.clearFindAndRebuild()
+        transaction.commit()
+
+        # The Comment should be in the catalog (class_name='Comment'
+        # in plone.app.discussion).
+        rows = _query_pg(
+            pg_functional,
+            "SELECT path FROM object_state "
+            "WHERE path IS NOT NULL "
+            "AND path LIKE %s "
+            "AND class_name = 'Comment'",
+            ("/plone/disc-doc/++conversation++default/%",),
+        )
+        assert rows, "Comment was not indexed by clearFindAndRebuild"
 
     def test_manage_catalog_clear(self, pg_functional):
         """manage_catalogClear() removes all catalog data from PG."""

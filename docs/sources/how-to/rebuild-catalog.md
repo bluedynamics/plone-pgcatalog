@@ -4,6 +4,9 @@
 
 ## When to rebuild
 
+- **Fresh install on an existing ZODB**—plone.pgcatalog added to a site
+  that already has content (the ``object_state.path`` column is empty and
+  needs populating)
 - After enabling BM25 (new columns need populating)
 - After upgrading plone.pgcatalog (if release notes mention schema changes)
 - After manual database restoration
@@ -57,14 +60,24 @@ This happens automatically and does not trigger ZODB serialization of the object
 
 **`clearFindAndRebuild()`** NULLs all catalog columns (path, idx,
 searchable_text, backend extras), then traverses the entire portal tree
-and calls `catalog_object()` on every object found.
-Use this when
-catalog data might be inconsistent with actual content.
+from the `ISiteRoot` breadth-first and calls `catalog_object()` on every
+object found—including discussion items on content objects (when
+`plone.app.discussion` is installed).
+Use this when catalog data might be inconsistent with actual content, or
+when bootstrapping plone.pgcatalog on an existing site where the
+`object_state.path` column is not yet populated.
+
+Memory stays flat even on large sites: the traversal queue holds only
+path strings, not objects.
+Objects are loaded on demand via
+`unrestrictedTraverse` and ghosted by `cacheMinimize()` after every
+500 indexed objects.
 
 **`refreshCatalog(clear=0)`** reads all cataloged paths from PostgreSQL,
 resolves each from ZODB, and re-extracts index values.
 It does not
 discover objects that were never cataloged.
+Use `clearFindAndRebuild()` for the initial population.
 
 **`reindexIndex("name")`** loads each cataloged object from ZODB via
 `unrestrictedTraverse`, extracts the requested index value, and writes
