@@ -11,6 +11,7 @@ segmenter).  A fallback column handles unconfigured languages.
 """
 
 from plone.pgcatalog.columns import validate_identifier
+from plone.pgcatalog.query import _bool_to_lower_str
 from psycopg import sql as pgsql
 
 import abc
@@ -248,8 +249,8 @@ class TsvectorBackend(SearchBackend):
         )
 
         params = {
-            p_text: str(query_val),
-            p_lang: str(lang_val) if lang_val else "",
+            p_text: _bool_to_lower_str(query_val),
+            p_lang: _bool_to_lower_str(lang_val) if lang_val else "",
         }
 
         return where, params, rank

@@ -2,7 +2,7 @@
 
 from datetime import datetime
 from datetime import UTC
-from plone.pgcatalog.query import _to_json_string
+from plone.pgcatalog.query import _bool_to_lower_str
 from plone.pgcatalog.query import build_query
 from psycopg.types.json import Json
 from unittest import mock
@@ -969,28 +969,28 @@ class TestIPGIndexTranslatorQuery:
 # ---------------------------------------------------------------------------
 
 
-class TestToJsonString:
-    """Test the _to_json_string helper function."""
+class TestBoolToLowerStr:
+    """Test the _bool_to_lower_str helper function."""
 
     def test_boolean_true(self):
         """Test True converts to 'true'."""
-        assert _to_json_string(True) == "true"
+        assert _bool_to_lower_str(True) == "true"
 
     def test_boolean_false(self):
         """Test False converts to 'false'."""
-        assert _to_json_string(False) == "false"
+        assert _bool_to_lower_str(False) == "false"
 
     def test_string_passthrough(self):
         """Test strings are passed through unchanged."""
-        assert _to_json_string("hello") == "hello"
-        assert _to_json_string("True") == "True"  # String "True" stays as-is
-        assert _to_json_string("false") == "false"
+        assert _bool_to_lower_str("hello") == "hello"
+        assert _bool_to_lower_str("True") == "True"  # String "True" stays as-is
+        assert _bool_to_lower_str("false") == "false"
 
     def test_number_conversion(self):
         """Test numbers are converted to strings."""
-        assert _to_json_string(42) == "42"
-        assert _to_json_string(3.14) == "3.14"
+        assert _bool_to_lower_str(42) == "42"
+        assert _bool_to_lower_str(3.14) == "3.14"
 
     def test_none_conversion(self):
         """Test None converts to 'None'."""
-        assert _to_json_string(None) == "None"
+        assert _bool_to_lower_str(None) == "None"
