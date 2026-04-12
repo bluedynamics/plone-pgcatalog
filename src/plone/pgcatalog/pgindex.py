@@ -21,6 +21,7 @@ matching ``getpath()``/``getrid()`` on the catalog.
 
 from Acquisition import aq_inner
 from Acquisition import aq_parent
+from plone.pgcatalog.query import _bool_to_lower_str
 from Products.ZCatalog.ZCatalogIndexes import ZCatalogIndexes
 
 import logging
@@ -52,7 +53,7 @@ class _PGIndexMapping:
         with conn.cursor() as cur:
             cur.execute(
                 "SELECT zoid FROM object_state WHERE idx->>%(key)s = %(val)s LIMIT 1",
-                {"key": self._idx_key, "val": str(value)},
+                {"key": self._idx_key, "val": _bool_to_lower_str(value)},
             )
             row = cur.fetchone()
         return row["zoid"] if row else default

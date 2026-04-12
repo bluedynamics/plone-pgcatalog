@@ -14,6 +14,7 @@ from plone.pgcatalog.interfaces import IPGCatalogTool
 from plone.pgcatalog.interfaces import IPGIndexTranslator
 from plone.pgcatalog.pool import get_pool
 from plone.pgcatalog.pool import get_request_connection
+from plone.pgcatalog.query import _bool_to_lower_str
 from Products.CMFCore.utils import getToolByName
 from psycopg.types.json import Json
 from zope.component import queryUtility
@@ -67,7 +68,7 @@ def _dispatch_by_type(conn, idx_type, idx_key, value):
     """Run the appropriate SQL for the given IndexType."""
 
     if idx_type in (IndexType.FIELD, IndexType.GOPIP, IndexType.UUID):
-        return _query_jsonb_contains(conn, idx_key, str(value))
+        return _query_jsonb_contains(conn, idx_key, _bool_to_lower_str(value))
 
     if idx_type == IndexType.KEYWORD:
         return _query_keyword(conn, idx_key, value)
@@ -76,7 +77,7 @@ def _dispatch_by_type(conn, idx_type, idx_key, value):
         return _query_jsonb_contains(conn, idx_key, bool(value))
 
     if idx_type == IndexType.DATE:
-        return _query_jsonb_contains(conn, idx_key, str(value))
+        return _query_jsonb_contains(conn, idx_key, _bool_to_lower_str(value))
 
     # DATE_RANGE, TEXT, PATH -- not supported in faceted single-index apply
     return frozenset()

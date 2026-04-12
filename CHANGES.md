@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.0.0b50
+
+### Fixed
+
+- Stringify Boolean query values to JSON notation (`'true'`/`'false'`) so
+  queries against JSONB `->>` comparisons match.  Previously `str(True)`
+  produced `'True'` which never matched JSONB's lowercase form, causing
+  queries to return no results.  Fix applied in `query.py` (all field
+  handlers), `pgindex.py` (ZCatalog `_index.get()` compat),
+  `addons_compat/eeafacetednavigation.py` (faceted search dispatch),
+  and `backends.py` (text search backends).  Helper renamed from
+  `_to_json_string` to `_bool_to_lower_str` to match what it actually does.
+
 ## 1.0.0b49
 
 ### Fixed
