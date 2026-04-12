@@ -17,6 +17,11 @@ import time
 log = logging.getLogger(__name__)
 
 _SLOW_QUERY_MS = float(os.environ.get("PGCATALOG_SLOW_QUERY_MS", "10"))
+_LOG_ALL_QUERIES = os.environ.get("PGCATALOG_LOG_ALL_QUERIES", "").lower() in (
+    "1",
+    "true",
+    "yes",
+)
 
 
 def _record_slow_query(conn, query_keys, duration_ms, sql, params):
@@ -152,15 +157,22 @@ def _run_search(conn, query, catalog=None, lazy_conn=None):
         rows = cur.fetchall()
     duration_ms = (time.monotonic() - t0) * 1000
 
-    if duration_ms > _SLOW_QUERY_MS:
+    is_slow = duration_ms > _SLOW_QUERY_MS
+    if is_slow or _LOG_ALL_QUERIES:
         query_keys = sorted(query.keys())
-        log.warning(
-            "Slow catalog query (%.1f ms): keys=%s sql=%s",
+        msg = "SQL catalog query (%.2f ms): %s | params: %s | keys: %s"
+        msg = f"Slow {msg}" if is_slow else msg
+        logger = log.warning if is_slow else log.info
+
+        logger(
+            msg,
             duration_ms,
-            query_keys,
             sql,
+            qr["params"],
+            query_keys or [],
         )
-        _record_slow_query(conn, query_keys, duration_ms, sql, qr["params"])
+        if is_slow:
+            _record_slow_query(conn, query_keys, duration_ms, sql, qr["params"])
 
     actual_count = None
     if has_limit and rows:

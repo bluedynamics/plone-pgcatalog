@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.0.0b50
+
+### Changed
+
+- Add feature to log all queries for debugging purposes by setting the
+  environment variable `PGCATALOG_LOG_ALL_QUERIES=1`.
+
 ## 1.0.0b49
 
 ### Fixed
