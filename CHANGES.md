@@ -4,6 +4,18 @@
 
 ### Fixed
 
+- `clearFindAndRebuild()` now works on fresh installs and after refactorings
+  that leave `object_state.path` empty.  Previously the rebuild relied on a
+  PG snapshot of `WHERE path IS NOT NULL`, so when the column was not yet
+  populated only the Plone root was re-indexed.  The rebuild now walks the
+  `ISiteRoot` breadth-first regardless of PG state.
+
+  The new traversal is still memory-flat: the BFS queue holds only path
+  strings (not objects), and objects are ghosted by `cacheMinimize()`
+  after every 500 commits.  Also yields discussion items via the
+  `IConversation` adapter when `plone.app.discussion` is installed, so
+  comments on content are included in the rebuild.
+
 - Stringify Boolean query values to JSON notation (`'true'`/`'false'`) so
   queries against JSONB `->>` comparisons match.  Previously `str(True)`
   produced `'True'` which never matched JSONB's lowercase form, causing

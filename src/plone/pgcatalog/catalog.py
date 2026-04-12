@@ -918,62 +918,45 @@ class PlonePGCatalogTool(UniqueObject, Folder):
         return count
 
     def clearFindAndRebuild(self):
-        """Clear all catalog data and rebuild from content objects.
+        """Clear all catalog data and rebuild by traversing the Plone site.
 
-        Uses PG-driven path iteration instead of ``ZopeFindAndApply``
-        to avoid acquisition parent chains on the call stack that
-        prevent ``cacheMinimize()`` from ghosting objects.
+        Traverses the ISiteRoot breadth-first, re-indexing every content
+        object (including discussion items).  This is the authoritative
+        "rebuild from scratch" operation: it works regardless of whether
+        ``object_state.path`` is populated, so fresh installs on existing
+        ZODB databases also index correctly (#112).
 
-        1. Snapshots all known content paths from ``object_state``
-           (filtering out non-content classes — ~96% of rows).
-        2. Clears PG catalog columns (path, idx, searchable_text, etc.)
-        3. Traverses each path, re-indexes the object.
-        4. Commits every ``_REBUILD_BATCH`` objects so dirty objects
-           and pending catalog data are flushed — flat memory.
+        Memory management
+        -----------------
+        The BFS queue holds **only path strings** (not objects), so memory
+        is flat in the number of known paths.  Objects are loaded on
+        demand via ``unrestrictedTraverse`` and ghosted by
+        ``cacheMinimize()`` after every ``_REBUILD_BATCH`` commits.
+
+        Explicit ``_p_deactivate()`` is NOT called on processed objects:
+        ``catalog_object`` marks them dirty (``_p_changed = True``) so the
+        ZODB state-processor writes the catalog data during commit.
+        Deactivating before the commit would drop the dirty flag and
+        silently lose the index data.  ``cacheMinimize()`` after the
+        commit handles the cleanup efficiently in one pass.
         """
         jar = self._p_jar
         if jar is None:
             return
 
-        # Build WHERE clause excluding known non-content class_mod prefixes
-        exclude_clauses = " AND ".join(
-            f"class_mod NOT LIKE '{mod}%%'" for mod in _EXCLUDE_CLASS_MODS
-        )
-        query = (
-            "SELECT path FROM object_state "
-            f"WHERE path IS NOT NULL AND {exclude_clauses} "
-            "ORDER BY zoid"
-        )
-
-        # Snapshot paths BEFORE clearing — we need them for traversal.
-        # Use a pool connection (not the MVCC snapshot) so the query
-        # sees the current committed state.
-        # NOTE: fetchall() loads all paths into memory.  ~50 bytes per
-        # path, so 500k objects ≈ 25 MB — acceptable.  A server-side
-        # cursor would avoid this but requires holding a PG transaction
-        # open for the entire rebuild duration (hours on large sites),
-        # which blocks autovacuum.
-        pool = get_pool(self)
-        pg_conn = pool.getconn()
-        try:
-            with pg_conn.cursor() as cur:
-                cur.execute(query)
-                all_paths = [row["path"] for row in cur.fetchall()]
-        finally:
-            pool.putconn(pg_conn)
+        site = self._find_site_root()
+        if site is None:
+            log.warning(
+                "clearFindAndRebuild: no ISiteRoot found via acquisition chain, "
+                "aborting (nothing to traverse)"
+            )
+            return
 
         with self._pg_connection() as conn:
             clear_catalog_data(conn)
 
         count = 0
-        for path in all_paths:
-            try:
-                obj = self.unrestrictedTraverse(path, None)
-            except Exception:
-                continue
-            if obj is None:
-                continue
-
+        for obj, path in self._walk_site_paths(site):
             self.catalog_object(obj, path)
             count += 1
             if count % _REBUILD_BATCH == 0:
@@ -981,6 +964,98 @@ class PlonePGCatalogTool(UniqueObject, Folder):
                 log.info("clearFindAndRebuild: %d objects indexed", count)
 
         log.info("clearFindAndRebuild: %d objects indexed total", count)
+
+    # -- Traversal helpers for clearFindAndRebuild --------------------------
+
+    def _find_site_root(self):
+        """Walk the acquisition chain up to the Plone ISiteRoot.
+
+        Returns the site-root object, or None if no ISiteRoot is reachable
+        (e.g. when the catalog is used outside Plone).
+        """
+        from Acquisition import aq_parent
+        from Products.CMFCore.interfaces import ISiteRoot
+
+        obj = self
+        for _ in range(20):  # depth guard
+            if ISiteRoot.providedBy(obj):
+                return obj
+            parent = aq_parent(obj)
+            if parent is None or parent is obj:
+                return None
+            obj = parent
+        return None
+
+    def _walk_site_paths(self, site):
+        """Yield ``(obj, path)`` for every content object below *site*.
+
+        Breadth-first traversal using a queue of path strings (not
+        objects) to keep memory flat on large sites.  Each path is
+        resolved via ``unrestrictedTraverse`` at yield time.
+
+        Includes discussion items on content objects when
+        ``plone.app.discussion`` is installed.  Silently no-ops for
+        content without conversations.
+        """
+        site_path = "/".join(site.getPhysicalPath())
+        queue = [site_path]
+        seen = set()  # guard against acquisition-based loops
+
+        while queue:
+            path = queue.pop(0)
+            if path in seen:
+                continue
+            seen.add(path)
+
+            try:
+                obj = self.unrestrictedTraverse(path, None)
+            except Exception:
+                log.debug("Traversal failed for %s", path, exc_info=True)
+                continue
+            if obj is None:
+                continue
+
+            yield obj, path
+
+            # Enqueue direct children (IDs only — cheap strings).
+            try:
+                child_ids = obj.objectIds()
+            except Exception:
+                child_ids = ()
+            for child_id in child_ids:
+                queue.append(f"{path}/{child_id}")
+
+            # Yield discussion items for this object (if any).
+            yield from self._walk_discussions(obj)
+
+    def _walk_discussions(self, obj):
+        """Yield ``(comment, path)`` for discussion items on *obj*.
+
+        No-op when ``plone.app.discussion`` is not installed, or when
+        *obj* has no conversation adapter, or when the conversation is
+        empty.  Errors from individual comments are swallowed and logged
+        so one broken comment does not abort the rebuild.
+        """
+        try:
+            from plone.app.discussion.interfaces import IConversation
+        except ImportError:
+            return
+        from zope.component import queryAdapter
+
+        conversation = queryAdapter(obj, IConversation)
+        if conversation is None:
+            return
+        try:
+            comments = conversation.getComments()
+        except Exception:
+            log.debug("getComments failed on %r", obj, exc_info=True)
+            return
+        for comment in comments:
+            try:
+                yield comment, "/".join(comment.getPhysicalPath())
+            except Exception:
+                log.debug("Comment path resolution failed", exc_info=True)
+                continue
 
     # -- ZCatalog internal API (PG-backed) ----------------------------------
 

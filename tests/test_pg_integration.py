@@ -16,6 +16,7 @@ from plone.app.testing import TEST_USER_ID
 from plone.pgcatalog.testing import PGCATALOG_PG_FIXTURE
 from zope.pytestlayer import fixture
 
+import pytest
 import transaction
 
 
@@ -1372,6 +1373,53 @@ class TestMaintenanceOps:
             f"Missing after rebuild: {expected - after_paths}. "
             f"Got: {after_paths}"
         )
+
+    def test_clear_find_and_rebuild_indexes_discussion_items(self, pg_functional):
+        """clearFindAndRebuild indexes discussion items on content.
+
+        Discussion items live in IAnnotations under ``++conversation++default``
+        and are not reachable via ``objectValues()``.  The rebuild walker
+        must yield them explicitly via the ``IConversation`` adapter.
+
+        Skipped when ``plone.app.discussion`` is not available.
+        """
+        pytest.importorskip("plone.app.discussion")
+        from plone.app.discussion.interfaces import IConversation
+        from zope.component import queryAdapter
+
+        portal = pg_functional["portal"]
+        setRoles(portal, TEST_USER_ID, ["Manager"])
+        catalog = portal["portal_catalog"]
+
+        # Create a document and a comment on it.
+        portal.invokeFactory("Document", "disc-doc", title="Discussed")
+        doc = portal["disc-doc"]
+        conversation = queryAdapter(doc, IConversation)
+        assert conversation is not None, "IConversation adapter missing"
+
+        from plone.app.discussion.comment import CommentFactory
+
+        comment = CommentFactory()
+        comment.text = "This is a comment"
+        comment.author_username = TEST_USER_ID
+        conversation.addComment(comment)
+        transaction.commit()
+
+        # Rebuild from scratch.
+        catalog.clearFindAndRebuild()
+        transaction.commit()
+
+        # The Comment should be in the catalog (class_name='Comment'
+        # in plone.app.discussion).
+        rows = _query_pg(
+            pg_functional,
+            "SELECT path FROM object_state "
+            "WHERE path IS NOT NULL "
+            "AND path LIKE %s "
+            "AND class_name = 'Comment'",
+            ("/plone/disc-doc/++conversation++default/%",),
+        )
+        assert rows, "Comment was not indexed by clearFindAndRebuild"
 
     def test_manage_catalog_clear(self, pg_functional):
         """manage_catalogClear() removes all catalog data from PG."""
