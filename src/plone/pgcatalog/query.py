@@ -443,8 +443,14 @@ class _QueryBuilder:
         if query_val is None:
             return
         p = self._pname(name)
-        self.clauses.append(f"idx->>'{idx_key}' = %({p})s")
-        self.params[p] = _bool_to_lower_str(query_val)
+        if isinstance(query_val, (list, tuple)):
+            # e.g. plone.app.querystring ``list.contains`` on UID —
+            # match any element in the list.
+            self.clauses.append(f"idx->>'{idx_key}' = ANY(%({p})s)")
+            self.params[p] = [_bool_to_lower_str(v) for v in query_val]
+        else:
+            self.clauses.append(f"idx->>'{idx_key}' = %({p})s")
+            self.params[p] = _bool_to_lower_str(query_val)
 
     # -- ZCTextIndex (SearchableText / Title / Description) -----------------
 
