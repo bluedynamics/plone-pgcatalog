@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.0.0b50
+## 1.0.0b49
 
 ### Fixed
 
@@ -24,10 +24,6 @@
   `addons_compat/eeafacetednavigation.py` (faceted search dispatch),
   and `backends.py` (text search backends).  Helper renamed from
   `_to_json_string` to `_bool_to_lower_str` to match what it actually does.
-
-## 1.0.0b49
-
-### Fixed
 
 - Gracefully handle missing `meta` column in `_load_idx_batch()` (#105).
   Falls back to `SELECT zoid, idx` if the column does not exist yet,
