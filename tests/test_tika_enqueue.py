@@ -324,6 +324,116 @@ class TestEnqueueLogic:
         assert rows[0]["tid"] == tid
         assert rows[0]["content_type"] == "application/pdf"
 
+    @pytest.mark.skipif(not TIKA_URL, reason="PGCATALOG_TIKA_URL not set")
+    def test_enqueue_mixed_flat_and_wrapper(self, pg_conn_with_queue):
+        """Mix: one candidate has direct blob ref, another has wrapper ref.
+
+        Both should enqueue against the correct inner OID.
+        """
+        conn = pg_conn_with_queue
+
+        # Flat: content 800 -> blob 801 (direct)
+        flat_content, flat_blob, tid = 800, 801, 1
+        insert_object(conn, flat_content, tid)
+        self._insert_blob(conn, flat_blob, tid)
+
+        # Wrapped: content 810 -> wrapper 811 -> blob 812
+        wrap_content, wrap_oid, wrap_blob = 810, 811, 812
+        insert_object(conn, wrap_content, tid)
+        insert_object(
+            conn,
+            wrap_oid,
+            tid,
+            class_mod="plone.namedfile.file",
+            class_name="NamedBlobImage",
+            state=json.dumps(
+                {"_blob": {"@ref": [f"{wrap_blob:016x}", "ZODB.blob.Blob"]}}
+            ),
+        )
+        self._insert_blob(conn, wrap_blob, tid)
+
+        proc = CatalogStateProcessor()
+        proc._tika_candidates = [
+            {
+                "zoid": flat_content,
+                "content_type": "application/pdf",
+                "blob_refs": [flat_blob],
+            },
+            {
+                "zoid": wrap_content,
+                "content_type": "image/png",
+                "blob_refs": [wrap_oid],
+            },
+        ]
+
+        with conn.cursor(row_factory=tuple_row) as cur:
+            proc._enqueue_tika_jobs(cur)
+        conn.commit()
+
+        rows = {r["zoid"]: r for r in self._get_queue(conn)}
+        assert rows[flat_content]["blob_zoid"] == flat_blob
+        assert rows[wrap_content]["blob_zoid"] == wrap_blob
+        assert rows[wrap_content]["content_type"] == "image/png"
+
+    @pytest.mark.skipif(not TIKA_URL, reason="PGCATALOG_TIKA_URL not set")
+    def test_enqueue_wrapper_with_missing_inner_blob(self, pg_conn_with_queue):
+        """Wrapper exists in object_state but inner blob is missing."""
+        conn = pg_conn_with_queue
+        content_zoid, wrapper_zoid, tid = 820, 821, 1
+        missing_blob = 99999
+
+        insert_object(conn, content_zoid, tid)
+        insert_object(
+            conn,
+            wrapper_zoid,
+            tid,
+            class_mod="plone.namedfile.file",
+            class_name="NamedBlobFile",
+            state=json.dumps(
+                {"_blob": {"@ref": [f"{missing_blob:016x}", "ZODB.blob.Blob"]}}
+            ),
+        )
+        # no blob_state row for missing_blob
+
+        proc = CatalogStateProcessor()
+        proc._tika_candidates = [
+            {
+                "zoid": content_zoid,
+                "content_type": "application/pdf",
+                "blob_refs": [wrapper_zoid],
+            }
+        ]
+
+        with conn.cursor(row_factory=tuple_row) as cur:
+            proc._enqueue_tika_jobs(cur)
+        conn.commit()
+
+        assert self._get_queue(conn) == []
+
+    @pytest.mark.skipif(not TIKA_URL, reason="PGCATALOG_TIKA_URL not set")
+    def test_enqueue_ignores_unresolvable_refs(self, pg_conn_with_queue):
+        """Ref with neither blob_state nor object_state entry is a noop."""
+        conn = pg_conn_with_queue
+        content_zoid, tid = 830, 1
+        ghost_ref = 0xDEADBEEF
+
+        insert_object(conn, content_zoid, tid)
+
+        proc = CatalogStateProcessor()
+        proc._tika_candidates = [
+            {
+                "zoid": content_zoid,
+                "content_type": "application/pdf",
+                "blob_refs": [ghost_ref],
+            }
+        ]
+
+        with conn.cursor(row_factory=tuple_row) as cur:
+            proc._enqueue_tika_jobs(cur)
+        conn.commit()
+
+        assert self._get_queue(conn) == []
+
     def test_process_accumulates_candidates_with_blob_refs(self, pg_conn_with_queue):
         """process() accumulates tika candidates with blob_refs from state."""
         from plone.pgcatalog.pending import set_pending
