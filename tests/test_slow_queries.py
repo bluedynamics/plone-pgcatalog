@@ -1,5 +1,6 @@
 """Tests for slow query logging."""
 
+from plone.pgcatalog.search import _LOG_ALL_QUERIES
 from plone.pgcatalog.search import _record_slow_query
 from plone.pgcatalog.search import _SLOW_QUERY_MS
 from unittest import mock
@@ -56,3 +57,38 @@ class TestRecordSlowQuery:
         mock_conn.execute.assert_called_once()
         call_sql = mock_conn.execute.call_args[0][0]
         assert "pgcatalog_slow_queries" in call_sql
+
+
+class TestQueryLoggingConfiguration:
+    """Test query logging configuration via environment variables."""
+
+    def test_default_log_all_queries(self):
+        """Test default value of LOG_ALL_QUERIES."""
+        # Should be boolean (actual value depends on environment)
+        assert isinstance(_LOG_ALL_QUERIES, bool)
+
+    def test_log_all_queries_env_override(self):
+        """Test LOG_ALL_QUERIES environment variable override."""
+        # Test with enabled
+        with mock.patch.dict(os.environ, {"PGCATALOG_LOG_ALL_QUERIES": "1"}):
+            from plone.pgcatalog import search
+
+            import importlib
+
+            importlib.reload(search)
+            assert search._LOG_ALL_QUERIES is True
+
+        # Test with disabled
+        with mock.patch.dict(os.environ, {"PGCATALOG_LOG_ALL_QUERIES": "false"}):
+            importlib.reload(search)
+            assert search._LOG_ALL_QUERIES is False
+
+        # Test with different true values
+        for value in ["true", "yes", "True", "YES"]:
+            with mock.patch.dict(os.environ, {"PGCATALOG_LOG_ALL_QUERIES": value}):
+                importlib.reload(search)
+                assert search._LOG_ALL_QUERIES is True
+
+        # Restore
+        os.environ.pop("PGCATALOG_LOG_ALL_QUERIES", None)
+        importlib.reload(search)
