@@ -48,9 +48,9 @@
 ### Fixed
 
 - Query cache: use catalog-specific change counter instead of
-  `MAX(tid)` (#94).  The cache was invalidated on every ZODB write
+  `MAX(tid)` (#94). The cache was invalidated on every ZODB write
   (~2500/hour from ScalesDict alone), making it nearly useless (~28%
-  hit rate).  Now uses `pgcatalog_change_seq` which only increments
+  hit rate). Now uses `pgcatalog_change_seq` which only increments
   on actual catalog writes (catalog_object, uncatalog, reindex, move).
   Expected hit rate 90%+ on typical sites.
 
@@ -61,13 +61,13 @@
 - Fix Tika queue never populated: `content_type` always None (#90).
   Removed broken `extract_content_type()` — `IPrimaryFieldInfo` can't
   adapt the indexer wrapper and Dexterity items have no top-level
-  `content_type` attribute.  MIME type is now read directly from
+  `content_type` attribute. MIME type is now read directly from
   `idx["mime_type"]` (the standard Plone catalog index), which is
   reliably extracted by the IndexRegistry.
 
 - Fix suggestion index existence check + dedicated KEYWORD fields (#92).
   `_check_covered()` now compares by index name (reliable) with
-  normalized expression fallback.  `object_provides` and `Subject`
+  normalized expression fallback. `object_provides` and `Subject`
   added to `_DEDICATED_FIELDS` — their existing GIN indexes make new
   suggestions useless.
 
@@ -75,13 +75,13 @@
 
 ### Added
 
-- Smart index suggestions in ZMI Slow Queries tab (#86).  Replaces the
+- Smart index suggestions in ZMI Slow Queries tab (#86). Replaces the
   naive `_suggest_index()` with field-type-aware suggestions using the
-  IndexRegistry.  Generates correct DDL per IndexType (btree expression,
-  GIN, tsvector, composites).  Detects already-covered fields (dedicated
-  columns, existing indexes).  Manual "Apply" button creates indexes via
-  `CREATE INDEX CONCURRENTLY`.  "Drop" button for removing suggestion
-  indexes (`idx_os_sug_*`).  On-demand EXPLAIN plans for slow queries.
+  IndexRegistry. Generates correct DDL per IndexType (btree expression,
+  GIN, tsvector, composites). Detects already-covered fields (dedicated
+  columns, existing indexes). Manual "Apply" button creates indexes via
+  `CREATE INDEX CONCURRENTLY`. "Drop" button for removing suggestion
+  indexes (`idx_os_sug_*`). On-demand EXPLAIN plans for slow queries.
   New `suggestions.py` module with pure suggestion engine + DB helpers.
 
 ## 1.0.0b43
@@ -90,7 +90,7 @@
 
 - Fix Tika enqueue: `_collect_ref_oids()` and the `ANNOTATION_KEY`
   fallback in `CatalogStateProcessor.process()` now handle JSON
-  string state (from `decode_zodb_record_for_pg_json`).  Previously
+  string state (from `decode_zodb_record_for_pg_json`). Previously
   `state` was assumed to be a dict, but the fast codec path returns a
   JSON string — so `@ref` markers were never found, no extraction
   jobs were enqueued, and Tika sat idle.
@@ -232,7 +232,7 @@
 ### Added
 
 - Denormalize `allowedRolesAndUsers` into dedicated `allowed_roles
-  TEXT[]` column with GIN index. Security filter queries now use
+TEXT[]` column with GIN index. Security filter queries now use
   `allowed_roles && ARRAY[...]` instead of JSONB decompression.
   Includes automatic backfill migration for existing databases.
   Navigation queries 85ms to 5-15ms, all queries benefit. Fixes #63.
@@ -399,7 +399,7 @@
 ### Fixed
 
 - Fix computed index extraction (`is_folderish`, `is_default_page`,
-  `sortable_title`, etc.) always returning `null`.  `IPGCatalogTool`
+  `sortable_title`, etc.) always returning `null`. `IPGCatalogTool`
   extended both `ICatalogTool` and `IPloneCatalogTool`, causing
   `ICatalogTool` to come first in the interface resolution order.
   CMFCore's `IndexableObjectWrapper` (which does not resolve
@@ -412,7 +412,7 @@
 ### Security
 
 - **CAT-Q1:** Validate unknown query keys before SQL interpolation in
-  `_process_index()` fallback path.  Unregistered index names are now
+  `_process_index()` fallback path. Unregistered index names are now
   checked with `validate_identifier()` before being interpolated into
   JSONB field query expressions, preventing potential SQL injection via
   crafted query dict keys.
@@ -423,14 +423,14 @@
 ### Changed
 
 - **CAT-P1:** `reindex_index()` now uses a server-side cursor with batched
-  fetches instead of loading all rows into memory at once.  Progress is
+  fetches instead of loading all rows into memory at once. Progress is
   logged after each batch.
 
 ### Fixed
 
 - **CAT-O1:** Index/metadata extraction failures in `extraction.py` now
   emit `log.debug()` messages with field name and exception info instead
-  of silently passing.  Translator extraction failures are also logged.
+  of silently passing. Translator extraction failures are also logged.
 
 - **CAT-O2:** Startup degradation (failed registry sync, failed text index
   creation) now logs at `ERROR` level with actionable context messages
@@ -458,7 +458,7 @@
 ### Fixed
 
 - Protect PlonePGCatalogTool from being replaced during GenericSetup
-  profile imports.  CMFPlone's baseline `toolset.xml` declares
+  profile imports. CMFPlone's baseline `toolset.xml` declares
   `portal_catalog` with `CatalogTool`; since `PlonePGCatalogTool` is a
   different class, the default `importToolset` deletes it, triggering an
   `IObjectModifiedEvent` cascade that raises `KeyError: 'portal_catalog'`.
@@ -471,12 +471,12 @@
 
 - Fix new objects not being indexed in PostgreSQL.
   ZODB assigns object IDs (`_p_oid`) during `Connection.commit()`, which runs
-  *after* `before_commit` hooks (where the IndexQueue flushes). All new objects
+  _after_ `before_commit` hooks (where the IndexQueue flushes). All new objects
   therefore have `_p_oid=None` at `catalog_object()` call time, causing the
-  catalog to silently skip them.  The fix stores pending catalog data directly
+  catalog to silently skip them. The fix stores pending catalog data directly
   in `obj.__dict__` under the `_pgcatalog_pending` key when no OID is available
   yet; `CatalogStateProcessor.process()` pops and uses it during `store()` so
-  the annotation is never persisted to the database.  Fixes #27.
+  the annotation is never persisted to the database. Fixes #27.
 
 ## 1.0.0b13
 
@@ -486,7 +486,7 @@
   now returns a Zope `DateTime` object instead of an ISO string).
   Non-JSON-native metadata values (DateTime, datetime, date, etc.) are
   encoded via the Rust codec into `idx["@meta"]` at write time and restored
-  on brain attribute access with per-brain caching.  JSON-native values
+  on brain attribute access with per-brain caching. JSON-native values
   (str, int, float, bool, None) remain in top-level `idx` unchanged.
   Backward compatible — old data without `@meta` still works.
   Fixes #23.
@@ -531,7 +531,7 @@
 
 - **Clean break from ZCatalog**: `PlonePGCatalogTool` no longer inherits
   from `Products.CMFPlone.CatalogTool` (and transitively `ZCatalog`,
-  `ObjectManager`, etc.).  The new base classes are `UniqueObject + Folder`,
+  `ObjectManager`, etc.). The new base classes are `UniqueObject + Folder`,
   providing a minimal OFS container for index objects and lexicons while
   eliminating the deep inheritance chain.
 
@@ -541,22 +541,22 @@
 
   A `_CatalogCompat` persistent object provides `_catalog.indexes` and
   `_catalog.schema` for backward compatibility with code that accesses
-  ZCatalog internal data structures.  Existing ZODB instances with the old
+  ZCatalog internal data structures. Existing ZODB instances with the old
   `_catalog` (full `Catalog` object) continue to work without migration.
 
 - **ZCML override for eea.facetednavigation**: Moved from `<includeOverrides>`
   inside `configure.zcml` to a proper `overrides.zcml` at the package root,
-  loaded by Zope's `five:loadProductsOverrides`.  Fixes ZCML conflict errors
+  loaded by Zope's `five:loadProductsOverrides`. Fixes ZCML conflict errors
   when both eea.facetednavigation and plone.pgcatalog are installed.
 
 ### Added
 
 - **eea.facetednavigation adapter**: `PGFacetedCatalog` in
   `addons_compat/eeafacetednavigation.py` -- PG-backed `IFacetedCatalog`
-  that queries `idx` JSONB directly for faceted counting.  Dispatches by
+  that queries `idx` JSONB directly for faceted counting. Dispatches by
   `IndexType` (FIELD, KEYWORD, BOOLEAN, UUID, DATE) with `IPGIndexTranslator`
-  fallback.  Falls back to the default BTree-based implementation when the
-  catalog is not `IPGCatalogTool`.  Conditionally loaded only when
+  fallback. Falls back to the default BTree-based implementation when the
+  catalog is not `IPGCatalogTool`. Conditionally loaded only when
   `eea.facetednavigation` is installed.
 
 - **Deprecated proxy methods**: `search()` proxies to `searchResults()` and
@@ -568,12 +568,12 @@
   `index_objects` raise `NotImplementedError` with descriptive messages.
 
 - **AccessControl security declarations**: Comprehensive Zope security
-  matching ZCatalog's permission model.  `Search ZCatalog` on read
+  matching ZCatalog's permission model. `Search ZCatalog` on read
   methods (`searchResults`, `__call__`, `getpath`, `getrid`, etc.),
   `Manage ZCatalog Entries` on write methods (`catalog_object`,
   `uncatalog_object`, `refreshCatalog`, etc.), `Manage ZCatalogIndex
-  Entries` on index management (`addIndex`, `delIndex`, `addColumn`,
-  `delColumn`, `getIndexObjects`).  `setPermissionDefault` assigns
+Entries` on index management (`addIndex`, `delIndex`, `addColumn`,
+  `delColumn`, `getIndexObjects`). `setPermissionDefault` assigns
   default roles (`Anonymous` for search, `Manager` for management).
   Private helpers (`indexObject`, `reindexObject`, etc.) declared
   private.
@@ -584,8 +584,8 @@
   overlap clause (`obj_start <= q_end AND obj_end >= q_start`).
   Supports recurring events: when the underlying start index is a
   DateRecurringIndex with RRULE, uses `rrule."between"()` with duration
-  offset for occurrence-level overlap detection.  Auto-discovered at
-  startup — no configuration needed.  Allows dropping the
+  offset for occurrence-level overlap detection. Auto-discovered at
+  startup — no configuration needed. Allows dropping the
   `Products.DateRangeInRangeIndex` addon while keeping the same query API.
 
 ### Fixed
@@ -620,7 +620,7 @@
 - **Indexes & Metadata tab** (`manage_catalogIndexesAndMetadata`): Merged
   the separate Indexes and Metadata tabs into one read-only view showing
   all registered indexes (name, type, PG storage location, source attrs)
-  and metadata columns.  Reflects the IndexRegistry rather than BTree
+  and metadata columns. Reflects the IndexRegistry rather than BTree
   counts (which were always 0).
 
 - **Removed tabs**: Query Report, Query Plan (BTree timing), and the
@@ -807,7 +807,6 @@ Security review fixes (addresses #11):
 ### Added
 
 - Add partial idx JSONB updates for lightweight reindex. [#6]
-
   - When `reindexObject(idxs=[...])` is called with specific index names (e.g. during `reindexObjectSecurity`), extract only the requested values and register a JSONB merge patch (`idx || patch`) instead of full ZODB serialization + full idx column replacement
   - Avoids `_p_changed = True` and the associated pickle-JSON round-trip for every object in a subtree
   - Uses the new `finalize(cursor)` hook from zodb-pgjsonb to apply partial JSONB merges atomically in the same PG transaction
@@ -889,9 +888,9 @@ Security review fixes (addresses #11):
 
 - **ZCatalog BTree write elimination**: Removed `super()` delegation in
   `indexObject()`, `reindexObject()`, `catalog_object()`, and
-  `uncatalog_object()`.  All catalog data now flows exclusively to
+  `uncatalog_object()`. All catalog data now flows exclusively to
   PostgreSQL via `CatalogStateProcessor` — no BTree/Bucket objects are
-  written to ZODB.  Content creation dropped from 175 ms/doc to
+  written to ZODB. Content creation dropped from 175 ms/doc to
   68.5 ms/doc (2.5x faster), making PGCatalog 1.13x faster than
   RelStorage+ZCatalog for writes.
 
@@ -901,7 +900,6 @@ Security review fixes (addresses #11):
   dynamic `IndexRegistry` that discovers indexes from ZCatalog at startup
   via `sync_from_catalog()`. Addons that add indexes via `catalog.xml`
   profiles are now automatically supported without code changes.
-
   - `META_TYPE_MAP` maps ZCatalog meta_types (FieldIndex, KeywordIndex,
     DateIndex, etc.) to `IndexType` enum values.
   - `SPECIAL_INDEXES` (`SearchableText`, `effectiveRange`, `path`) have
