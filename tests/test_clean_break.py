@@ -116,15 +116,91 @@ class TestCatalogCompat:
         assert hasattr(tool._catalog, "schema")
         assert hasattr(tool._catalog.schema, "keys")
 
-    def test_get_index(self, tool):
-        # Add an index object, verify getIndex works
-        tool._catalog.indexes["test_idx"] = object()
-        result = tool._catalog.getIndex("test_idx")
-        assert result is tool._catalog.indexes["test_idx"]
-
     def test_get_index_missing_raises(self, tool):
         with pytest.raises(KeyError):
             tool._catalog.getIndex("nonexistent")
+
+    def test_get_index_returns_pgindex_for_field(self, tool):
+        """getIndex wraps field indexes with PGIndex.
+
+        Plone code such as ``plone.app.vocabularies.KeywordsVocabulary``
+        and ``Products.CMFPlone.browser.search`` accesses indexes via
+        ``catalog._catalog.getIndex(name)`` — this path must return a
+        PG-backed wrapper, otherwise ``index._index`` and
+        ``index.uniqueValues()`` read empty ZCatalog BTrees.
+        """
+        from unittest import mock
+
+        raw = mock.Mock()
+        raw.id = "portal_type"
+        raw.meta_type = "FieldIndex"
+        tool._catalog.indexes["portal_type"] = raw
+        # Register portal_type so _maybe_wrap_index finds an idx_key.
+        from plone.pgcatalog.columns import get_registry
+        from plone.pgcatalog.columns import IndexType
+
+        get_registry().register(
+            name="portal_type",
+            idx_type=IndexType.FIELD,
+            idx_key="portal_type",
+            source_attrs=["portal_type"],
+        )
+
+        from plone.pgcatalog.pgindex import PGIndex
+
+        result = tool._catalog.getIndex("portal_type")
+        assert isinstance(result, PGIndex)
+
+    def test_get_index_delegates_meta_type(self, tool):
+        """Wrapped index delegates attribute access to the raw index.
+
+        plone.app.event's setuphandlers reads ``index.meta_type`` to
+        detect outdated DateIndex definitions — this must still work
+        through the wrapper.
+        """
+        from unittest import mock
+
+        raw = mock.Mock()
+        raw.id = "start"
+        raw.meta_type = "DateRecurringIndex"
+        tool._catalog.indexes["start"] = raw
+        from plone.pgcatalog.columns import get_registry
+        from plone.pgcatalog.columns import IndexType
+
+        get_registry().register(
+            name="start",
+            idx_type=IndexType.DATE,
+            idx_key="start",
+            source_attrs=["start"],
+        )
+
+        result = tool._catalog.getIndex("start")
+        assert result.meta_type == "DateRecurringIndex"
+
+    def test_get_index_special_index_unwrapped(self, tool):
+        """Special indexes (SearchableText, effectiveRange, path) with
+        ``idx_key=None`` return the raw index unchanged — they use
+        dedicated PG columns, not JSONB ->> access.
+        """
+        from unittest import mock
+
+        raw = mock.Mock()
+        raw.id = "SearchableText"
+        raw.meta_type = "ZCTextIndex"
+        tool._catalog.indexes["SearchableText"] = raw
+        from plone.pgcatalog.columns import get_registry
+        from plone.pgcatalog.columns import IndexType
+
+        get_registry().register(
+            name="SearchableText",
+            idx_type=IndexType.TEXT,
+            idx_key=None,
+            source_attrs=[],
+        )
+
+        result = tool._catalog.getIndex("SearchableText")
+        # Special index → not wrapped
+        assert result is raw
 
 
 # ---------------------------------------------------------------------------
