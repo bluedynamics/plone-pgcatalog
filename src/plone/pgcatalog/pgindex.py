@@ -21,6 +21,8 @@ matching ``getpath()``/``getrid()`` on the catalog.
 
 from Acquisition import aq_inner
 from Acquisition import aq_parent
+from plone.pgcatalog.columns import get_registry
+from plone.pgcatalog.interfaces import IPGCatalogTool
 from plone.pgcatalog.query import _bool_to_lower_str
 from Products.ZCatalog.ZCatalogIndexes import ZCatalogIndexes
 
@@ -144,12 +146,11 @@ def _maybe_wrap_index(catalog, name, raw_index):
     if raw_index is None:
         return None
 
-    from plone.pgcatalog.interfaces import IPGCatalogTool
-
+    # The non-PG-catalog path is primarily a defensive guard for tests
+    # and loose dependencies.  In a normal Plone install where this
+    # package is active, every tool goes through IPGCatalogTool.
     if not IPGCatalogTool.providedBy(catalog):
         return raw_index
-
-    from plone.pgcatalog.columns import get_registry
 
     registry = get_registry()
     entry = registry.get(name)

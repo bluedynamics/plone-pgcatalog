@@ -110,15 +110,15 @@ class _CatalogCompat(Implicit, Persistent):
     def getIndex(self, name):
         """Return a PG-backed index wrapper for *name*.
 
-        Plone code that bypasses ``catalog.Indexes[name]`` (notably
-        ``plone.app.vocabularies.KeywordsVocabulary``,
-        ``Products.CMFPlone.browser.search.Search.types_list``, and
-        ``plone.app.event.setuphandlers``) accesses indexes via
-        ``catalog._catalog.getIndex(name)``.  Returning the raw
+        Plone code that bypasses `catalog.Indexes[name]` (notably
+        `plone.app.vocabularies.KeywordsVocabulary`,
+        `Products.CMFPlone.browser.search.Search.types_list`, and
+        `plone.app.event.setuphandlers`) accesses indexes via
+        `catalog._catalog.getIndex(name)`.  Returning the raw
         ZCatalog index would give those callers empty BTrees, so we
-        wrap with ``PGIndex`` — same as ``catalog.Indexes[name]``.
+        wrap with `PGIndex` — same as `catalog.Indexes[name]`.
 
-        Raises ``KeyError`` if *name* is not a known index.
+        Raises `KeyError` if *name* is not a known index.
         """
         raw_index = self.indexes[name]  # raises KeyError if missing
 
