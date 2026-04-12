@@ -269,6 +269,61 @@ class TestEnqueueLogic:
         rows = self._get_queue(conn)
         assert len(rows) == 1
 
+    @pytest.mark.skipif(not TIKA_URL, reason="PGCATALOG_TIKA_URL not set")
+    def test_enqueue_resolves_wrapper_oid(self, pg_conn_with_queue):
+        """Dexterity NamedBlobFile wrapper: one-level hop to inner Blob.
+
+        Content state @ref points at wrapper (object_state), wrapper
+        state @ref points at Blob (blob_state).  Queue must store the
+        inner Blob OID, not the wrapper.
+        """
+        conn = pg_conn_with_queue
+        content_zoid, wrapper_zoid, blob_zoid, tid = 700, 701, 702, 1
+
+        # Content object has no direct blob entry; its ref points at the
+        # NamedBlobFile wrapper.
+        insert_object(conn, content_zoid, tid)
+        # The wrapper is a persistent object whose state carries the
+        # real Blob @ref.
+        wrapper_state = json.dumps(
+            {
+                "_blob": {
+                    "@ref": [f"{blob_zoid:016x}", "ZODB.blob.Blob"],
+                },
+                "filename": "sample.pdf",
+                "contentType": "application/pdf",
+            }
+        )
+        insert_object(
+            conn,
+            wrapper_zoid,
+            tid,
+            class_mod="plone.namedfile.file",
+            class_name="NamedBlobFile",
+            state=wrapper_state,
+        )
+        self._insert_blob(conn, blob_zoid, tid)
+
+        proc = CatalogStateProcessor()
+        proc._tika_candidates = [
+            {
+                "zoid": content_zoid,
+                "content_type": "application/pdf",
+                "blob_refs": [wrapper_zoid],  # wrapper only, no direct blob
+            }
+        ]
+
+        with conn.cursor(row_factory=tuple_row) as cur:
+            proc._enqueue_tika_jobs(cur)
+        conn.commit()
+
+        rows = self._get_queue(conn)
+        assert len(rows) == 1
+        assert rows[0]["zoid"] == content_zoid
+        assert rows[0]["blob_zoid"] == blob_zoid  # inner, NOT wrapper_zoid
+        assert rows[0]["tid"] == tid
+        assert rows[0]["content_type"] == "application/pdf"
+
     def test_process_accumulates_candidates_with_blob_refs(self, pg_conn_with_queue):
         """process() accumulates tika candidates with blob_refs from state."""
         from plone.pgcatalog.pending import set_pending
