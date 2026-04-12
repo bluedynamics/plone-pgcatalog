@@ -3,6 +3,8 @@
 
 <main class="container-fluid">
 
+<dtml-if "REQUEST.get('zoid')">
+
 <dtml-let detail="manage_get_object_detail(REQUEST['zoid'])">
 
 <dtml-if "detail is None">
@@ -47,6 +49,39 @@
 </div>
 </dtml-if>
 
+<dtml-if "detail['metadata_items']">
+<div class="card mb-3">
+  <div class="card-header d-flex justify-content-between align-items-center">
+    <strong>Metadata Columns</strong> <small class="text-muted ml-1">(lightweight brain data)</small>
+    <span class="badge badge-secondary"><dtml-var "len(detail['metadata_items'])"> columns</span>
+  </div>
+  <table class="table table-striped table-hover table-sm mb-0">
+    <thead class="thead-light">
+      <tr>
+        <th scope="col" style="width:220px">Column</th>
+        <th scope="col">Value</th>
+      </tr>
+    </thead>
+    <tbody>
+      <dtml-in "detail['metadata_items']">
+      <dtml-let item="_['sequence-item']">
+      <tr>
+        <td><strong><dtml-var "item['key']" html_quote></strong></td>
+        <td style="word-break: break-all;">
+          <dtml-if "item['is_none']">
+            <span class="text-muted"><em>None</em></span>
+          <dtml-else>
+            <dtml-var "item['value']" html_quote>
+          </dtml-if>
+        </td>
+      </tr>
+      </dtml-let>
+      </dtml-in>
+    </tbody>
+  </table>
+</div>
+</dtml-if>
+
 <div class="card mb-3">
   <div class="card-header d-flex justify-content-between align-items-center">
     <strong>Index Data</strong> <small class="text-muted ml-1">(idx JSONB)</small>
@@ -81,6 +116,15 @@
 </dtml-if>
 
 </dtml-let>
+
+<dtml-else>
+
+<div class="alert alert-danger mt-3">
+  <strong>Error:</strong> No object ID (zoid) specified.
+  Please access this page from the <a href="manage_catalogView" class="alert-link">catalog object list</a>.
+</div>
+
+</dtml-if>
 
 <p>
   <a href="manage_catalogView" class="btn btn-sm btn-outline-secondary">&laquo; Back to Catalog</a>

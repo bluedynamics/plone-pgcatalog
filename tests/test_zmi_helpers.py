@@ -223,7 +223,7 @@ class TestManageGetCatalogObjects:
 class TestManageGetObjectDetail:
     """Tests for manage_get_object_detail()."""
 
-    def test_returns_sorted_idx_items(self, catalog_tool):
+    def test_returns_sorted_idx_items(self, catalog_tool, _mock_registry):
         row = {
             "path": "/Plone/doc",
             "idx": {"Title": "Hello", "portal_type": "Document", "UID": "abc-123"},
@@ -238,9 +238,11 @@ class TestManageGetObjectDetail:
             result = catalog_tool.manage_get_object_detail(zoid=42)
         assert result["path"] == "/Plone/doc"
         keys = [item["key"] for item in result["idx_items"]]
-        assert keys == ["Title", "UID", "portal_type"]
+        assert keys == ["UID"]
+        metadata_keys = [item["key"] for item in result["metadata_items"]]
+        assert metadata_keys == ["Title", "portal_type"]
 
-    def test_none_value_marked(self, catalog_tool):
+    def test_none_value_marked(self, catalog_tool, _mock_registry):
         row = {
             "path": "/x",
             "idx": {"review_state": None},
@@ -257,7 +259,7 @@ class TestManageGetObjectDetail:
         assert item["is_none"] is True
         assert item["value"] == ""
 
-    def test_list_value_joined(self, catalog_tool):
+    def test_list_value_joined(self, catalog_tool, _mock_registry):
         row = {
             "path": "/x",
             "idx": {"Subject": ["python", "zope"]},
@@ -273,7 +275,8 @@ class TestManageGetObjectDetail:
         item = result["idx_items"][0]
         assert item["value"] == "python, zope"
 
-    def test_bool_value_display(self, catalog_tool):
+    def test_bool_value_display(self, catalog_tool, _mock_registry):
+        # Test True value displays as "true"
         row = {
             "path": "/x",
             "idx": {"is_folderish": True},
@@ -288,7 +291,7 @@ class TestManageGetObjectDetail:
             result = catalog_tool.manage_get_object_detail(zoid=1)
         assert result["idx_items"][0]["value"] == "True"
 
-    def test_not_found_returns_none(self, catalog_tool):
+    def test_not_found_returns_none(self, catalog_tool, _mock_registry):
         mock_conn = mock.MagicMock()
         mock_conn.cursor().__enter__().fetchone.return_value = None
         with mock.patch.object(
@@ -297,7 +300,7 @@ class TestManageGetObjectDetail:
             result = catalog_tool.manage_get_object_detail(zoid=999)
         assert result is None
 
-    def test_empty_idx_returns_empty_items(self, catalog_tool):
+    def test_empty_idx_returns_empty_items(self, catalog_tool, _mock_registry):
         row = {
             "path": "/x",
             "idx": None,
@@ -311,3 +314,40 @@ class TestManageGetObjectDetail:
         ):
             result = catalog_tool.manage_get_object_detail(zoid=1)
         assert result["idx_items"] == []
+        assert result["metadata_items"] == []
+
+    def test_separates_metadata_from_index_data(self, catalog_tool, _mock_registry):
+        """Test that metadata columns are separated from index data."""
+        row = {
+            "path": "/Plone/doc",
+            "idx": {
+                "Title": "My Document",  # metadata + index
+                "Description": "A test doc",  # metadata only
+                "portal_type": "Document",  # metadata + index
+                "UID": "abc-123",  # index only
+                "allowedRolesAndUsers": ["Anonymous"],  # index only
+            },
+            "has_searchable_text": True,
+            "searchable_text_preview": "My Document",
+        }
+        mock_conn = mock.MagicMock()
+        mock_conn.cursor().__enter__().fetchone.return_value = row
+        with mock.patch.object(
+            catalog_tool, "_get_pg_read_connection", return_value=mock_conn
+        ):
+            result = catalog_tool.manage_get_object_detail(zoid=42)
+
+        # Check metadata items are separated correctly
+        metadata_keys = [item["key"] for item in result["metadata_items"]]
+        assert set(metadata_keys) == {"Title", "Description", "portal_type"}
+
+        # Check index-only items
+        idx_keys = [item["key"] for item in result["idx_items"]]
+        assert set(idx_keys) == {"UID", "allowedRolesAndUsers"}
+
+        # Verify values are preserved correctly
+        title_item = next(
+            item for item in result["metadata_items"] if item["key"] == "Title"
+        )
+        assert title_item["value"] == "My Document"
+        assert title_item["is_none"] is False

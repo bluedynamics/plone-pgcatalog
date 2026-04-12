@@ -1323,6 +1323,7 @@ class PlonePGCatalogTool(UniqueObject, Folder):
 
         Returns idx_items as a pre-sorted list of {"key", "value"} dicts
         so the DTML template doesn't need isinstance/sorted (restricted).
+        Also separates metadata columns from index columns for display.
         """
         zoid = int(zoid)
         conn = self._get_pg_read_connection()
@@ -1337,8 +1338,14 @@ class PlonePGCatalogTool(UniqueObject, Folder):
             row = cur.fetchone()
         if row is None:
             return None
+
         idx = row["idx"] or {}
+        registry = get_registry()
+
+        # Separate metadata from index data
+        metadata_items = []
         idx_items = []
+
         for k in sorted(idx):
             v = idx[k]
             if isinstance(v, list):
@@ -1349,10 +1356,19 @@ class PlonePGCatalogTool(UniqueObject, Folder):
                 display = "True" if v else "False"
             else:
                 display = str(v)
-            idx_items.append({"key": k, "value": display, "is_none": v is None})
+
+            item = {"key": k, "value": display, "is_none": v is None}
+
+            # Check if this key is a metadata column
+            if k in registry.metadata:
+                metadata_items.append(item)
+            else:
+                idx_items.append(item)
+
         return {
             "path": row["path"],
             "idx_items": idx_items,
+            "metadata_items": metadata_items,
             "has_searchable_text": row["has_searchable_text"],
             "searchable_text_preview": row["searchable_text_preview"] or "",
         }
