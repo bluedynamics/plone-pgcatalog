@@ -283,6 +283,51 @@ class TestCatalogIndexesWrapper:
         index = catalog.Indexes._getOb("UID")
         assert index.meta_type == "UUIDIndex"
 
+    def test_catalog_getindex_keywords_vocabulary_flow(self, pg_conn_with_catalog):
+        """End-to-end: simulate the KeywordsVocabulary code path.
+
+        plone.app.vocabularies.catalog.KeywordsVocabulary.all_keywords()::
+
+            index = self.catalog._catalog.getIndex(self.keyword_index)
+            return safe_simplevocabulary_from_values(index._index, ...)
+
+        The ``index._index`` lookup must return PG-backed data, not the
+        empty ZCatalog BTree.  Regression test for empty Subjects/Tags
+        dropdowns.
+        """
+        from plone.pgcatalog.catalog import PlonePGCatalogTool
+        from plone.pgcatalog.maintenance import _CatalogCompat
+
+        _catalog_objects(pg_conn_with_catalog)
+
+        # Build a catalog with a real _CatalogCompat (not a mock) so that
+        # _CatalogCompat.getIndex() can walk the Acquisition chain and
+        # reach _maybe_wrap_index.
+        catalog = PlonePGCatalogTool.__new__(PlonePGCatalogTool)
+        catalog._get_pg_read_connection = lambda: pg_conn_with_catalog
+
+        compat = _CatalogCompat()
+        portal_type_index = mock.Mock()
+        portal_type_index.id = "portal_type"
+        portal_type_index.meta_type = "FieldIndex"
+        compat.indexes["portal_type"] = portal_type_index
+        catalog._catalog = compat
+
+        # portal_type is pre-registered in the IndexRegistry by the
+        # session-scoped populated_registry fixture in conftest.py.
+
+        # This is the exact line KeywordsVocabulary runs — accessed via
+        # catalog._catalog (Acquisition-wrapped) so aq_parent returns catalog.
+        index = catalog._catalog.getIndex("portal_type")
+
+        # Verify the wrapping actually produced a PG-backed mapping.
+        assert isinstance(index._index, _PGIndexMapping)
+        # And uniqueValues() as CMFPlone.browser.search does
+        values = list(index.uniqueValues())
+        # _catalog_objects creates Document and Folder rows
+        assert "Document" in values
+        assert "Folder" in values
+
 
 class TestUUIDToPathFlow:
     """Integration test simulating the exact plone.app.uuid code path.
