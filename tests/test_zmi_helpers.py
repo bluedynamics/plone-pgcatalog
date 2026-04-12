@@ -274,6 +274,7 @@ class TestManageGetObjectDetail:
         assert item["value"] == "python, zope"
 
     def test_bool_value_display(self, catalog_tool):
+        # Test True value displays as "true"
         row = {
             "path": "/x",
             "idx": {"is_folderish": True},
@@ -286,7 +287,23 @@ class TestManageGetObjectDetail:
             catalog_tool, "_get_pg_read_connection", return_value=mock_conn
         ):
             result = catalog_tool.manage_get_object_detail(zoid=1)
-        assert result["idx_items"][0]["value"] == "True"
+        assert result["idx_items"][0]["value"] == "true"
+
+    def test_bool_false_value_display(self, catalog_tool):
+        # Test False value displays as "false"
+        row = {
+            "path": "/x",
+            "idx": {"is_folderish": False},
+            "has_searchable_text": False,
+            "searchable_text_preview": None,
+        }
+        mock_conn = mock.MagicMock()
+        mock_conn.cursor().__enter__().fetchone.return_value = row
+        with mock.patch.object(
+            catalog_tool, "_get_pg_read_connection", return_value=mock_conn
+        ):
+            result = catalog_tool.manage_get_object_detail(zoid=1)
+        assert result["idx_items"][0]["value"] == "false"
 
     def test_not_found_returns_none(self, catalog_tool):
         mock_conn = mock.MagicMock()

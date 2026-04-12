@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.0b50
+
+### Fixed
+
+- Always cast Boolean values to JSON notation.
+  This fixes problems with queries returning no results because they were using
+  Boolean values in Python notation
+
 ## 1.0.0b49
 
 ### Fixed

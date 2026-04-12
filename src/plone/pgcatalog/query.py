@@ -63,6 +63,17 @@ def _lookup_translator(name):
         return None
 
 
+def _to_json_string(value):
+    """Convert a Python value to JSON-standard string representation.
+
+    This ensures boolean values are converted to JSON format ('true'/'false')
+    instead of Python format ('True'/'False').
+    """
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)
+
+
 def build_query(query_dict):
     """Translate a ZCatalog query dict into SQL components.
 
@@ -276,21 +287,21 @@ class _QueryBuilder:
             elif isinstance(query_val, (list, tuple)):
                 p = self._pname(name)
                 self.clauses.append(f"idx->>'{idx_key}' = ANY(%({p})s)")
-                self.params[p] = [str(v) for v in query_val]
+                self.params[p] = [_to_json_string(v) for v in query_val]
             else:
                 p = self._pname(name)
                 self.clauses.append(f"idx->>'{idx_key}' = %({p})s")
-                self.params[p] = str(query_val)
+                self.params[p] = _to_json_string(query_val)
 
         if not_val is not None:
             if isinstance(not_val, (list, tuple)):
                 p = self._pname(name + "_not")
                 self.clauses.append(f"NOT (idx->>'{idx_key}' = ANY(%({p})s))")
-                self.params[p] = [str(v) for v in not_val]
+                self.params[p] = [_to_json_string(v) for v in not_val]
             else:
                 p = self._pname(name + "_not")
                 self.clauses.append(f"idx->>'{idx_key}' != %({p})s")
-                self.params[p] = str(not_val)
+                self.params[p] = _to_json_string(not_val)
 
     def _field_range(self, idx_key, value, range_spec):
         if range_spec in ("min:max", "minmax") and isinstance(value, (list, tuple)):
@@ -300,16 +311,16 @@ class _QueryBuilder:
                 f"(idx->>'{idx_key}' >= %({p_min})s"
                 f" AND idx->>'{idx_key}' <= %({p_max})s)"
             )
-            self.params[p_min] = str(value[0])
-            self.params[p_max] = str(value[1])
+            self.params[p_min] = _to_json_string(value[0])
+            self.params[p_max] = _to_json_string(value[1])
         elif range_spec == "min":
             p = self._pname(idx_key)
             self.clauses.append(f"idx->>'{idx_key}' >= %({p})s")
-            self.params[p] = str(value)
+            self.params[p] = _to_json_string(value)
         elif range_spec == "max":
             p = self._pname(idx_key)
             self.clauses.append(f"idx->>'{idx_key}' <= %({p})s")
-            self.params[p] = str(value)
+            self.params[p] = _to_json_string(value)
 
     # -- KeywordIndex -------------------------------------------------------
 
@@ -430,7 +441,7 @@ class _QueryBuilder:
             return
         p = self._pname(name)
         self.clauses.append(f"idx->>'{idx_key}' = %({p})s")
-        self.params[p] = str(query_val)
+        self.params[p] = _to_json_string(query_val)
 
     # -- ZCTextIndex (SearchableText / Title / Description) -----------------
 
@@ -450,7 +461,7 @@ class _QueryBuilder:
             lang_val = self._query.get("Language")
             if isinstance(lang_val, dict):
                 lang_val = lang_val.get("query", "")
-            lang_val = str(lang_val) if lang_val else ""
+            lang_val = _to_json_string(lang_val) if lang_val else ""
 
             clause, params, rank_expr = get_backend().build_search_clause(
                 query_val, lang_val, self._pname
@@ -470,7 +481,7 @@ class _QueryBuilder:
                 f"COALESCE(idx->>'{idx_key}', '')) "
                 f"@@ plainto_tsquery('simple'::regconfig, %({p})s)"
             )
-            self.params[p] = str(query_val)
+            self.params[p] = _to_json_string(query_val)
 
     # -- ExtendedPathIndex --------------------------------------------------
 

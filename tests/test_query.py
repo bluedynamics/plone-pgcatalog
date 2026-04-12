@@ -2,6 +2,7 @@
 
 from datetime import datetime
 from datetime import UTC
+from plone.pgcatalog.query import _to_json_string
 from plone.pgcatalog.query import build_query
 from psycopg.types.json import Json
 from unittest import mock
@@ -505,6 +506,24 @@ class TestEdgeCases:
         assert "nonexistent_index" in qr["where"]
         assert len(qr["params"]) > 0
 
+    def test_unregistered_boolean_field_uses_json_format(self):
+        """Boolean values in unregistered fields should use JSON format ('true'/'false')."""
+        # Test True value
+        qr = build_query({"show_in_sidecalendar": True})
+        assert "show_in_sidecalendar" in qr["where"]
+        param_val = _find_str_param(qr["params"])
+        assert param_val == "true"  # JSON format, not Python "True"
+
+        # Test False value
+        qr = build_query({"show_in_sidecalendar": False})
+        param_val = _find_str_param(qr["params"])
+        assert param_val == "false"  # JSON format, not Python "False"
+
+        # Test boolean in list
+        qr = build_query({"some_boolean_field": [True, False]})
+        param_vals = _find_list_param(qr["params"])
+        assert set(param_vals) == {"true", "false"}
+
     def test_combined_query(self):
         qr = build_query(
             {
@@ -943,3 +962,35 @@ class TestIPGIndexTranslatorQuery:
             assert qr["order_by"] is None
         finally:
             sm.unregisterUtility(provided=IPGIndexTranslator, name="unsortable")
+
+
+# ---------------------------------------------------------------------------
+# Helper Function Tests
+# ---------------------------------------------------------------------------
+
+
+class TestToJsonString:
+    """Test the _to_json_string helper function."""
+
+    def test_boolean_true(self):
+        """Test True converts to 'true'."""
+        assert _to_json_string(True) == "true"
+
+    def test_boolean_false(self):
+        """Test False converts to 'false'."""
+        assert _to_json_string(False) == "false"
+
+    def test_string_passthrough(self):
+        """Test strings are passed through unchanged."""
+        assert _to_json_string("hello") == "hello"
+        assert _to_json_string("True") == "True"  # String "True" stays as-is
+        assert _to_json_string("false") == "false"
+
+    def test_number_conversion(self):
+        """Test numbers are converted to strings."""
+        assert _to_json_string(42) == "42"
+        assert _to_json_string(3.14) == "3.14"
+
+    def test_none_conversion(self):
+        """Test None converts to 'None'."""
+        assert _to_json_string(None) == "None"

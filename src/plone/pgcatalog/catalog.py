@@ -1346,7 +1346,7 @@ class PlonePGCatalogTool(UniqueObject, Folder):
             elif v is None:
                 display = ""
             elif isinstance(v, bool):
-                display = "True" if v else "False"
+                display = "true" if v else "false"
             else:
                 display = str(v)
             idx_items.append({"key": k, "value": display, "is_none": v is None})
