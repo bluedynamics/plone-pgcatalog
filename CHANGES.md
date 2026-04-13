@@ -4,6 +4,13 @@
 
 ### Fixed
 
+- ``release_request_connection`` now issues an explicit
+  ``conn.rollback()`` before returning the connection to the pool.
+  Otherwise an implicit transaction opened by a prior ``SELECT`` on
+  the pool fallback path stays alive, holding a ``virtualxid`` that
+  blocks ``CREATE INDEX CONCURRENTLY``.  Companion fix to
+  bluedynamics/zodb-pgjsonb#58 (the storage-conn path).  Closes #118.
+
 - Suggested Indexes UI: detect already-applied suggestions with
   mixed-case field names (e.g. `Language`) by matching index names
   case-insensitively — PostgreSQL folds unquoted identifiers to

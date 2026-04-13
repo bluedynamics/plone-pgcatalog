@@ -226,6 +226,61 @@ class TestRequestConnection:
         # Thread-local still cleaned
         assert getattr(pending_mod._local, "pgcat_conn", None) is None
 
+    def test_release_rolls_back_before_putconn(self):
+        """release_request_connection rolls back any open txn before pooling."""
+        pool = mock.Mock()
+        conn = mock.Mock()
+        conn.closed = False
+        pool.getconn.return_value = conn
+
+        # Track call order
+        call_order = []
+        conn.rollback.side_effect = lambda: call_order.append("rollback")
+        pool.putconn.side_effect = lambda c: call_order.append("putconn")
+
+        get_request_connection(pool)
+        release_request_connection()
+
+        conn.rollback.assert_called_once()
+        pool.putconn.assert_called_once_with(conn)
+        # rollback must precede putconn
+        assert call_order == ["rollback", "putconn"]
+
+    def test_release_swallows_rollback_exception(self):
+        """If rollback fails (e.g. dead conn), putconn still runs and no exception escapes."""
+        pool = mock.Mock()
+        conn = mock.Mock()
+        conn.closed = False
+        conn.rollback.side_effect = RuntimeError("connection dead")
+        pool.getconn.return_value = conn
+
+        get_request_connection(pool)
+        # Must not raise
+        release_request_connection()
+
+        # putconn still called despite rollback failure
+        pool.putconn.assert_called_once_with(conn)
+        # Thread-local cleared
+        assert getattr(pending_mod._local, "pgcat_conn", None) is None
+
+    def test_release_skips_rollback_for_closed_conn(self):
+        """A closed conn is not rolled back nor returned to pool."""
+        pool = mock.Mock()
+        conn = mock.Mock()
+        conn.closed = True
+
+        # Set thread-local manually so we don't trigger get_request_connection's
+        # closed-conn check (which would discard and replace).
+        pending_mod._local.pgcat_conn = conn
+        pending_mod._local.pgcat_pool = pool
+
+        release_request_connection()
+
+        conn.rollback.assert_not_called()
+        pool.putconn.assert_not_called()
+        # Thread-local still cleared
+        assert getattr(pending_mod._local, "pgcat_conn", None) is None
+
 
 def _clean_pending():
     """Clear thread-local pending state and abort current transaction."""

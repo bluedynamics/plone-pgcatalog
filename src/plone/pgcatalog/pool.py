@@ -10,6 +10,7 @@ with multiple catalog queries within a single Zope request.
 
 from plone.pgcatalog.pending import _local
 
+import contextlib
 import logging
 import os
 
@@ -76,12 +77,22 @@ def release_request_connection(event=None):
 
     Called by the IPubEnd subscriber at the end of each Zope request.
     Safe to call when no request-scoped connection is active (no-op).
+
+    Issues an explicit ``conn.rollback()`` before pooling so the
+    connection comes back idle (not 'idle in transaction').  This
+    prevents the pool fallback path from leaving virtualxid locks
+    that block ``CREATE INDEX CONCURRENTLY`` (#118).  ``rollback()``
+    on a conn with no open transaction is a cheap no-op.
     """
     conn = getattr(_local, "pgcat_conn", None)
     pool = getattr(_local, "pgcat_pool", None)
     if conn is not None and pool is not None:
         try:
             if not conn.closed:
+                # Close any implicit txn opened by prior SELECTs.
+                # Suppress exceptions — a dead conn shouldn't break pool return.
+                with contextlib.suppress(Exception):
+                    conn.rollback()
                 pool.putconn(conn)
         except Exception:
             log.warning("Failed to return connection to pool", exc_info=True)
