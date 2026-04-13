@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.0.0b50
 
 ### Fixed
 
@@ -23,10 +23,6 @@
   enqueue silently skipped.  Flat-state content (legacy/Archetypes-
   style, where the content state carries a direct `ZODB.blob.Blob`
   `@ref`) is unchanged.  Closes #115.
-
-## 1.0.0b50
-
-### Fixed
 
 - `_handle_uuid` now accepts list/tuple queries (uses `= ANY(...)`),
   matching `_handle_field` semantics.  Previously a list query such as
