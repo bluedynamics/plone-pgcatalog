@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- Tika enqueue: resolve Dexterity `NamedBlobFile` / `NamedBlobImage`
+  wrapper OIDs via a second-hop lookup through `object_state`, so the
+  queue receives jobs for modern Dexterity File/Image content.
+  Previously `_enqueue_tika_jobs()` only looked up the OIDs it found
+  in the content's state — which are the wrapper OIDs, not the inner
+  `ZODB.blob.Blob` OIDs.  The direct lookup returned zero rows and the
+  enqueue silently skipped.  Flat-state content (legacy/Archetypes-
+  style, where the content state carries a direct `ZODB.blob.Blob`
+  `@ref`) is unchanged.  Closes #115.
+
 ## 1.0.0b50
 
 ### Fixed

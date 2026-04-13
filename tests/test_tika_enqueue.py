@@ -269,6 +269,171 @@ class TestEnqueueLogic:
         rows = self._get_queue(conn)
         assert len(rows) == 1
 
+    @pytest.mark.skipif(not TIKA_URL, reason="PGCATALOG_TIKA_URL not set")
+    def test_enqueue_resolves_wrapper_oid(self, pg_conn_with_queue):
+        """Dexterity NamedBlobFile wrapper: one-level hop to inner Blob.
+
+        Content state @ref points at wrapper (object_state), wrapper
+        state @ref points at Blob (blob_state).  Queue must store the
+        inner Blob OID, not the wrapper.
+        """
+        conn = pg_conn_with_queue
+        content_zoid, wrapper_zoid, blob_zoid, tid = 700, 701, 702, 1
+
+        # Content object has no direct blob entry; its ref points at the
+        # NamedBlobFile wrapper.
+        insert_object(conn, content_zoid, tid)
+        # The wrapper is a persistent object whose state carries the
+        # real Blob @ref.
+        wrapper_state = json.dumps(
+            {
+                "_blob": {
+                    "@ref": [f"{blob_zoid:016x}", "ZODB.blob.Blob"],
+                },
+                "filename": "sample.pdf",
+                "contentType": "application/pdf",
+            }
+        )
+        insert_object(
+            conn,
+            wrapper_zoid,
+            tid,
+            class_mod="plone.namedfile.file",
+            class_name="NamedBlobFile",
+            state=wrapper_state,
+        )
+        self._insert_blob(conn, blob_zoid, tid)
+
+        proc = CatalogStateProcessor()
+        proc._tika_candidates = [
+            {
+                "zoid": content_zoid,
+                "content_type": "application/pdf",
+                "blob_refs": [wrapper_zoid],  # wrapper only, no direct blob
+            }
+        ]
+
+        with conn.cursor(row_factory=tuple_row) as cur:
+            proc._enqueue_tika_jobs(cur)
+        conn.commit()
+
+        rows = self._get_queue(conn)
+        assert len(rows) == 1
+        assert rows[0]["zoid"] == content_zoid
+        assert rows[0]["blob_zoid"] == blob_zoid  # inner, NOT wrapper_zoid
+        assert rows[0]["tid"] == tid
+        assert rows[0]["content_type"] == "application/pdf"
+
+    @pytest.mark.skipif(not TIKA_URL, reason="PGCATALOG_TIKA_URL not set")
+    def test_enqueue_mixed_flat_and_wrapper(self, pg_conn_with_queue):
+        """Mix: one candidate has direct blob ref, another has wrapper ref.
+
+        Both should enqueue against the correct inner OID.
+        """
+        conn = pg_conn_with_queue
+
+        # Flat: content 800 -> blob 801 (direct)
+        flat_content, flat_blob, tid = 800, 801, 1
+        insert_object(conn, flat_content, tid)
+        self._insert_blob(conn, flat_blob, tid)
+
+        # Wrapped: content 810 -> wrapper 811 -> blob 812
+        wrap_content, wrap_oid, wrap_blob = 810, 811, 812
+        insert_object(conn, wrap_content, tid)
+        insert_object(
+            conn,
+            wrap_oid,
+            tid,
+            class_mod="plone.namedfile.file",
+            class_name="NamedBlobImage",
+            state=json.dumps(
+                {"_blob": {"@ref": [f"{wrap_blob:016x}", "ZODB.blob.Blob"]}}
+            ),
+        )
+        self._insert_blob(conn, wrap_blob, tid)
+
+        proc = CatalogStateProcessor()
+        proc._tika_candidates = [
+            {
+                "zoid": flat_content,
+                "content_type": "application/pdf",
+                "blob_refs": [flat_blob],
+            },
+            {
+                "zoid": wrap_content,
+                "content_type": "image/png",
+                "blob_refs": [wrap_oid],
+            },
+        ]
+
+        with conn.cursor(row_factory=tuple_row) as cur:
+            proc._enqueue_tika_jobs(cur)
+        conn.commit()
+
+        rows = {r["zoid"]: r for r in self._get_queue(conn)}
+        assert rows[flat_content]["blob_zoid"] == flat_blob
+        assert rows[wrap_content]["blob_zoid"] == wrap_blob
+        assert rows[wrap_content]["content_type"] == "image/png"
+
+    @pytest.mark.skipif(not TIKA_URL, reason="PGCATALOG_TIKA_URL not set")
+    def test_enqueue_wrapper_with_missing_inner_blob(self, pg_conn_with_queue):
+        """Wrapper exists in object_state but inner blob is missing."""
+        conn = pg_conn_with_queue
+        content_zoid, wrapper_zoid, tid = 820, 821, 1
+        missing_blob = 99999
+
+        insert_object(conn, content_zoid, tid)
+        insert_object(
+            conn,
+            wrapper_zoid,
+            tid,
+            class_mod="plone.namedfile.file",
+            class_name="NamedBlobFile",
+            state=json.dumps(
+                {"_blob": {"@ref": [f"{missing_blob:016x}", "ZODB.blob.Blob"]}}
+            ),
+        )
+        # no blob_state row for missing_blob
+
+        proc = CatalogStateProcessor()
+        proc._tika_candidates = [
+            {
+                "zoid": content_zoid,
+                "content_type": "application/pdf",
+                "blob_refs": [wrapper_zoid],
+            }
+        ]
+
+        with conn.cursor(row_factory=tuple_row) as cur:
+            proc._enqueue_tika_jobs(cur)
+        conn.commit()
+
+        assert self._get_queue(conn) == []
+
+    @pytest.mark.skipif(not TIKA_URL, reason="PGCATALOG_TIKA_URL not set")
+    def test_enqueue_ignores_unresolvable_refs(self, pg_conn_with_queue):
+        """Ref with neither blob_state nor object_state entry is a noop."""
+        conn = pg_conn_with_queue
+        content_zoid, tid = 830, 1
+        ghost_ref = 0xDEADBEEF
+
+        insert_object(conn, content_zoid, tid)
+
+        proc = CatalogStateProcessor()
+        proc._tika_candidates = [
+            {
+                "zoid": content_zoid,
+                "content_type": "application/pdf",
+                "blob_refs": [ghost_ref],
+            }
+        ]
+
+        with conn.cursor(row_factory=tuple_row) as cur:
+            proc._enqueue_tika_jobs(cur)
+        conn.commit()
+
+        assert self._get_queue(conn) == []
+
     def test_process_accumulates_candidates_with_blob_refs(self, pg_conn_with_queue):
         """process() accumulates tika candidates with blob_refs from state."""
         from plone.pgcatalog.pending import set_pending
@@ -321,6 +486,147 @@ class TestEnqueueLogic:
         state = {"title": "No blob here"}
         proc.process(zoid, "plone.app.contenttypes.content", "File", state)
         assert len(proc._tika_candidates) == 0
+
+
+class TestEnqueueUnit:
+    """Unit tests for _enqueue_tika_jobs + _insert_queue_row — mocked cursor, no DB, no TIKA_URL gate.
+
+    These tests run unconditionally so the wrapper-resolution code
+    path is exercised in environments (e.g. CI) where
+    PGCATALOG_TIKA_URL is not configured.
+    """
+
+    def _make_cursor(self, responses):
+        """Return a MagicMock cursor whose consecutive fetchall() calls
+        return the rows in *responses* (a list of row-lists).
+        """
+        cur = mock.MagicMock()
+        cur.fetchall.side_effect = responses
+        return cur
+
+    def test_empty_candidates_is_noop(self):
+        proc = CatalogStateProcessor()
+        proc._tika_candidates = []
+        cur = mock.MagicMock()
+        proc._enqueue_tika_jobs(cur)
+        cur.execute.assert_not_called()
+
+    def test_direct_blob_ref_inserts_row(self):
+        proc = CatalogStateProcessor()
+        proc._tika_candidates = [
+            {"zoid": 100, "content_type": "application/pdf", "blob_refs": [999]}
+        ]
+        # First fetchall: direct blob_state lookup returns (999, 1)
+        cur = self._make_cursor([[(999, 1)]])
+
+        proc._enqueue_tika_jobs(cur)
+
+        # Exactly 2 execute calls: 1 SELECT (direct lookup) + 1 INSERT
+        assert cur.execute.call_count == 2
+        insert_sql = cur.execute.call_args_list[1].args[0]
+        insert_params = cur.execute.call_args_list[1].args[1]
+        assert "INSERT INTO text_extraction_queue" in insert_sql
+        assert insert_params == {
+            "zoid": 100,
+            "blob_zoid": 999,
+            "tid": 1,
+            "ct": "application/pdf",
+        }
+
+    def test_wrapper_oid_hops_through_object_state(self):
+        """Wrapper ref -> object_state -> inner blob ref -> blob_state.
+
+        Content ref is a wrapper OID with no direct blob_state entry.
+        Second-hop fetch returns the wrapper's state (JSON string with
+        @ref to inner Blob).  Third fetch returns the inner blob row.
+        """
+        proc = CatalogStateProcessor()
+        wrapper_oid = 701
+        inner_blob_oid = 702
+        proc._tika_candidates = [
+            {
+                "zoid": 700,
+                "content_type": "application/pdf",
+                "blob_refs": [wrapper_oid],
+            }
+        ]
+        wrapper_state = json.dumps(
+            {"_blob": {"@ref": [f"{inner_blob_oid:016x}", "ZODB.blob.Blob"]}}
+        )
+        cur = self._make_cursor(
+            [
+                [],  # 1st SELECT: no direct blob_state row for wrapper_oid
+                [(wrapper_oid, wrapper_state)],  # 2nd SELECT: wrapper's state
+                [(inner_blob_oid, 1)],  # 3rd SELECT: blob for inner oid
+            ]
+        )
+
+        proc._enqueue_tika_jobs(cur)
+
+        # 3 SELECT + 1 INSERT = 4 execute calls
+        assert cur.execute.call_count == 4
+        insert_params = cur.execute.call_args_list[3].args[1]
+        assert insert_params["zoid"] == 700
+        assert insert_params["blob_zoid"] == inner_blob_oid  # NOT wrapper
+        assert insert_params["tid"] == 1
+
+    def test_unresolved_ref_without_wrapper_state_is_silent_skip(self):
+        """Ref has neither blob_state nor object_state row — no INSERT, no error."""
+        proc = CatalogStateProcessor()
+        proc._tika_candidates = [
+            {"zoid": 800, "content_type": "application/pdf", "blob_refs": [9999]}
+        ]
+        cur = self._make_cursor(
+            [
+                [],  # 1st SELECT: blob_state empty
+                [],  # 2nd SELECT: object_state empty (no wrapper state)
+            ]
+        )
+
+        proc._enqueue_tika_jobs(cur)
+
+        # 2 SELECTs, 0 INSERTs
+        assert cur.execute.call_count == 2
+        # No INSERT call
+        for call in cur.execute.call_args_list:
+            assert "INSERT" not in call.args[0]
+
+    def test_wrapper_state_without_inner_refs_is_silent_skip(self):
+        """Wrapper exists in object_state but its state has no @ref."""
+        proc = CatalogStateProcessor()
+        proc._tika_candidates = [
+            {"zoid": 810, "content_type": "application/pdf", "blob_refs": [811]}
+        ]
+        # Wrapper state has no @ref — defensive path
+        cur = self._make_cursor(
+            [
+                [],  # no direct blob row
+                [(811, json.dumps({"filename": "empty.pdf"}))],  # no @ref inside
+            ]
+        )
+
+        proc._enqueue_tika_jobs(cur)
+
+        # Only 2 SELECTs (no 3rd because inner_refs is empty), no INSERT
+        assert cur.execute.call_count == 2
+
+    def test_insert_queue_row_uses_correct_sql_and_params(self):
+        proc = CatalogStateProcessor()
+        cur = mock.MagicMock()
+        proc._insert_queue_row(
+            cur, zoid=42, blob_zoid=43, tid=7, content_type="image/png"
+        )
+
+        cur.execute.assert_called_once()
+        sql, params = cur.execute.call_args.args
+        assert "INSERT INTO text_extraction_queue" in sql
+        assert "ON CONFLICT (blob_zoid, tid) DO NOTHING" in sql
+        assert params == {
+            "zoid": 42,
+            "blob_zoid": 43,
+            "tid": 7,
+            "ct": "image/png",
+        }
 
 
 class TestQueueSchema:
