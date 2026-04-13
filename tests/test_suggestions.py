@@ -283,3 +283,58 @@ class TestSuggestIndexes:
         }
         result = suggest_indexes(["Language", "portal_type", "end"], registry, existing)
         assert all(s["status"] == "already_covered" for s in result)
+
+
+class TestNormalizeIdxExpr:
+    """Unit tests for _normalize_idx_expr — comparison canonicalization."""
+
+    def test_generated_and_pg_stored_composite_equal(self):
+        """Same index in generated and PG-stored form normalize equal."""
+        from plone.pgcatalog.suggestions import _normalize_idx_expr
+
+        generated = (
+            "CREATE INDEX CONCURRENTLY idx_os_sug_Language_portal_type_end "
+            "ON object_state ("
+            "(idx->>'Language'), (idx->>'portal_type'), "
+            "pgcatalog_to_timestamptz(idx->>'end')"
+            ") WHERE idx IS NOT NULL"
+        )
+        stored = (
+            "CREATE INDEX idx_os_sug_language_portal_type_end "
+            "ON public.object_state USING btree ("
+            "((idx ->> 'Language'::text)), "
+            "((idx ->> 'portal_type'::text)), "
+            "pgcatalog_to_timestamptz((idx ->> 'end'::text))"
+            ") WHERE (idx IS NOT NULL)"
+        )
+        assert _normalize_idx_expr(generated) == _normalize_idx_expr(stored)
+
+    def test_arrow_whitespace_normalized(self):
+        from plone.pgcatalog.suggestions import _normalize_idx_expr
+
+        with_spaces = "CREATE INDEX i ON t ((idx ->> 'x')) WHERE idx IS NOT NULL"
+        without_spaces = "CREATE INDEX i ON t ((idx->>'x')) WHERE idx IS NOT NULL"
+        assert _normalize_idx_expr(with_spaces) == _normalize_idx_expr(without_spaces)
+
+    def test_text_cast_stripped(self):
+        from plone.pgcatalog.suggestions import _normalize_idx_expr
+
+        with_cast = "CREATE INDEX i ON t ((idx->>'x'::text)) WHERE idx IS NOT NULL"
+        without_cast = "CREATE INDEX i ON t ((idx->>'x')) WHERE idx IS NOT NULL"
+        assert _normalize_idx_expr(with_cast) == _normalize_idx_expr(without_cast)
+
+    def test_nested_paren_collapse(self):
+        from plone.pgcatalog.suggestions import _normalize_idx_expr
+
+        triple = "CREATE INDEX i ON t (((x))) WHERE idx IS NOT NULL"
+        single = "CREATE INDEX i ON t ((x)) WHERE idx IS NOT NULL"
+        # After normalization both collapse to the same canonical form.
+        assert _normalize_idx_expr(triple) == _normalize_idx_expr(single)
+
+    def test_no_where_clause(self):
+        """DDL without WHERE still normalizes — pattern uses `|$` fallback."""
+        from plone.pgcatalog.suggestions import _normalize_idx_expr
+
+        # Graceful: regex falls through to $ anchor
+        result = _normalize_idx_expr("CREATE INDEX i ON t ((idx->>'x'))")
+        assert "idx->>'x'" in result

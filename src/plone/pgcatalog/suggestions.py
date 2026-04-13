@@ -254,17 +254,37 @@ def _check_covered(ddl, existing_indexes):
 def _normalize_idx_expr(ddl):
     """Extract and normalize the column expression from a CREATE INDEX DDL.
 
-    Strips whitespace, double parens, and ``::text`` casts that PG adds
-    during normalization so generated and stored expressions can be compared.
+    Produces a canonical form that compares equal across:
+    - whitespace differences (including around ``->>``)
+    - ``::text`` casts that PG adds on ingest
+    - redundant paren wrappers PG adds around each expression
     """
-    m = re.search(r"\((.+)\)\s*(?:WHERE|$)", ddl)
+    # Prefer WHERE-anchored extraction; fall back to end-of-string
+    # when the DDL has no WHERE clause.  A single greedy pattern with
+    # ``(WHERE|$)`` would over-capture when WHERE itself contains
+    # parens (e.g. ``WHERE (idx IS NOT NULL)``) — the greedy ``.+``
+    # would extend past the WHERE clause to the final ``)``.
+    m = re.search(r"\((.+)\)\s+WHERE\b", ddl, re.I)
+    if not m:
+        m = re.search(r"\((.+)\)\s*$", ddl, re.I | re.S)
     if not m:
         return ""
     expr = m.group(1)
-    # Remove ::text casts, collapse whitespace, strip extra parens
-    expr = re.sub(r"::text", "", expr)
+    # Strip PG's explicit ::text casts
+    expr = re.sub(r"::text\b", "", expr)
+    # Squeeze whitespace around JSON arrow operators — generated form
+    # has no spaces (idx->>'x'), PG-stored form has them (idx ->> 'x').
+    expr = re.sub(r"\s*(->>?|#>>?|#>)\s*", r"\1", expr)
+    # Collapse runs of whitespace
     expr = re.sub(r"\s+", " ", expr).strip()
-    expr = re.sub(r"\(\((.+?)\)\)", r"(\1)", expr)
+    # Iteratively collapse redundant paren wrappers — PG stores
+    # ((expr)) where the generator emits (expr), and a single-pass
+    # regex with a non-greedy group misses nested cases.
+    while True:
+        new = re.sub(r"\(\s*\(([^()]+)\)\s*\)", r"(\1)", expr)
+        if new == expr:
+            break
+        expr = new
     return expr
 
 
