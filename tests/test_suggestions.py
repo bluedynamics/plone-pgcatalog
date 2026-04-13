@@ -236,3 +236,50 @@ class TestSuggestIndexes:
         registry = _reg(getObjPositionInParent=IndexType.GOPIP)
         result = suggest_indexes(["getObjPositionInParent"], registry, {})
         assert result == []
+
+    def test_mixed_case_name_already_covered(self):
+        """Mixed-case field name should match existing lowercased PG index.
+
+        Regression for #119: `_check_covered` Check 1 was case-sensitive
+        but PostgreSQL folds unquoted identifiers to lowercase in
+        `pg_indexes.indexname`.
+        """
+        registry = _reg(Language=IndexType.FIELD)
+        # PG stores unquoted identifiers lowercased in pg_indexes.
+        existing = {
+            "idx_os_sug_language": (
+                "CREATE INDEX idx_os_sug_language ON public.object_state "
+                "USING btree (((idx ->> 'Language'::text))) "
+                "WHERE (idx IS NOT NULL)"
+            )
+        }
+        result = suggest_indexes(["Language"], registry, existing)
+        assert all(s["status"] == "already_covered" for s in result)
+
+    def test_composite_already_covered_by_pg_normalized_indexdef(self):
+        """Composite suggestion detects equivalent PG-stored indexdef.
+
+        Regression for #119: `_normalize_idx_expr` did not normalize
+        whitespace around `->>`, so the generated form and the
+        PG-stored form didn't compare as equal even after the existing
+        normalization passes.
+        """
+        registry = _reg(
+            Language=IndexType.FIELD,
+            portal_type=IndexType.FIELD,
+            end=IndexType.DATE,
+        )
+        # Real indexdef text captured from pg_indexes after a successful
+        # apply of this exact composite suggestion.
+        existing = {
+            "idx_os_sug_language_portal_type_end": (
+                "CREATE INDEX idx_os_sug_language_portal_type_end "
+                "ON public.object_state USING btree ("
+                "((idx ->> 'Language'::text)), "
+                "((idx ->> 'portal_type'::text)), "
+                "pgcatalog_to_timestamptz((idx ->> 'end'::text))"
+                ") WHERE (idx IS NOT NULL)"
+            )
+        }
+        result = suggest_indexes(["Language", "portal_type", "end"], registry, existing)
+        assert all(s["status"] == "already_covered" for s in result)
