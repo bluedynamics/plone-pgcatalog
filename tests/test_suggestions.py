@@ -236,3 +236,178 @@ class TestSuggestIndexes:
         registry = _reg(getObjPositionInParent=IndexType.GOPIP)
         result = suggest_indexes(["getObjPositionInParent"], registry, {})
         assert result == []
+
+    def test_mixed_case_name_already_covered(self):
+        """Mixed-case field name should match existing lowercased PG index.
+
+        Regression for #119: `_check_covered` Check 1 was case-sensitive
+        but PostgreSQL folds unquoted identifiers to lowercase in
+        `pg_indexes.indexname`.
+        """
+        registry = _reg(Language=IndexType.FIELD)
+        # PG stores unquoted identifiers lowercased in pg_indexes.
+        existing = {
+            "idx_os_sug_language": (
+                "CREATE INDEX idx_os_sug_language ON public.object_state "
+                "USING btree (((idx ->> 'Language'::text))) "
+                "WHERE (idx IS NOT NULL)"
+            )
+        }
+        result = suggest_indexes(["Language"], registry, existing)
+        assert all(s["status"] == "already_covered" for s in result)
+
+    def test_composite_already_covered_by_pg_normalized_indexdef(self):
+        """Composite suggestion detects equivalent PG-stored indexdef.
+
+        Regression for #119: `_normalize_idx_expr` did not normalize
+        whitespace around `->>`, so the generated form and the
+        PG-stored form didn't compare as equal even after the existing
+        normalization passes.
+        """
+        registry = _reg(
+            Language=IndexType.FIELD,
+            portal_type=IndexType.FIELD,
+            end=IndexType.DATE,
+        )
+        # Real indexdef text captured from pg_indexes after a successful
+        # apply of this exact composite suggestion.
+        existing = {
+            "idx_os_sug_language_portal_type_end": (
+                "CREATE INDEX idx_os_sug_language_portal_type_end "
+                "ON public.object_state USING btree ("
+                "((idx ->> 'Language'::text)), "
+                "((idx ->> 'portal_type'::text)), "
+                "pgcatalog_to_timestamptz((idx ->> 'end'::text))"
+                ") WHERE (idx IS NOT NULL)"
+            )
+        }
+        result = suggest_indexes(["Language", "portal_type", "end"], registry, existing)
+        assert all(s["status"] == "already_covered" for s in result)
+
+
+class TestNormalizeIdxExpr:
+    """Unit tests for _normalize_idx_expr — comparison canonicalization."""
+
+    def test_generated_and_pg_stored_composite_equal(self):
+        """Same index in generated and PG-stored form normalize equal."""
+        from plone.pgcatalog.suggestions import _normalize_idx_expr
+
+        generated = (
+            "CREATE INDEX CONCURRENTLY idx_os_sug_Language_portal_type_end "
+            "ON object_state ("
+            "(idx->>'Language'), (idx->>'portal_type'), "
+            "pgcatalog_to_timestamptz(idx->>'end')"
+            ") WHERE idx IS NOT NULL"
+        )
+        stored = (
+            "CREATE INDEX idx_os_sug_language_portal_type_end "
+            "ON public.object_state USING btree ("
+            "((idx ->> 'Language'::text)), "
+            "((idx ->> 'portal_type'::text)), "
+            "pgcatalog_to_timestamptz((idx ->> 'end'::text))"
+            ") WHERE (idx IS NOT NULL)"
+        )
+        assert _normalize_idx_expr(generated) == _normalize_idx_expr(stored)
+
+    def test_arrow_whitespace_normalized(self):
+        from plone.pgcatalog.suggestions import _normalize_idx_expr
+
+        with_spaces = "CREATE INDEX i ON t ((idx ->> 'x')) WHERE idx IS NOT NULL"
+        without_spaces = "CREATE INDEX i ON t ((idx->>'x')) WHERE idx IS NOT NULL"
+        assert _normalize_idx_expr(with_spaces) == _normalize_idx_expr(without_spaces)
+
+    def test_text_cast_stripped(self):
+        from plone.pgcatalog.suggestions import _normalize_idx_expr
+
+        with_cast = "CREATE INDEX i ON t ((idx->>'x'::text)) WHERE idx IS NOT NULL"
+        without_cast = "CREATE INDEX i ON t ((idx->>'x')) WHERE idx IS NOT NULL"
+        assert _normalize_idx_expr(with_cast) == _normalize_idx_expr(without_cast)
+
+    def test_nested_paren_collapse(self):
+        from plone.pgcatalog.suggestions import _normalize_idx_expr
+
+        triple = "CREATE INDEX i ON t (((x))) WHERE idx IS NOT NULL"
+        single = "CREATE INDEX i ON t ((x)) WHERE idx IS NOT NULL"
+        # After normalization both collapse to the same canonical form.
+        assert _normalize_idx_expr(triple) == _normalize_idx_expr(single)
+
+    def test_no_where_clause(self):
+        """DDL without WHERE still normalizes — pattern uses `|$` fallback."""
+        from plone.pgcatalog.suggestions import _normalize_idx_expr
+
+        # Graceful: regex falls through to $ anchor
+        result = _normalize_idx_expr("CREATE INDEX i ON t ((idx->>'x'))")
+        assert "idx->>'x'" in result
+
+
+class TestApplyIndexPreflight:
+    """Unit tests for apply_index idempotency (#119)."""
+
+    def _make_conn(self, preflight_row):
+        """Return a mock conn whose pg_index pre-flight returns the
+        given row (tuple or None).
+        """
+        from unittest import mock
+
+        conn = mock.MagicMock()
+        conn.autocommit = False
+        cur = mock.MagicMock()
+        cur.fetchone.return_value = preflight_row
+        # Support context-manager protocol on conn.cursor()
+        ctx = mock.MagicMock()
+        ctx.__enter__.return_value = cur
+        ctx.__exit__.return_value = None
+        conn.cursor.return_value = ctx
+        return conn, cur
+
+    def test_valid_pre_existing_index_is_noop(self):
+        from plone.pgcatalog.suggestions import apply_index
+
+        # pg_index returns indisvalid=True
+        conn, _cur = self._make_conn(preflight_row=(True,))
+        ddl = (
+            "CREATE INDEX CONCURRENTLY idx_os_sug_foo "
+            "ON object_state ((idx->>'foo')) WHERE idx IS NOT NULL"
+        )
+        success, msg, duration = apply_index(conn, ddl)
+
+        assert success is True
+        assert "already exists" in msg
+        assert duration == 0.0
+        # No CIC issued — conn.execute is only called for the pre-flight
+        # SELECT (via cur.execute), never for the CREATE INDEX.
+        executed_sqls = [c.args[0] for c in conn.execute.call_args_list]
+        assert not any("CREATE INDEX" in s for s in executed_sqls)
+
+    def test_invalid_pre_existing_index_is_dropped_then_built(self):
+        from plone.pgcatalog.suggestions import apply_index
+
+        # pg_index returns indisvalid=False
+        conn, _cur = self._make_conn(preflight_row=(False,))
+        ddl = (
+            "CREATE INDEX CONCURRENTLY idx_os_sug_foo "
+            "ON object_state ((idx->>'foo')) WHERE idx IS NOT NULL"
+        )
+        success, _msg, _duration = apply_index(conn, ddl)
+
+        assert success is True
+        executed_sqls = [c.args[0] for c in conn.execute.call_args_list]
+        # Both DROP INDEX CONCURRENTLY and CREATE INDEX CONCURRENTLY
+        assert any("DROP INDEX CONCURRENTLY IF EXISTS" in s for s in executed_sqls)
+        assert any("CREATE INDEX CONCURRENTLY" in s for s in executed_sqls)
+
+    def test_no_pre_existing_index_proceeds_to_create(self):
+        from plone.pgcatalog.suggestions import apply_index
+
+        conn, _cur = self._make_conn(preflight_row=None)
+        ddl = (
+            "CREATE INDEX CONCURRENTLY idx_os_sug_foo "
+            "ON object_state ((idx->>'foo')) WHERE idx IS NOT NULL"
+        )
+        success, _msg, _duration = apply_index(conn, ddl)
+
+        assert success is True
+        executed_sqls = [c.args[0] for c in conn.execute.call_args_list]
+        # No DROP, just CREATE
+        assert not any("DROP INDEX CONCURRENTLY IF EXISTS" in s for s in executed_sqls)
+        assert any("CREATE INDEX CONCURRENTLY" in s for s in executed_sqls)

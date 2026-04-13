@@ -231,13 +231,15 @@ def _check_covered(ddl, existing_indexes):
     """Check if the suggested index already exists.
 
     Two checks:
-    1. Exact name match (catches re-apply of same suggestion)
-    2. Normalized expression match (catches existing idx_os_cat_* indexes
-       that cover the same columns with different naming)
+    1. Exact name match (catches re-apply of same suggestion).
+       Name is lowercased because PostgreSQL folds unquoted
+       identifiers to lowercase in pg_indexes.indexname.
+    2. Normalized expression match (catches existing idx_os_cat_*
+       indexes that cover the same columns with different naming).
     """
-    # Check 1: exact index name match
+    # Check 1: case-insensitive index name match
     m = re.search(r"(?:CREATE INDEX\s+(?:CONCURRENTLY\s+)?)(\S+)", ddl, re.I)
-    if m and m.group(1) in existing_indexes:
+    if m and m.group(1).lower() in existing_indexes:
         return "already_covered"
 
     # Check 2: normalize and compare column expressions
@@ -252,17 +254,37 @@ def _check_covered(ddl, existing_indexes):
 def _normalize_idx_expr(ddl):
     """Extract and normalize the column expression from a CREATE INDEX DDL.
 
-    Strips whitespace, double parens, and ``::text`` casts that PG adds
-    during normalization so generated and stored expressions can be compared.
+    Produces a canonical form that compares equal across:
+    - whitespace differences (including around ``->>``)
+    - ``::text`` casts that PG adds on ingest
+    - redundant paren wrappers PG adds around each expression
     """
-    m = re.search(r"\((.+)\)\s*(?:WHERE|$)", ddl)
+    # Prefer WHERE-anchored extraction; fall back to end-of-string
+    # when the DDL has no WHERE clause.  A single greedy pattern with
+    # ``(WHERE|$)`` would over-capture when WHERE itself contains
+    # parens (e.g. ``WHERE (idx IS NOT NULL)``) — the greedy ``.+``
+    # would extend past the WHERE clause to the final ``)``.
+    m = re.search(r"\((.+)\)\s+WHERE\b", ddl, re.I)
+    if not m:
+        m = re.search(r"\((.+)\)\s*$", ddl, re.I | re.S)
     if not m:
         return ""
     expr = m.group(1)
-    # Remove ::text casts, collapse whitespace, strip extra parens
-    expr = re.sub(r"::text", "", expr)
+    # Strip PG's explicit ::text casts
+    expr = re.sub(r"::text\b", "", expr)
+    # Squeeze whitespace around JSON arrow operators — generated form
+    # has no spaces (idx->>'x'), PG-stored form has them (idx ->> 'x').
+    expr = re.sub(r"\s*(->>?|#>>?|#>)\s*", r"\1", expr)
+    # Collapse runs of whitespace
     expr = re.sub(r"\s+", " ", expr).strip()
-    expr = re.sub(r"\(\((.+?)\)\)", r"(\1)", expr)
+    # Iteratively collapse redundant paren wrappers — PG stores
+    # ((expr)) where the generator emits (expr), and a single-pass
+    # regex with a non-greedy group misses nested cases.
+    while True:
+        new = re.sub(r"\(\s*\(([^()]+)\)\s*\)", r"(\1)", expr)
+        if new == expr:
+            break
+        expr = new
     return expr
 
 
@@ -317,7 +339,7 @@ def explain_query(conn, sql, params):  # pragma: no cover
 _DEFAULT_INDEX_TIMEOUT = "5min"
 
 
-def apply_index(conn, ddl, timeout=_DEFAULT_INDEX_TIMEOUT):  # pragma: no cover
+def apply_index(conn, ddl, timeout=_DEFAULT_INDEX_TIMEOUT):
     """Create an index using CREATE INDEX CONCURRENTLY.
 
     The connection must support autocommit (CONCURRENTLY cannot run
@@ -360,22 +382,39 @@ def apply_index(conn, ddl, timeout=_DEFAULT_INDEX_TIMEOUT):  # pragma: no cover
     try:
         conn.autocommit = True
 
-        # Drop INVALID index from a previously aborted CONCURRENTLY build.
-        # An INVALID index blocks new CREATE INDEX on the same name and
-        # wastes disk space.  idx_name is validated above.
+        # Pre-flight: query pg_index for any index with this name.
+        # Three cases:
+        #   - valid index exists: idempotent success no-op (#119)
+        #   - INVALID index from aborted CIC: drop and retry
+        #   - no index: proceed to CREATE INDEX
+        # relname is always lowercase in pg_class; match case-insensitively.
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT 1 FROM pg_index i "
+                "SELECT i.indisvalid FROM pg_index i "
                 "JOIN pg_class c ON c.oid = i.indexrelid "
-                "WHERE c.relname = %s AND NOT i.indisvalid",
-                (idx_name,),
+                "WHERE c.relname = %s",
+                (idx_name.lower(),),
             )
-            if cur.fetchone():
-                log.warning(
-                    "Dropping INVALID index %s (aborted previous build)",
+            row = cur.fetchone()
+        if row is not None:
+            # psycopg returns dict_row or tuple_row depending on the
+            # caller's factory — handle both.
+            is_valid = row["indisvalid"] if hasattr(row, "keys") else row[0]
+            if is_valid:
+                log.info(
+                    "Index %s already exists and is valid — no-op",
                     idx_name,
                 )
-                conn.execute(f"DROP INDEX CONCURRENTLY IF EXISTS {idx_name}")
+                return (
+                    True,
+                    f"Index {idx_name} already exists (no-op)",
+                    0.0,
+                )
+            log.warning(
+                "Dropping INVALID index %s (aborted previous build)",
+                idx_name,
+            )
+            conn.execute(f"DROP INDEX CONCURRENTLY IF EXISTS {idx_name}")
 
         conn.execute(f"SET statement_timeout = '{timeout}'")
         log.info("Creating index (timeout=%s): %s", timeout, ddl)

@@ -4,6 +4,16 @@
 
 ### Fixed
 
+- Suggested Indexes UI: detect already-applied suggestions with
+  mixed-case field names (e.g. `Language`) by matching index names
+  case-insensitively — PostgreSQL folds unquoted identifiers to
+  lowercase.  Also strengthen expression normalization (whitespace
+  around `->>`, iterative paren collapse, WHERE-anchored extraction)
+  so generated and PG-stored `indexdef` forms compare equal.
+  `apply_index` is now idempotent when a valid index with the same
+  name already exists — returns success no-op instead of propagating
+  the `DuplicateTable` error.  Closes #119.
+
 - Tika enqueue: resolve Dexterity `NamedBlobFile` / `NamedBlobImage`
   wrapper OIDs via a second-hop lookup through `object_state`, so the
   queue receives jobs for modern Dexterity File/Image content.
