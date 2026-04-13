@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.0.0b50
 
 ### Fixed
 
@@ -10,10 +10,6 @@
   the pool fallback path stays alive, holding a ``virtualxid`` that
   blocks ``CREATE INDEX CONCURRENTLY``.  Companion fix to
   bluedynamics/zodb-pgjsonb#58 (the storage-conn path).  Closes #118.
-
-## 1.0.0b50
-
-### Fixed
 
 - Suggested Indexes UI: detect already-applied suggestions with
   mixed-case field names (e.g. `Language`) by matching index names
