@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- ``release_request_connection`` now issues an explicit
+  ``conn.rollback()`` before returning the connection to the pool.
+  Otherwise an implicit transaction opened by a prior ``SELECT`` on
+  the pool fallback path stays alive, holding a ``virtualxid`` that
+  blocks ``CREATE INDEX CONCURRENTLY``.  Companion fix to
+  bluedynamics/zodb-pgjsonb#58 (the storage-conn path).  Closes #118.
+
 ## 1.0.0b50
 
 ### Fixed
