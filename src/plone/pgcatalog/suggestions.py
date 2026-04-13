@@ -231,13 +231,15 @@ def _check_covered(ddl, existing_indexes):
     """Check if the suggested index already exists.
 
     Two checks:
-    1. Exact name match (catches re-apply of same suggestion)
-    2. Normalized expression match (catches existing idx_os_cat_* indexes
-       that cover the same columns with different naming)
+    1. Exact name match (catches re-apply of same suggestion).
+       Name is lowercased because PostgreSQL folds unquoted
+       identifiers to lowercase in pg_indexes.indexname.
+    2. Normalized expression match (catches existing idx_os_cat_*
+       indexes that cover the same columns with different naming).
     """
-    # Check 1: exact index name match
+    # Check 1: case-insensitive index name match
     m = re.search(r"(?:CREATE INDEX\s+(?:CONCURRENTLY\s+)?)(\S+)", ddl, re.I)
-    if m and m.group(1) in existing_indexes:
+    if m and m.group(1).lower() in existing_indexes:
         return "already_covered"
 
     # Check 2: normalize and compare column expressions
