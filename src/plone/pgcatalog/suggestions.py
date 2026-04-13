@@ -339,7 +339,7 @@ def explain_query(conn, sql, params):  # pragma: no cover
 _DEFAULT_INDEX_TIMEOUT = "5min"
 
 
-def apply_index(conn, ddl, timeout=_DEFAULT_INDEX_TIMEOUT):  # pragma: no cover
+def apply_index(conn, ddl, timeout=_DEFAULT_INDEX_TIMEOUT):
     """Create an index using CREATE INDEX CONCURRENTLY.
 
     The connection must support autocommit (CONCURRENTLY cannot run
@@ -382,22 +382,39 @@ def apply_index(conn, ddl, timeout=_DEFAULT_INDEX_TIMEOUT):  # pragma: no cover
     try:
         conn.autocommit = True
 
-        # Drop INVALID index from a previously aborted CONCURRENTLY build.
-        # An INVALID index blocks new CREATE INDEX on the same name and
-        # wastes disk space.  idx_name is validated above.
+        # Pre-flight: query pg_index for any index with this name.
+        # Three cases:
+        #   - valid index exists: idempotent success no-op (#119)
+        #   - INVALID index from aborted CIC: drop and retry
+        #   - no index: proceed to CREATE INDEX
+        # relname is always lowercase in pg_class; match case-insensitively.
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT 1 FROM pg_index i "
+                "SELECT i.indisvalid FROM pg_index i "
                 "JOIN pg_class c ON c.oid = i.indexrelid "
-                "WHERE c.relname = %s AND NOT i.indisvalid",
-                (idx_name,),
+                "WHERE c.relname = %s",
+                (idx_name.lower(),),
             )
-            if cur.fetchone():
-                log.warning(
-                    "Dropping INVALID index %s (aborted previous build)",
+            row = cur.fetchone()
+        if row is not None:
+            # psycopg returns dict_row or tuple_row depending on the
+            # caller's factory — handle both.
+            is_valid = row["indisvalid"] if hasattr(row, "keys") else row[0]
+            if is_valid:
+                log.info(
+                    "Index %s already exists and is valid — no-op",
                     idx_name,
                 )
-                conn.execute(f"DROP INDEX CONCURRENTLY IF EXISTS {idx_name}")
+                return (
+                    True,
+                    f"Index {idx_name} already exists (no-op)",
+                    0.0,
+                )
+            log.warning(
+                "Dropping INVALID index %s (aborted previous build)",
+                idx_name,
+            )
+            conn.execute(f"DROP INDEX CONCURRENTLY IF EXISTS {idx_name}")
 
         conn.execute(f"SET statement_timeout = '{timeout}'")
         log.info("Creating index (timeout=%s): %s", timeout, ddl)

@@ -338,3 +338,76 @@ class TestNormalizeIdxExpr:
         # Graceful: regex falls through to $ anchor
         result = _normalize_idx_expr("CREATE INDEX i ON t ((idx->>'x'))")
         assert "idx->>'x'" in result
+
+
+class TestApplyIndexPreflight:
+    """Unit tests for apply_index idempotency (#119)."""
+
+    def _make_conn(self, preflight_row):
+        """Return a mock conn whose pg_index pre-flight returns the
+        given row (tuple or None).
+        """
+        from unittest import mock
+
+        conn = mock.MagicMock()
+        conn.autocommit = False
+        cur = mock.MagicMock()
+        cur.fetchone.return_value = preflight_row
+        # Support context-manager protocol on conn.cursor()
+        ctx = mock.MagicMock()
+        ctx.__enter__.return_value = cur
+        ctx.__exit__.return_value = None
+        conn.cursor.return_value = ctx
+        return conn, cur
+
+    def test_valid_pre_existing_index_is_noop(self):
+        from plone.pgcatalog.suggestions import apply_index
+
+        # pg_index returns indisvalid=True
+        conn, _cur = self._make_conn(preflight_row=(True,))
+        ddl = (
+            "CREATE INDEX CONCURRENTLY idx_os_sug_foo "
+            "ON object_state ((idx->>'foo')) WHERE idx IS NOT NULL"
+        )
+        success, msg, duration = apply_index(conn, ddl)
+
+        assert success is True
+        assert "already exists" in msg
+        assert duration == 0.0
+        # No CIC issued — conn.execute is only called for the pre-flight
+        # SELECT (via cur.execute), never for the CREATE INDEX.
+        executed_sqls = [c.args[0] for c in conn.execute.call_args_list]
+        assert not any("CREATE INDEX" in s for s in executed_sqls)
+
+    def test_invalid_pre_existing_index_is_dropped_then_built(self):
+        from plone.pgcatalog.suggestions import apply_index
+
+        # pg_index returns indisvalid=False
+        conn, _cur = self._make_conn(preflight_row=(False,))
+        ddl = (
+            "CREATE INDEX CONCURRENTLY idx_os_sug_foo "
+            "ON object_state ((idx->>'foo')) WHERE idx IS NOT NULL"
+        )
+        success, _msg, _duration = apply_index(conn, ddl)
+
+        assert success is True
+        executed_sqls = [c.args[0] for c in conn.execute.call_args_list]
+        # Both DROP INDEX CONCURRENTLY and CREATE INDEX CONCURRENTLY
+        assert any("DROP INDEX CONCURRENTLY IF EXISTS" in s for s in executed_sqls)
+        assert any("CREATE INDEX CONCURRENTLY" in s for s in executed_sqls)
+
+    def test_no_pre_existing_index_proceeds_to_create(self):
+        from plone.pgcatalog.suggestions import apply_index
+
+        conn, _cur = self._make_conn(preflight_row=None)
+        ddl = (
+            "CREATE INDEX CONCURRENTLY idx_os_sug_foo "
+            "ON object_state ((idx->>'foo')) WHERE idx IS NOT NULL"
+        )
+        success, _msg, _duration = apply_index(conn, ddl)
+
+        assert success is True
+        executed_sqls = [c.args[0] for c in conn.execute.call_args_list]
+        # No DROP, just CREATE
+        assert not any("DROP INDEX CONCURRENTLY IF EXISTS" in s for s in executed_sqls)
+        assert any("CREATE INDEX CONCURRENTLY" in s for s in executed_sqls)
