@@ -138,6 +138,10 @@ def register_catalog_processor(event):
             storage.defer_startup_action(
                 _make_ensure_field_indexes_action(), "ensure_field_indexes"
             )
+            storage.defer_startup_action(
+                _make_analyze_object_state_action(),
+                "analyze_object_state",
+            )
         else:
             # Fallback for older zodb-pgjsonb without defer_startup_action
             _ensure_text_indexes(storage)
@@ -270,6 +274,60 @@ def _make_ensure_field_indexes_action():
                 "(lock timeout or other error) — "
                 "custom field queries may be slow until indexes are created. "
                 "Indexes will be retried on next startup.",
+                exc_info=True,
+            )
+
+    return _action
+
+
+def _make_analyze_object_state_action():
+    """Return a callable(dsn) that runs ANALYZE on object_state.
+
+    PostgreSQL's planner needs ANALYZE to populate extended statistics
+    objects (CREATE STATISTICS) created by CATALOG_INDEXES.  On fresh
+    installs the first autovacuum cycle handles this.  On existing
+    installs the table already has data when the new statistics are
+    declared, so we run ANALYZE explicitly to make them effective
+    immediately rather than waiting hours for autovacuum.
+
+    Skips the ANALYZE if the extended statistics object already has
+    populated data (running ANALYZE on a 100k-row table takes several
+    seconds -- don't do it on every startup).
+
+    Multi-pod note: ANALYZE is always safe to run concurrently.
+    The skip check makes the typical case a single SELECT.
+    """
+
+    def _action(dsn):
+        try:
+            with psycopg.connect(dsn, autocommit=True) as conn:
+                # Skip if our marker stats object is already populated.
+                # pg_stats_ext.n_distinct is NULL until the first ANALYZE
+                # populates the object.
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT n_distinct FROM pg_stats_ext "
+                        "WHERE tablename = 'object_state' "
+                        "AND statistics_name = 'stts_os_type_state'"
+                    )
+                    row = cur.fetchone()
+                if row is not None and row[0] is not None:
+                    log.debug(
+                        "ANALYZE object_state: stts_os_type_state already "
+                        "populated -- skipping"
+                    )
+                    return
+
+                log.info(
+                    "ANALYZE object_state: populating extended statistics "
+                    "(may take a few seconds on large tables)"
+                )
+                conn.execute("ANALYZE object_state")
+                log.info("ANALYZE object_state: complete")
+        except Exception:
+            log.warning(
+                "ANALYZE object_state failed -- extended statistics will "
+                "be populated by autovacuum on the next cycle.",
                 exc_info=True,
             )
 
