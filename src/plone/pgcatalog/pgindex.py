@@ -21,6 +21,8 @@ matching ``getpath()``/``getrid()`` on the catalog.
 
 from Acquisition import aq_inner
 from Acquisition import aq_parent
+from plone.pgcatalog.columns import get_registry
+from plone.pgcatalog.interfaces import IPGCatalogTool
 from plone.pgcatalog.query import _bool_to_lower_str
 from Products.ZCatalog.ZCatalogIndexes import ZCatalogIndexes
 
@@ -130,6 +132,38 @@ class PGIndex:
         return getattr(self._wrapped, name)
 
 
+def _maybe_wrap_index(catalog, name, raw_index):
+    """Wrap *raw_index* with ``PGIndex`` if *catalog* is a PG catalog.
+
+    Returns the raw index unchanged when:
+
+    - The raw index is ``None``.
+    - The catalog is not an ``IPGCatalogTool``.
+    - The index is registered with ``idx_key=None`` (special indexes
+      like SearchableText, path, effectiveRange — they have dedicated
+      columns and don't need PG-backed JSONB wrapping).
+    """
+    if raw_index is None:
+        return None
+
+    # The non-PG-catalog path is primarily a defensive guard for tests
+    # and loose dependencies.  In a normal Plone install where this
+    # package is active, every tool goes through IPGCatalogTool.
+    if not IPGCatalogTool.providedBy(catalog):
+        return raw_index
+
+    registry = get_registry()
+    entry = registry.get(name)
+    if entry is not None:
+        idx_key = entry[1]  # (IndexType, idx_key, source_attrs)
+        if idx_key is None:
+            return raw_index  # Special index — no wrapping needed
+    else:
+        idx_key = name  # Fallback: use index name as JSONB key
+
+    return PGIndex(raw_index, idx_key, catalog._get_pg_read_connection)
+
+
 class PGCatalogIndexes(ZCatalogIndexes):
     """ZCatalogIndexes replacement that wraps indexes with PGIndex.
 
@@ -148,22 +182,4 @@ class PGCatalogIndexes(ZCatalogIndexes):
         if catalog is None:
             return index
 
-        # Only wrap for PG catalogs
-        from plone.pgcatalog.interfaces import IPGCatalogTool
-
-        if not IPGCatalogTool.providedBy(catalog):
-            return index
-
-        # Look up the JSONB key from IndexRegistry
-        from plone.pgcatalog.columns import get_registry
-
-        registry = get_registry()
-        entry = registry.get(id)
-        if entry is not None:
-            idx_key = entry[1]  # (IndexType, idx_key, source_attrs)
-            if idx_key is None:
-                return index  # Special index — no wrapping needed
-        else:
-            idx_key = id  # Fallback: use index name as JSONB key
-
-        return PGIndex(index, idx_key, catalog._get_pg_read_connection)
+        return _maybe_wrap_index(catalog, id, index)

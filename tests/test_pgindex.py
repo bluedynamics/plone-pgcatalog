@@ -283,6 +283,51 @@ class TestCatalogIndexesWrapper:
         index = catalog.Indexes._getOb("UID")
         assert index.meta_type == "UUIDIndex"
 
+    def test_catalog_getindex_keywords_vocabulary_flow(self, pg_conn_with_catalog):
+        """End-to-end: simulate the KeywordsVocabulary code path.
+
+        plone.app.vocabularies.catalog.KeywordsVocabulary.all_keywords()::
+
+            index = self.catalog._catalog.getIndex(self.keyword_index)
+            return safe_simplevocabulary_from_values(index._index, ...)
+
+        The ``index._index`` lookup must return PG-backed data, not the
+        empty ZCatalog BTree.  Regression test for empty Subjects/Tags
+        dropdowns.
+        """
+        from plone.pgcatalog.catalog import PlonePGCatalogTool
+        from plone.pgcatalog.maintenance import _CatalogCompat
+
+        _catalog_objects(pg_conn_with_catalog)
+
+        # Build a catalog with a real _CatalogCompat (not a mock) so that
+        # _CatalogCompat.getIndex() can walk the Acquisition chain and
+        # reach _maybe_wrap_index.
+        catalog = PlonePGCatalogTool.__new__(PlonePGCatalogTool)
+        catalog._get_pg_read_connection = lambda: pg_conn_with_catalog
+
+        compat = _CatalogCompat()
+        portal_type_index = mock.Mock()
+        portal_type_index.id = "portal_type"
+        portal_type_index.meta_type = "FieldIndex"
+        compat.indexes["portal_type"] = portal_type_index
+        catalog._catalog = compat
+
+        # portal_type is pre-registered in the IndexRegistry by the
+        # session-scoped populated_registry fixture in conftest.py.
+
+        # This is the exact line KeywordsVocabulary runs — accessed via
+        # catalog._catalog (Acquisition-wrapped) so aq_parent returns catalog.
+        index = catalog._catalog.getIndex("portal_type")
+
+        # Verify the wrapping actually produced a PG-backed mapping.
+        assert isinstance(index._index, _PGIndexMapping)
+        # And uniqueValues() as CMFPlone.browser.search does
+        values = list(index.uniqueValues())
+        # _catalog_objects creates Document and Folder rows
+        assert "Document" in values
+        assert "Folder" in values
+
 
 class TestUUIDToPathFlow:
     """Integration test simulating the exact plone.app.uuid code path.
@@ -334,3 +379,78 @@ class TestUUIDToPathFlow:
         assert catalog.getrid("/plone/doc1") is not None
         # Missing path → returns None
         assert catalog.getrid("/plone/nonexistent") is None
+
+
+class TestMaybeWrapIndex:
+    """Test the _maybe_wrap_index() helper."""
+
+    def test_wraps_field_index(self, pg_conn_with_catalog):
+        from plone.pgcatalog.interfaces import IPGCatalogTool
+        from plone.pgcatalog.pgindex import _maybe_wrap_index
+        from unittest import mock
+        from zope.interface import directlyProvides
+
+        catalog = mock.Mock()
+        directlyProvides(catalog, IPGCatalogTool)
+        catalog._get_pg_read_connection = lambda: pg_conn_with_catalog
+        raw_index = mock.Mock()
+        raw_index.id = "portal_type"
+        raw_index.meta_type = "FieldIndex"
+
+        wrapped = _maybe_wrap_index(catalog, "portal_type", raw_index)
+        assert isinstance(wrapped, PGIndex)
+
+    def test_returns_raw_for_non_pg_catalog(self):
+        """Non-IPGCatalogTool catalogs get the raw index back."""
+        from plone.pgcatalog.pgindex import _maybe_wrap_index
+        from unittest import mock
+
+        # A catalog that does NOT implement IPGCatalogTool
+        from zope.interface import Interface
+
+        class IOtherCatalog(Interface):
+            pass
+
+        catalog = mock.Mock()
+        from zope.interface import directlyProvides
+
+        directlyProvides(catalog, IOtherCatalog)
+        raw_index = mock.Mock()
+
+        wrapped = _maybe_wrap_index(catalog, "portal_type", raw_index)
+        assert wrapped is raw_index
+
+    def test_returns_raw_for_none_index(self):
+        """None stays None."""
+        from plone.pgcatalog.pgindex import _maybe_wrap_index
+
+        assert _maybe_wrap_index(object(), "x", None) is None
+
+    def test_special_index_not_wrapped(self, pg_conn_with_catalog):
+        """Indexes registered with idx_key=None (SearchableText,
+        path, effectiveRange) return the raw index unchanged.
+        """
+        from plone.pgcatalog.columns import get_registry
+        from plone.pgcatalog.columns import IndexType
+        from plone.pgcatalog.pgindex import _maybe_wrap_index
+        from unittest import mock
+
+        # Register SearchableText with idx_key=None
+        registry = get_registry()
+        registry.register(
+            name="SearchableText",
+            idx_type=IndexType.TEXT,
+            idx_key=None,
+            source_attrs=[],
+        )
+
+        from plone.pgcatalog.interfaces import IPGCatalogTool
+        from zope.interface import directlyProvides
+
+        catalog = mock.Mock()
+        directlyProvides(catalog, IPGCatalogTool)
+        catalog._get_pg_read_connection = lambda: pg_conn_with_catalog
+        raw_index = mock.Mock()
+
+        wrapped = _maybe_wrap_index(catalog, "SearchableText", raw_index)
+        assert wrapped is raw_index
