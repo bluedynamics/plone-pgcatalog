@@ -26,6 +26,22 @@
   with a `plone.app.querystring.operation.list.contains` criterion on
   UID returned an empty vocabulary.
 
+- `catalog._catalog.getIndex(name)` now returns a `PGIndex` wrapper
+  with PG-backed `_index` and `uniqueValues()`, same as
+  `catalog.Indexes[name]`.  Previously it returned the raw ZCatalog
+  index with empty BTrees, which broke:
+
+  - `plone.app.vocabularies.KeywordsVocabulary` (empty Subject/Tags
+    dropdowns).
+  - `Products.CMFPlone.browser.search.Search.types_list()` (empty
+    "Item type" filter in `@@search`).
+  - `plone.app.event.setuphandlers` (DateIndex detection).
+  - Other Plone code paths that bypass `catalog.Indexes[name]`.
+
+  Special indexes registered with `idx_key=None` (SearchableText,
+  path, effectiveRange) are returned unwrapped so dedicated columns
+  are used for them.
+
 ## 1.0.0b49
 
 ### Added

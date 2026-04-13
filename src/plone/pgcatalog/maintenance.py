@@ -5,10 +5,14 @@ requiring a Plone context.  Also contains the ``_CatalogCompat`` shim
 and the unsupported-method factory used by ``PlonePGCatalogTool``.
 """
 
+from Acquisition import aq_inner
+from Acquisition import aq_parent
+from Acquisition import Implicit
 from Persistence import Persistent
 from persistent.mapping import PersistentMapping
 from plone.pgcatalog.backends import get_backend
 from plone.pgcatalog.indexing import reindex_object as _sql_reindex
+from plone.pgcatalog.pgindex import _maybe_wrap_index
 from psycopg import sql as pgsql
 
 import logging
@@ -87,7 +91,7 @@ def clear_catalog_data(conn):
 # ---------------------------------------------------------------------------
 
 
-class _CatalogCompat(Persistent):
+class _CatalogCompat(Implicit, Persistent):
     """Minimal _catalog providing index object storage.
 
     ZCatalogIndexes._getOb() reads aq_parent(self)._catalog.indexes.
@@ -104,7 +108,24 @@ class _CatalogCompat(Persistent):
         self.schema = PersistentMapping()
 
     def getIndex(self, name):
-        return self.indexes[name]
+        """Return a PG-backed index wrapper for *name*.
+
+        Plone code that bypasses `catalog.Indexes[name]` (notably
+        `plone.app.vocabularies.KeywordsVocabulary`,
+        `Products.CMFPlone.browser.search.Search.types_list`, and
+        `plone.app.event.setuphandlers`) accesses indexes via
+        `catalog._catalog.getIndex(name)`.  Returning the raw
+        ZCatalog index would give those callers empty BTrees, so we
+        wrap with `PGIndex` — same as `catalog.Indexes[name]`.
+
+        Raises `KeyError` if *name* is not a known index.
+        """
+        raw_index = self.indexes[name]  # raises KeyError if missing
+
+        catalog = aq_parent(aq_inner(self))
+        if catalog is None:
+            return raw_index
+        return _maybe_wrap_index(catalog, name, raw_index)
 
 
 # ---------------------------------------------------------------------------
