@@ -1,5 +1,33 @@
 # Changelog
 
+## 1.0.0b51
+
+### Added
+
+- Extended PostgreSQL statistics for every default composite catalog
+  index on `object_state`, so the planner has accurate joint-selectivity
+  estimates for the expression pairs we actually index.  `mcv +
+  dependencies` for low-cardinality pairs (`type + state`, `parent +
+  type`, `type + effective`, `type + expires`), `dependencies` only
+  for path-pairs (high-cardinality paths make `mcv` wasteful; CMS
+  content structure is typically wide-shallow, so dependency signal
+  is what matters).
+
+  Without these, PG's per-column histograms treat the expressions as
+  independent and underestimate joint selectivity, so the planner
+  picks a composite-index scan and heap-filters thousands of tuples
+  instead of doing a Bitmap-AND with the available GIN indexes.  On a
+  published-Event navigation query observed in production, this dropped
+  query time from 911 ms to sub-100 ms.
+
+  On existing installations a one-shot `ANALYZE object_state` runs on
+  the first write transaction after upgrade so the new statistics take
+  effect immediately rather than waiting for autovacuum.  Idempotent
+  via `pg_stats_ext` skip check.
+
+  Issue #122 (PR 1 of 3 — engine refactor and EXPLAIN-driven coverage
+  to follow).
+
 ## 1.0.0b50
 
 ### Fixed
