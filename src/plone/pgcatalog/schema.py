@@ -197,6 +197,77 @@ CREATE INDEX IF NOT EXISTS idx_os_cat_subject_gin
 -- Extended statistics for UID selectivity (helps planner pick the right index)
 CREATE STATISTICS IF NOT EXISTS stts_os_uid ON (idx->>'UID') FROM object_state;
 
+-- Multivariate statistics on JSONB-expression pairs that PG's planner
+-- consistently misestimates because per-column histograms treat the
+-- expressions as independent.  The Plone catalog's typical query
+-- patterns combine these heavily-correlated fields, and without joint
+-- statistics the planner picks composite-index scans + heap filters
+-- (thousands of tuples filtered in memory) instead of Bitmap-AND with
+-- GIN.  Issue #122.
+--
+-- One statistics object per default composite index, so the planner
+-- always has joint selectivity for the pairs we index.
+--
+-- Stats-kind choice:
+-- - `mcv + dependencies` for low-cardinality pairs (type, state).
+-- - `dependencies` only for path pairs — in a typical CMS the path
+--   column is essentially unique per row so mcv would waste memory;
+--   dependencies is fixed-size and captures the parent-path correlation
+--   that matters for the planner.
+--
+-- Statistics objects are populated by ANALYZE.  On fresh installs the
+-- first autovacuum cycle handles that.  On existing installs, the
+-- one-shot ANALYZE in startup._make_analyze_object_state_action runs
+-- after install so the new statistics take effect immediately.
+
+-- Workflow-filtered listings: Event/Document/News/... x draft/published/private.
+-- Matches idx_os_cat_type_state.
+CREATE STATISTICS IF NOT EXISTS stts_os_type_state
+    (mcv, dependencies)
+    ON (idx->>'portal_type'), (idx->>'review_state')
+    FROM object_state;
+
+-- Folder listings: parent path x type filter (every navigation render).
+-- Matches idx_os_cat_parent_type.
+CREATE STATISTICS IF NOT EXISTS stts_os_parent_type
+    (mcv, dependencies)
+    ON (idx->>'path_parent'), (idx->>'portal_type')
+    FROM object_state;
+
+-- Path prefix + type: matches idx_os_cat_path_type and idx_os_cat_nav_visible
+-- (same expression pair; one stats object covers both).  Path is
+-- high-cardinality in CMS (essentially unique per row) so no mcv.
+CREATE STATISTICS IF NOT EXISTS stts_os_path_type
+    (dependencies)
+    ON (idx->>'path'), (idx->>'portal_type')
+    FROM object_state;
+
+-- Navigation tree: path prefix + depth + type.  Matches
+-- idx_os_cat_path_depth_type.  CMS structures are wide-shallow so
+-- path_depth has very few distinct values; the dependency between
+-- it and path is the interesting bit for the planner.
+CREATE STATISTICS IF NOT EXISTS stts_os_path_depth_type
+    (dependencies)
+    ON (idx->>'path'),
+       ((idx->>'path_depth')::integer),
+       (idx->>'portal_type')
+    FROM object_state;
+
+-- Published-content filters: type x effective date.
+-- No composite index for this pair today but the slow-query patterns
+-- in issue #122 show it's a hotspot.  mcv helps here because the
+-- planner treats date ranges categorically (before-now vs after-now).
+CREATE STATISTICS IF NOT EXISTS stts_os_type_effective
+    (mcv, dependencies)
+    ON (idx->>'portal_type'), pgcatalog_to_timestamptz(idx->>'effective')
+    FROM object_state;
+
+-- Published-content filters: type x expires date (same reasoning).
+CREATE STATISTICS IF NOT EXISTS stts_os_type_expires
+    (mcv, dependencies)
+    ON (idx->>'portal_type'), pgcatalog_to_timestamptz(idx->>'expires')
+    FROM object_state;
+
 -- Full-text search (GIN on tsvector)
 CREATE INDEX IF NOT EXISTS idx_os_searchable_text
     ON object_state USING gin (searchable_text) WHERE searchable_text IS NOT NULL;
@@ -247,6 +318,18 @@ EXPECTED_INDEXES = [
     "idx_os_cat_title_tsv",
     "idx_os_cat_description_tsv",
     "idx_os_object_provides",
+]
+
+# Extended statistics objects (multivariate) -- populated by ANALYZE.
+# Keep in sync with CREATE STATISTICS in CATALOG_INDEXES.
+EXPECTED_STATISTICS = [
+    "stts_os_uid",
+    "stts_os_type_state",
+    "stts_os_parent_type",
+    "stts_os_path_type",
+    "stts_os_path_depth_type",
+    "stts_os_type_effective",
+    "stts_os_type_expires",
 ]
 
 

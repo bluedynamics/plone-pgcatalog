@@ -2,6 +2,7 @@
 
 from plone.pgcatalog.schema import EXPECTED_COLUMNS
 from plone.pgcatalog.schema import EXPECTED_INDEXES
+from plone.pgcatalog.schema import EXPECTED_STATISTICS
 from plone.pgcatalog.schema import install_catalog_schema
 
 
@@ -47,6 +48,27 @@ class TestSchemaInstallation:
         found = {row["indexname"] for row in rows}
         for idx_name in EXPECTED_INDEXES:
             assert idx_name in found, f"Index {idx_name} not found"
+
+    def test_statistics_created(self, pg_conn_with_catalog):
+        """All extended statistics objects exist after install.
+
+        Multivariate statistics on JSONB-expression pairs let the
+        planner estimate joint selectivity correctly so it picks
+        Bitmap-AND with GIN indexes instead of falling back to a
+        composite-index scan + heap filter.  Regression guard for #122.
+        """
+        with pg_conn_with_catalog.cursor() as cur:
+            cur.execute(
+                """
+                SELECT stxname
+                FROM pg_statistic_ext
+                WHERE stxrelid = 'object_state'::regclass
+                """
+            )
+            found = {row["stxname"] for row in cur.fetchall()}
+
+        for stat_name in EXPECTED_STATISTICS:
+            assert stat_name in found, f"Statistics {stat_name} not found"
 
     def test_idempotent(self, pg_conn_with_catalog):
         """Running install_catalog_schema twice does not error."""
