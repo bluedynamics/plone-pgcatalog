@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.0.0b52
+
+### Fixed
+
+- `CatalogStateProcessor._enqueue_tika_jobs` indexed result rows by
+  integer position (`row[0]`, `row[1]`), but the request-scoped
+  connection pool uses a `dict_row` factory, so every content save
+  that produced an unresolved blob ref raised `KeyError: 0` during
+  `tpc_vote` (e.g. uploading a Dexterity Image).  Switched to
+  column-name access.
+
+  Existing tests didn't catch this because the integration tests
+  opened their cursor with `tuple_row` and the unit tests mocked
+  `fetchall()` with tuple rows — both diverged from production.
+  Tests updated to use `dict_row` to match the real pool.
+
 ## 1.0.0b51
 
 ### Added

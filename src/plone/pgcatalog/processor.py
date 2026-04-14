@@ -358,7 +358,7 @@ class CatalogStateProcessor:
             "WHERE zoid = ANY(%(zoids)s) ORDER BY zoid, tid DESC",
             {"zoids": list(all_refs)},
         )
-        blob_rows = {row[0]: row[1] for row in cursor.fetchall()}
+        blob_rows = {row["zoid"]: row["tid"] for row in cursor.fetchall()}
 
         # Step 2: resolve wrapper refs via object_state second hop
         # (Dexterity NamedBlobFile/Image: content -> wrapper -> blob)
@@ -372,7 +372,7 @@ class CatalogStateProcessor:
             )
             inner_refs = set()
             for row in cursor.fetchall():
-                wrapper_oid, wrapper_state = row[0], row[1]
+                wrapper_oid, wrapper_state = row["zoid"], row["state"]
                 inner = _collect_ref_oids(wrapper_state)
                 if inner:
                     wrapper_to_inner[wrapper_oid] = inner
@@ -385,7 +385,7 @@ class CatalogStateProcessor:
                     {"zoids": list(inner_refs)},
                 )
                 for row in cursor.fetchall():
-                    blob_rows[row[0]] = row[1]
+                    blob_rows[row["zoid"]] = row["tid"]
 
         if not blob_rows:
             return
