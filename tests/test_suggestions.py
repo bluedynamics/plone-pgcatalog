@@ -249,11 +249,29 @@ class TestSuggestIndexes:
             assert "idx_os_sug_" in s["ddl"]
 
     def test_date_range_excluded(self):
-        """DATE_RANGE (effectiveRange) should be filtered by _NON_IDX_FIELDS."""
+        """The effectiveRange virtual key never appears verbatim in outputs."""
         registry = _reg(portal_type=IndexType.FIELD)
         result = suggest_indexes(["portal_type", "effectiveRange"], None, registry, {})
         for s in result:
             assert "effectiveRange" not in s["fields"]
+
+    def test_effective_range_expands_to_effective(self):
+        """effectiveRange in query keys yields a composite mentioning effective."""
+        registry = _reg(portal_type=IndexType.FIELD)
+        result = suggest_indexes(["portal_type", "effectiveRange"], None, registry, {})
+        new = [s for s in result if s["status"] == "new"]
+        assert len(new) == 1
+        assert "portal_type" in new[0]["fields"]
+        assert "effective" in new[0]["fields"]
+        assert "pgcatalog_to_timestamptz(idx->>'effective')" in new[0]["ddl"]
+
+    def test_effective_range_narrow_no_expires(self):
+        """Narrow expansion — expires is NOT added to the composite."""
+        registry = _reg(portal_type=IndexType.FIELD)
+        result = suggest_indexes(["portal_type", "effectiveRange"], None, registry, {})
+        for s in result:
+            assert "expires" not in s["fields"]
+            assert "'expires'" not in s["ddl"]
 
     def test_gopip_skipped(self):
         """GopipIndex fields are skipped (no meaningful PG index type)."""
