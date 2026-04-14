@@ -26,18 +26,26 @@ log = logging.getLogger(__name__)
 
 # ── Constants ────────────────────────────────────────────────────────────
 
-# Query-meta keys that are not index fields
-_NON_IDX_FIELDS = frozenset(
-    {
-        "SearchableText",
-        "path",
-        "effectiveRange",
-        "sort_on",
-        "sort_order",
-        "b_size",
-        "b_start",
-    }
-)
+# Pagination meta — ignored everywhere in the suggestion engine.
+_PAGINATION_META = frozenset({"b_size", "b_start"})
+
+# Sort meta keys — not a filter.  The VALUE of sort_on drives
+# covering-composite construction (see _extract_sort_field).
+_SORT_META = frozenset({"sort_on", "sort_order"})
+
+# Virtual filter keys that expand to real idx columns for composite
+# suggestions.  Each entry maps virtual_key -> list of (real_field,
+# IndexType) tuples.  The real fields then participate in
+# _add_btree_suggestions as if the query had named them directly.
+_FILTER_VIRTUAL = {
+    "effectiveRange": [("effective", IndexType.DATE)],
+}
+
+# Fields we deliberately skip in PR 2 — path suggestions are deferred
+# to PR 3 (EXPLAIN-driven coverage); SearchableText already has a
+# dedicated tsvector column and is additionally handled via
+# _DEDICATED_FIELDS for the reason-string.
+_SKIP_FIELDS = frozenset({"path", "SearchableText"})
 
 # Fields with dedicated PG columns or indexes — always "already_covered"
 _DEDICATED_FIELDS = {
@@ -119,10 +127,20 @@ def suggest_indexes(query_keys, params, registry, existing_indexes):
     btree_fields = []  # (field, idx_type) tuples for composite candidate
 
     for key in query_keys:
-        if key in _NON_IDX_FIELDS:
+        # Pagination/sort meta keys are never filter columns.
+        if key in _PAGINATION_META or key in _SORT_META:
             continue
 
-        # Dedicated column check
+        # Virtual filter fields (e.g. effectiveRange) expand to their
+        # real date/text contributors.  The expansion participates in the
+        # btree composite the same way a direct key would.
+        if key in _FILTER_VIRTUAL:
+            for real_field, real_type in _FILTER_VIRTUAL[key]:
+                btree_fields.append((real_field, real_type))
+            continue
+
+        # Dedicated column check comes BEFORE the skip set so SearchableText
+        # emits its "dedicated column" reason rather than silently vanishing.
         if key in _DEDICATED_FIELDS:
             suggestions.append(
                 {
@@ -135,6 +153,10 @@ def suggest_indexes(query_keys, params, registry, existing_indexes):
                     "reason": f"Dedicated column: {_DEDICATED_FIELDS[key]}",
                 }
             )
+            continue
+
+        # Explicitly skipped fields (path — deferred to PR 3).
+        if key in _SKIP_FIELDS:
             continue
 
         idx_type = reg_lookup.get(key)

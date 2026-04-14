@@ -146,6 +146,26 @@ class TestSuggestIndexes:
             assert "sort_on" not in s["fields"]
             assert "b_size" not in s["fields"]
 
+    def test_pagination_meta_dropped(self):
+        """b_size / b_start are pagination-meta — never appear in suggestions."""
+        registry = _reg(portal_type=IndexType.FIELD)
+        result = suggest_indexes(
+            ["portal_type", "b_size", "b_start"], None, registry, {}
+        )
+        for s in result:
+            assert "b_size" not in s["fields"]
+            assert "b_start" not in s["fields"]
+
+    def test_sort_meta_keys_dropped(self):
+        """sort_on / sort_order keys (as raw keys) are dropped from the filter list."""
+        registry = _reg(portal_type=IndexType.FIELD)
+        result = suggest_indexes(
+            ["portal_type", "sort_on", "sort_order"], None, registry, {}
+        )
+        for s in result:
+            assert "sort_on" not in s["fields"]
+            assert "sort_order" not in s["fields"]
+
     def test_unknown_field_skipped(self):
         registry = _reg(portal_type=IndexType.FIELD)
         result = suggest_indexes(["portal_type", "unknown_field"], None, registry, {})
