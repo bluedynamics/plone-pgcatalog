@@ -51,6 +51,73 @@ def _safe_getattr(obj, name):
     return val
 
 
+def _resolve_via_indexer(obj, attr_name):
+    """Look up *attr_name* through the ``plone.indexer`` ``IIndexer`` chain.
+
+    Computed Plone indexes (``general_end``, ``general_start`` from
+    ``plone.app.event`` / ``bda.aaf.site``, etc.) are virtual attributes
+    registered as named ``IIndexer`` adapters — they never exist as
+    Python attributes on the content object.  Relying on
+    ``IIndexableObjectWrapper.__getattr__`` to trigger them is fragile
+    (the wrapper needs to be adapted correctly *and* the adapter needs
+    to be reachable via the current component registry), so the
+    translator resolves the adapter explicitly and falls back to
+    attribute access only if nothing is registered.
+
+    Returns ``None`` when plone.indexer is unavailable, when no catalog
+    can be determined, when no named ``IIndexer`` is registered, or
+    when the adapter call fails.
+    """
+    if not attr_name:
+        return None
+    try:
+        from plone.indexer.interfaces import IIndexableObjectWrapper
+        from plone.indexer.interfaces import IIndexer
+        from zope.component import queryMultiAdapter
+    except ImportError:
+        return None
+
+    raw = obj
+    catalog = None
+    if IIndexableObjectWrapper.providedBy(obj):
+        # Reach through the wrapper so the adapter sees the raw object,
+        # exactly like the ZCatalog indexing path.  Name-mangled attrs
+        # are a stable part of plone.indexer's ABI.
+        raw = getattr(obj, "_IndexableObjectWrapper__object", obj)
+        catalog = getattr(obj, "_IndexableObjectWrapper__catalog", None)
+    if catalog is None:
+        try:
+            from Products.CMFCore.utils import getToolByName
+
+            catalog = getToolByName(obj, "portal_catalog", None)
+        except Exception:
+            catalog = None
+    if catalog is None:
+        return None
+
+    indexer = queryMultiAdapter((raw, catalog), IIndexer, name=attr_name)
+    if indexer is None:
+        return None
+    try:
+        return indexer()
+    except Exception:
+        log.warning(
+            "IIndexer %r raised while extracting for %r",
+            attr_name,
+            raw,
+            exc_info=True,
+        )
+        return None
+
+
+def _extract_attr(obj, attr_name):
+    """Resolve *attr_name* via ``IIndexer`` first, then attribute access."""
+    val = _resolve_via_indexer(obj, attr_name)
+    if val is not None:
+        return val
+    return _safe_getattr(obj, attr_name)
+
+
 @implementer(IPGIndexTranslator)
 class DateRecurringIndexTranslator:
     """IPGIndexTranslator for Products.DateRecurringIndex.
@@ -72,13 +139,13 @@ class DateRecurringIndexTranslator:
 
     def extract(self, obj, index_name):
         """Extract base date and recurrence rule from obj."""
-        date_val = _safe_getattr(obj, self.date_attr)
+        date_val = _extract_attr(obj, self.date_attr)
         if date_val is None:
             return {}
 
         result = {index_name: convert_value(date_val)}
 
-        recurdef = _safe_getattr(obj, self.recurdef_attr)
+        recurdef = _extract_attr(obj, self.recurdef_attr)
         if recurdef:
             recurdef = str(recurdef)
             if len(recurdef) > _MAX_RRULE_LENGTH:

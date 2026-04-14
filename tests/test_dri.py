@@ -109,6 +109,130 @@ class TestExtract:
 
 
 # ---------------------------------------------------------------------------
+# Unit tests: IIndexer adapter resolution (issue #126)
+# ---------------------------------------------------------------------------
+
+
+class TestIIndexerResolution:
+    """DRI translator resolves values via the plone.indexer IIndexer chain.
+
+    Regression coverage for issue #126: computed Plone indexes such as
+    ``general_end`` / ``general_start`` are virtual attributes — they only
+    exist as named ``IIndexer`` adapters, never as Python attributes on
+    the content object.  ``_safe_getattr`` alone silently returned
+    ``None`` for every event in the site, so ``idx->>'general_end'`` was
+    ``NULL`` across the catalog.
+    """
+
+    @pytest.fixture
+    def computed_catalog(self):
+        """Register an IIndexer for ``general_end`` that returns a fixed date.
+
+        Also registers the ``plone.indexer`` ``IIndexableObjectWrapper``
+        adapter factory so ``wrap_object`` produces a real wrapper — the
+        test then exercises both the wrapper unwrapping path and the
+        explicit adapter lookup added in the fix.
+        """
+        from plone.indexer.interfaces import IIndexableObject
+        from plone.indexer.interfaces import IIndexer
+        from plone.indexer.wrapper import IndexableObjectWrapper
+        from Products.ZCatalog.interfaces import IZCatalog
+        from zope.component import getGlobalSiteManager
+        from zope.interface import implementer
+        from zope.interface import Interface
+
+        @implementer(IZCatalog)
+        class _FakeCatalog:
+            pass
+
+        catalog = _FakeCatalog()
+
+        computed_value = datetime(2025, 6, 1, 18, 0, tzinfo=UTC)
+
+        @implementer(IIndexer)
+        class _FixedDateIndexer:
+            def __init__(self, context, catalog):
+                self.context = context
+                self.catalog = catalog
+
+            def __call__(self):
+                return computed_value
+
+        gsm = getGlobalSiteManager()
+        gsm.registerAdapter(
+            IndexableObjectWrapper,
+            (Interface, IZCatalog),
+            IIndexableObject,
+        )
+        gsm.registerAdapter(
+            _FixedDateIndexer,
+            (Interface, IZCatalog),
+            IIndexer,
+            name="general_end",
+        )
+        try:
+            yield catalog, computed_value
+        finally:
+            gsm.unregisterAdapter(
+                _FixedDateIndexer,
+                (Interface, IZCatalog),
+                IIndexer,
+                name="general_end",
+            )
+            gsm.unregisterAdapter(
+                IndexableObjectWrapper,
+                (Interface, IZCatalog),
+                IIndexableObject,
+            )
+
+    def test_extract_resolves_virtual_attr_via_indexer(self, computed_catalog):
+        """A computed index (no matching Python attribute) is resolved."""
+        from plone.pgcatalog.extraction import wrap_object
+
+        catalog, expected = computed_catalog
+        t = DateRecurringIndexTranslator("general_end", "recurrence")
+
+        # Bare object has no ``general_end`` attribute — only the adapter.
+        class _BareEvent:
+            pass
+
+        obj = _BareEvent()
+        wrapper = wrap_object(obj, catalog)
+
+        result = t.extract(wrapper, "general_end")
+
+        assert result == {"general_end": expected.isoformat()}
+
+    def test_extract_prefers_indexer_over_direct_attr(self, computed_catalog):
+        """When both an adapter and a real attribute exist, adapter wins.
+
+        The standard ZCatalog indexing path gives the adapter priority —
+        matching that keeps pgcatalog behavior-identical.
+        """
+        from plone.pgcatalog.extraction import wrap_object
+
+        catalog, expected = computed_catalog
+        t = DateRecurringIndexTranslator("general_end", "recurrence")
+
+        class _EventWithAttr:
+            general_end = datetime(2024, 1, 1, tzinfo=UTC)  # must be ignored
+
+        wrapper = wrap_object(_EventWithAttr(), catalog)
+        result = t.extract(wrapper, "general_end")
+
+        assert result == {"general_end": expected.isoformat()}
+
+    def test_extract_falls_back_to_attr_without_adapter(self):
+        """No IIndexer registered → existing attribute access still works."""
+        t = DateRecurringIndexTranslator("start", "recurrence")
+        obj = _FakeEvent(start=datetime(2025, 4, 1, 12, 0, tzinfo=UTC))
+
+        result = t.extract(obj, "start")
+
+        assert result == {"start": "2025-04-01T12:00:00+00:00"}
+
+
+# ---------------------------------------------------------------------------
 # Unit tests: query() SQL generation
 # ---------------------------------------------------------------------------
 

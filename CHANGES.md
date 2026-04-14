@@ -1,5 +1,33 @@
 # Changelog
 
+## 1.0.0b53
+
+### Fixed
+
+- `DateRecurringIndexTranslator.extract()` only looked at attributes on
+  the object, so computed Plone indexes — those registered through the
+  `plone.indexer` `@indexer` decorator as named `IIndexer` adapters —
+  were silently extracted as `None`.  Relying on the
+  `IIndexableObjectWrapper.__getattr__` delegation to route the call
+  turned out to be fragile in production component-registry setups.
+
+  The most visible symptom was `plone.app.event` / `bda.aaf.site`'s
+  `general_end` / `general_start` indexes: `idx->>'general_end'` was
+  `NULL` for every event, which broke any Collection using the
+  standard "Event ends in the future" criterion (`general_end` in the
+  query returned zero results even when plenty of future events
+  existed).  Pure persistent attributes like `end` / `start` were
+  unaffected, which is why the regression was easy to miss.
+
+  The translator now resolves the `IIndexer` adapter explicitly
+  (unwrapping the `plone.indexer` wrapper when present) and falls back
+  to attribute access only when no adapter is registered.  This
+  matches how standard ZCatalog resolves index values and fixes the
+  fallout for any `DateRecurringIndex` whose value comes from an
+  adapter.
+
+  Issue #126.
+
 ## 1.0.0b52
 
 ### Fixed
