@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.0.0b53 (unreleased)
+## 1.0.0b53
 
 ### Fixed
 
