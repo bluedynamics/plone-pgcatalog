@@ -89,13 +89,17 @@ def _gin_expr(field):
 # ── Core suggestion engine ───────────────────────────────────────────────
 
 
-def suggest_indexes(query_keys, registry, existing_indexes):
+def suggest_indexes(query_keys, params, registry, existing_indexes):
     """Generate index suggestions for a set of slow-query field keys.
 
     Pure function — no DB access.
 
     Args:
         query_keys: list of catalog query field names
+        params: dict of representative query params (value of the
+            slowest observed invocation of this query-key group), or
+            None when no representative is available.  Used to extract
+            a sort_on value for covering-composite suggestions.
         registry: IndexRegistry instance (has .items() returning
             name -> (IndexType, idx_key, source_attrs))
         existing_indexes: dict {index_name: index_def_sql} from

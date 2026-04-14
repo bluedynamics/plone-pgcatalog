@@ -1212,7 +1212,7 @@ class PlonePGCatalogTool(UniqueObject, Folder):
                     "avg_ms": float(row["avg_ms"]),
                     "max_ms": float(row["max_ms"]),
                     "last_seen": str(row["last_seen"])[:19],
-                    "suggestions": suggest_indexes(keys, registry, existing),
+                    "suggestions": suggest_indexes(keys, None, registry, existing),
                 }
             )
         return result
