@@ -5,7 +5,6 @@ from plone.pgcatalog.processor import CatalogStateProcessor
 from plone.pgcatalog.processor import TIKA_URL
 from plone.pgcatalog.schema import TEXT_EXTRACTION_QUEUE
 from psycopg.rows import dict_row
-from psycopg.rows import tuple_row
 from tests.conftest import DSN
 from tests.conftest import insert_object
 from unittest import mock
@@ -191,7 +190,7 @@ class TestEnqueueLogic:
             }
         ]
 
-        with conn.cursor(row_factory=tuple_row) as cur:
+        with conn.cursor(row_factory=dict_row) as cur:
             proc._enqueue_tika_jobs(cur)
         conn.commit()
 
@@ -220,7 +219,7 @@ class TestEnqueueLogic:
             }
         ]
 
-        with conn.cursor(row_factory=tuple_row) as cur:
+        with conn.cursor(row_factory=dict_row) as cur:
             proc._enqueue_tika_jobs(cur)
         conn.commit()
 
@@ -237,7 +236,7 @@ class TestEnqueueLogic:
             {"zoid": 200, "content_type": "application/pdf", "blob_refs": []}
         ]
 
-        with conn.cursor(row_factory=tuple_row) as cur:
+        with conn.cursor(row_factory=dict_row) as cur:
             proc._enqueue_tika_jobs(cur)
         conn.commit()
 
@@ -262,7 +261,7 @@ class TestEnqueueLogic:
                     "blob_refs": [blob_zoid],
                 }
             ]
-            with conn.cursor(row_factory=tuple_row) as cur:
+            with conn.cursor(row_factory=dict_row) as cur:
                 proc._enqueue_tika_jobs(cur)
             conn.commit()
 
@@ -313,7 +312,7 @@ class TestEnqueueLogic:
             }
         ]
 
-        with conn.cursor(row_factory=tuple_row) as cur:
+        with conn.cursor(row_factory=dict_row) as cur:
             proc._enqueue_tika_jobs(cur)
         conn.commit()
 
@@ -366,7 +365,7 @@ class TestEnqueueLogic:
             },
         ]
 
-        with conn.cursor(row_factory=tuple_row) as cur:
+        with conn.cursor(row_factory=dict_row) as cur:
             proc._enqueue_tika_jobs(cur)
         conn.commit()
 
@@ -404,7 +403,7 @@ class TestEnqueueLogic:
             }
         ]
 
-        with conn.cursor(row_factory=tuple_row) as cur:
+        with conn.cursor(row_factory=dict_row) as cur:
             proc._enqueue_tika_jobs(cur)
         conn.commit()
 
@@ -428,7 +427,7 @@ class TestEnqueueLogic:
             }
         ]
 
-        with conn.cursor(row_factory=tuple_row) as cur:
+        with conn.cursor(row_factory=dict_row) as cur:
             proc._enqueue_tika_jobs(cur)
         conn.commit()
 
@@ -516,8 +515,8 @@ class TestEnqueueUnit:
         proc._tika_candidates = [
             {"zoid": 100, "content_type": "application/pdf", "blob_refs": [999]}
         ]
-        # First fetchall: direct blob_state lookup returns (999, 1)
-        cur = self._make_cursor([[(999, 1)]])
+        # First fetchall: direct blob_state lookup returns {"zoid": 999, "tid": 1}
+        cur = self._make_cursor([[{"zoid": 999, "tid": 1}]])
 
         proc._enqueue_tika_jobs(cur)
 
@@ -556,8 +555,8 @@ class TestEnqueueUnit:
         cur = self._make_cursor(
             [
                 [],  # 1st SELECT: no direct blob_state row for wrapper_oid
-                [(wrapper_oid, wrapper_state)],  # 2nd SELECT: wrapper's state
-                [(inner_blob_oid, 1)],  # 3rd SELECT: blob for inner oid
+                [{"zoid": wrapper_oid, "state": wrapper_state}],  # 2nd SELECT
+                [{"zoid": inner_blob_oid, "tid": 1}],  # 3rd SELECT
             ]
         )
 
@@ -601,7 +600,7 @@ class TestEnqueueUnit:
         cur = self._make_cursor(
             [
                 [],  # no direct blob row
-                [(811, json.dumps({"filename": "empty.pdf"}))],  # no @ref inside
+                [{"zoid": 811, "state": json.dumps({"filename": "empty.pdf"})}],
             ]
         )
 
