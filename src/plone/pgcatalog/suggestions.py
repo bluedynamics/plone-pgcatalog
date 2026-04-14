@@ -26,18 +26,26 @@ log = logging.getLogger(__name__)
 
 # ── Constants ────────────────────────────────────────────────────────────
 
-# Query-meta keys that are not index fields
-_NON_IDX_FIELDS = frozenset(
-    {
-        "SearchableText",
-        "path",
-        "effectiveRange",
-        "sort_on",
-        "sort_order",
-        "b_size",
-        "b_start",
-    }
-)
+# Pagination meta — ignored everywhere in the suggestion engine.
+_PAGINATION_META = frozenset({"b_size", "b_start"})
+
+# Sort meta keys — not a filter.  The VALUE of sort_on drives
+# covering-composite construction (see _extract_sort_field).
+_SORT_META = frozenset({"sort_on", "sort_order"})
+
+# Virtual filter keys that expand to real idx columns for composite
+# suggestions.  Each entry maps virtual_key -> list of (real_field,
+# IndexType) tuples.  The real fields then participate in
+# _add_btree_suggestions as if the query had named them directly.
+_FILTER_VIRTUAL = {
+    "effectiveRange": [("effective", IndexType.DATE)],
+}
+
+# Fields we deliberately skip in PR 2 — path suggestions are deferred
+# to PR 3 (EXPLAIN-driven coverage); SearchableText already has a
+# dedicated tsvector column and is additionally handled via
+# _DEDICATED_FIELDS for the reason-string.
+_SKIP_FIELDS = frozenset({"path", "SearchableText"})
 
 # Fields with dedicated PG columns or indexes — always "already_covered"
 _DEDICATED_FIELDS = {
@@ -61,6 +69,11 @@ _SELECTIVITY_ORDER = {
     IndexType.BOOLEAN: 3,
     IndexType.PATH: 4,
 }
+
+# Hard cap on columns in a composite btree suggestion — beyond three
+# the write-amplification cost outweighs read savings in real Plone
+# catalogs.  Sort covering column counts against this cap.
+_MAX_COMPOSITE_COLUMNS = 3
 
 # Safe index name pattern
 _SAFE_NAME_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
@@ -89,13 +102,17 @@ def _gin_expr(field):
 # ── Core suggestion engine ───────────────────────────────────────────────
 
 
-def suggest_indexes(query_keys, registry, existing_indexes):
+def suggest_indexes(query_keys, params, registry, existing_indexes):
     """Generate index suggestions for a set of slow-query field keys.
 
     Pure function — no DB access.
 
     Args:
         query_keys: list of catalog query field names
+        params: dict of representative query params (value of the
+            slowest observed invocation of this query-key group), or
+            None when no representative is available.  Used to extract
+            a sort_on value for covering-composite suggestions.
         registry: IndexRegistry instance (has .items() returning
             name -> (IndexType, idx_key, source_attrs))
         existing_indexes: dict {index_name: index_def_sql} from
@@ -115,10 +132,20 @@ def suggest_indexes(query_keys, registry, existing_indexes):
     btree_fields = []  # (field, idx_type) tuples for composite candidate
 
     for key in query_keys:
-        if key in _NON_IDX_FIELDS:
+        # Pagination/sort meta keys are never filter columns.
+        if key in _PAGINATION_META or key in _SORT_META:
             continue
 
-        # Dedicated column check
+        # Virtual filter fields (e.g. effectiveRange) expand to their
+        # real date/text contributors.  The expansion participates in the
+        # btree composite the same way a direct key would.
+        if key in _FILTER_VIRTUAL:
+            for real_field, real_type in _FILTER_VIRTUAL[key]:
+                btree_fields.append((real_field, real_type))
+            continue
+
+        # Dedicated column check comes BEFORE the skip set so SearchableText
+        # emits its "dedicated column" reason rather than silently vanishing.
         if key in _DEDICATED_FIELDS:
             suggestions.append(
                 {
@@ -131,6 +158,10 @@ def suggest_indexes(query_keys, registry, existing_indexes):
                     "reason": f"Dedicated column: {_DEDICATED_FIELDS[key]}",
                 }
             )
+            continue
+
+        # Explicitly skipped fields (path — deferred to PR 3).
+        if key in _SKIP_FIELDS:
             continue
 
         idx_type = reg_lookup.get(key)
@@ -146,11 +177,50 @@ def suggest_indexes(query_keys, registry, existing_indexes):
         else:
             btree_fields.append((key, idx_type))
 
-    # Build composite from btree-eligible fields
+    # Extract sort field for covering trailing column (if any).
+    sort_field = _extract_sort_field(params, registry)
+
+    # Build composite from btree-eligible fields plus optional sort cover.
+    # No sort-only suggestion — a btree on sort alone does not
+    # accelerate a filter-less query in a meaningful way.
     if btree_fields:
-        _add_btree_suggestions(btree_fields, existing_indexes, suggestions)
+        _add_btree_suggestions(btree_fields, sort_field, existing_indexes, suggestions)
 
     return suggestions
+
+
+def _extract_sort_field(params, registry):
+    """Return ``(field_name, IndexType)`` for a composite-eligible sort
+    column, or ``None``.
+
+    Plone emits the sort key under various param names — plain
+    ``sort_on`` for direct catalog searches, ``p_sort_on_1`` for
+    restapi-generated queries, etc.  Substring matching on
+    ``"sort_on"`` is the pragmatic fit.
+
+    Only btree-composite-eligible types are returned — KEYWORD, TEXT,
+    GOPIP, and DATE_RANGE cannot be trailing columns of a btree index.
+    """
+    if not params:
+        return None
+
+    sort_value = None
+    for param_name, value in params.items():
+        if "sort_on" in param_name:
+            sort_value = value
+            break
+    if not sort_value:
+        return None
+
+    # Registry lookup.  items() returns name -> (IndexType, idx_key, source_attrs).
+    for name, (idx_type, _idx_key, _source_attrs) in registry.items():
+        if name == sort_value:
+            if idx_type in _NON_COMPOSITE_TYPES:
+                return None
+            if idx_type in _SKIP_TYPES:
+                return None
+            return (name, idx_type)
+    return None
 
 
 def _add_standalone_suggestion(field, idx_type, existing_indexes, suggestions):
@@ -186,16 +256,51 @@ def _add_standalone_suggestion(field, idx_type, existing_indexes, suggestions):
     )
 
 
-def _add_btree_suggestions(btree_fields, existing_indexes, suggestions):
-    """Add btree suggestions — single or composite (max 3 fields)."""
-    # Sort by selectivity
-    btree_fields.sort(key=lambda ft: _SELECTIVITY_ORDER.get(ft[1], 99))
+def _add_btree_suggestions(btree_fields, sort_field, existing_indexes, suggestions):
+    """Add a btree suggestion — single column or composite.
 
-    # Limit to max 3
-    fields_limited = btree_fields[:3]
+    Args:
+        btree_fields: list of ``(field_name, IndexType)`` tuples for
+            filter columns discovered in the query.  Order is the
+            traversal order of query_keys — this function sorts by
+            selectivity.
+        sort_field: ``(field_name, IndexType)`` for a trailing covering
+            column, or None.  Makes the planner skip the ORDER BY sort
+            step when the leading filter columns have equality predicates.
+        existing_indexes: dict {name: indexdef} from get_existing_indexes.
+        suggestions: output list to append the resulting dict to.
+    """
+    # Sort filters by selectivity (most selective first).
+    btree_fields = sorted(
+        btree_fields, key=lambda ft: _SELECTIVITY_ORDER.get(ft[1], 99)
+    )
 
-    if len(fields_limited) == 1:
-        field, idx_type = fields_limited[0]
+    # Reserve one slot for sort_field if present.  Cap stays 3 total.
+    filter_cap = (
+        _MAX_COMPOSITE_COLUMNS - 1 if sort_field is not None else _MAX_COMPOSITE_COLUMNS
+    )
+    fields_limited = btree_fields[:filter_cap]
+
+    # Build the ordered column list: filters first, sort trailing.
+    # Dedupe: if sort_field's name is already a filter column, don't
+    # repeat it — the leading position already satisfies ORDER BY when
+    # the remaining columns have equality predicates.
+    ordered = list(fields_limited)
+    sort_covering = False
+    if sort_field is not None:
+        existing_names = {f for f, _t in ordered}
+        if sort_field[0] not in existing_names:
+            ordered.append(sort_field)
+            sort_covering = True
+
+    # Empty after dedupe (shouldn't happen — caller gates on truthy
+    # btree_fields — but guard anyway).
+    if not ordered:
+        return
+
+    field_names = [f for f, _t in ordered]
+    if len(ordered) == 1:
+        field, idx_type = ordered[0]
         expr = _btree_expr(field, idx_type)
         name = f"idx_os_sug_{field}"
         ddl = (
@@ -204,22 +309,23 @@ def _add_btree_suggestions(btree_fields, existing_indexes, suggestions):
         )
         reason = f"Btree index for {idx_type.name} field '{field}'"
     else:
-        exprs = [_btree_expr(f, t) for f, t in fields_limited]
-        field_names = [f for f, _t in fields_limited]
+        exprs = [_btree_expr(f, t) for f, t in ordered]
         name = "idx_os_sug_" + "_".join(field_names)
         cols = ", ".join(exprs)
         ddl = (
             f"CREATE INDEX CONCURRENTLY {name} "
             f"ON object_state ({cols}) WHERE idx IS NOT NULL"
         )
-        types_str = " + ".join(t.name for _f, t in fields_limited)
-        reason = f"Composite btree ({types_str}) for {len(fields_limited)} fields"
+        types_str = " + ".join(t.name for _f, t in ordered)
+        reason = f"Composite btree ({types_str}) for {len(ordered)} fields"
+    if sort_covering:
+        reason += f"; last column covers ORDER BY {sort_field[0]}"
 
     status = _check_covered(ddl, existing_indexes)
     suggestions.append(
         {
-            "fields": [f for f, _t in fields_limited],
-            "field_types": [t.name for _f, t in fields_limited],
+            "fields": field_names,
+            "field_types": [t.name for _f, t in ordered],
             "ddl": ddl,
             "status": status,
             "reason": reason if status == "new" else f"Already covered: {reason}",

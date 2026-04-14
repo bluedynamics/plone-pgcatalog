@@ -17,3 +17,4 @@ docs/.vale/styles/Microsoft/
 docs/.vale/styles/write-good/
 uv.lock
 development/
+.worktrees/

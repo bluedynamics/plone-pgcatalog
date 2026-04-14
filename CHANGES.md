@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.0.0b53 (unreleased)
+
+### Added
+
+- Slow-query suggestions now produce covering composite indexes for the
+  common `portal_type + effectiveRange + sort_on=effective` pattern
+  (issue #122).  The suggestion engine splits the legacy
+  `_NON_IDX_FIELDS` into purpose-specific constants, expands
+  `effectiveRange` to its `effective` date contributor, and appends the
+  query's `sort_on` field as a trailing btree composite column so the
+  planner can skip the ORDER BY sort step.
+
 ## 1.0.0b52
 
 ### Fixed

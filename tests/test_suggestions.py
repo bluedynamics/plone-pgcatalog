@@ -29,7 +29,7 @@ class TestSuggestIndexes:
 
     def test_single_field_returns_single_btree(self):
         registry = _reg(portal_type=IndexType.FIELD)
-        result = suggest_indexes(["portal_type"], registry, {})
+        result = suggest_indexes(["portal_type"], None, registry, {})
         assert len(result) == 1
         assert result[0]["status"] == "new"
         assert "(idx->>'portal_type')" in result[0]["ddl"]
@@ -40,7 +40,7 @@ class TestSuggestIndexes:
             portal_type=IndexType.FIELD,
             Creator=IndexType.FIELD,
         )
-        result = suggest_indexes(["portal_type", "Creator"], registry, {})
+        result = suggest_indexes(["portal_type", "Creator"], None, registry, {})
         new = [s for s in result if s["status"] == "new"]
         assert len(new) == 1
         assert "portal_type" in new[0]["ddl"]
@@ -53,7 +53,7 @@ class TestSuggestIndexes:
             c=IndexType.FIELD,
             d=IndexType.FIELD,
         )
-        result = suggest_indexes(["a", "b", "c", "d"], registry, {})
+        result = suggest_indexes(["a", "b", "c", "d"], None, registry, {})
         new = [s for s in result if s["status"] == "new"]
         # Composite should have max 3 fields
         for s in new:
@@ -64,7 +64,7 @@ class TestSuggestIndexes:
             portal_type=IndexType.FIELD,
             Subject=IndexType.KEYWORD,
         )
-        result = suggest_indexes(["portal_type", "Subject"], registry, {})
+        result = suggest_indexes(["portal_type", "Subject"], None, registry, {})
         # KEYWORD gets its own suggestion, not mixed into composite
         for s in result:
             if "Subject" in s["fields"] and len(s["fields"]) > 1:
@@ -75,20 +75,20 @@ class TestSuggestIndexes:
             portal_type=IndexType.FIELD,
             Title=IndexType.TEXT,
         )
-        result = suggest_indexes(["portal_type", "Title"], registry, {})
+        result = suggest_indexes(["portal_type", "Title"], None, registry, {})
         for s in result:
             if "Title" in s["fields"] and len(s["fields"]) > 1:
                 pytest.fail("TEXT should not be in a composite")
 
     def test_date_uses_timestamptz(self):
         registry = _reg(modified=IndexType.DATE)
-        result = suggest_indexes(["modified"], registry, {})
+        result = suggest_indexes(["modified"], None, registry, {})
         new = [s for s in result if s["status"] == "new"]
         assert any("pgcatalog_to_timestamptz" in s["ddl"] for s in new)
 
     def test_boolean_uses_cast(self):
         registry = _reg(is_folderish=IndexType.BOOLEAN)
-        result = suggest_indexes(["is_folderish"], registry, {})
+        result = suggest_indexes(["is_folderish"], None, registry, {})
         new = [s for s in result if s["status"] == "new"]
         assert any("((idx->>'is_folderish')::boolean)" in s["ddl"] for s in new)
 
@@ -103,7 +103,9 @@ class TestSuggestIndexes:
             portal_type=IndexType.FIELD,
             exclude_from_nav=IndexType.BOOLEAN,
         )
-        result = suggest_indexes(["portal_type", "exclude_from_nav"], registry, {})
+        result = suggest_indexes(
+            ["portal_type", "exclude_from_nav"], None, registry, {}
+        )
         composites = [
             s for s in result if s["status"] == "new" and len(s["fields"]) > 1
         ]
@@ -118,33 +120,55 @@ class TestSuggestIndexes:
 
     def test_uuid_uses_text_expression(self):
         registry = _reg(UID=IndexType.UUID)
-        result = suggest_indexes(["UID"], registry, {})
+        result = suggest_indexes(["UID"], None, registry, {})
         new = [s for s in result if s["status"] == "new"]
         assert any("(idx->>'UID')" in s["ddl"] for s in new)
 
     def test_path_uses_text_pattern_ops(self):
         registry = _reg(tgpath=IndexType.PATH)
-        result = suggest_indexes(["tgpath"], registry, {})
+        result = suggest_indexes(["tgpath"], None, registry, {})
         new = [s for s in result if s["status"] == "new"]
         assert any("text_pattern_ops" in s["ddl"] for s in new)
 
     def test_keyword_gets_own_gin(self):
         """Unknown KEYWORD fields (not in _DEDICATED_FIELDS) get a GIN suggestion."""
         registry = _reg(custom_tags=IndexType.KEYWORD)
-        result = suggest_indexes(["custom_tags"], registry, {})
+        result = suggest_indexes(["custom_tags"], None, registry, {})
         new = [s for s in result if s["status"] == "new"]
         assert any("GIN" in s["ddl"].upper() or "gin" in s["ddl"] for s in new)
 
     def test_non_idx_fields_filtered(self):
         registry = _reg(portal_type=IndexType.FIELD)
-        result = suggest_indexes(["portal_type", "sort_on", "b_size"], registry, {})
+        result = suggest_indexes(
+            ["portal_type", "sort_on", "b_size"], None, registry, {}
+        )
         for s in result:
             assert "sort_on" not in s["fields"]
             assert "b_size" not in s["fields"]
 
+    def test_pagination_meta_dropped(self):
+        """b_size / b_start are pagination-meta — never appear in suggestions."""
+        registry = _reg(portal_type=IndexType.FIELD)
+        result = suggest_indexes(
+            ["portal_type", "b_size", "b_start"], None, registry, {}
+        )
+        for s in result:
+            assert "b_size" not in s["fields"]
+            assert "b_start" not in s["fields"]
+
+    def test_sort_meta_keys_dropped(self):
+        """sort_on / sort_order keys (as raw keys) are dropped from the filter list."""
+        registry = _reg(portal_type=IndexType.FIELD)
+        result = suggest_indexes(
+            ["portal_type", "sort_on", "sort_order"], None, registry, {}
+        )
+        for s in result:
+            assert "sort_on" not in s["fields"]
+            assert "sort_order" not in s["fields"]
+
     def test_unknown_field_skipped(self):
         registry = _reg(portal_type=IndexType.FIELD)
-        result = suggest_indexes(["portal_type", "unknown_field"], registry, {})
+        result = suggest_indexes(["portal_type", "unknown_field"], None, registry, {})
         for s in result:
             assert "unknown_field" not in s["fields"]
 
@@ -156,7 +180,7 @@ class TestSuggestIndexes:
                 "((idx->>'portal_type')) WHERE idx IS NOT NULL"
             )
         }
-        result = suggest_indexes(["portal_type"], registry, existing)
+        result = suggest_indexes(["portal_type"], None, registry, existing)
         assert all(s["status"] == "already_covered" for s in result)
 
     def test_already_covered_by_sug_name(self):
@@ -169,14 +193,14 @@ class TestSuggestIndexes:
                 "WHERE (idx IS NOT NULL)"
             )
         }
-        result = suggest_indexes(["portal_type"], registry, existing)
+        result = suggest_indexes(["portal_type"], None, registry, existing)
         assert all(s["status"] == "already_covered" for s in result)
 
     def test_dedicated_field_already_covered(self):
         registry = _reg(
             allowedRolesAndUsers=IndexType.KEYWORD,
         )
-        result = suggest_indexes(["allowedRolesAndUsers"], registry, {})
+        result = suggest_indexes(["allowedRolesAndUsers"], None, registry, {})
         covered = [s for s in result if s["status"] == "already_covered"]
         assert len(covered) == 1
         assert "dedicated" in covered[0]["reason"].lower()
@@ -184,25 +208,25 @@ class TestSuggestIndexes:
     def test_object_provides_already_covered(self):
         """object_provides has a dedicated GIN index — always covered."""
         registry = _reg(object_provides=IndexType.KEYWORD)
-        result = suggest_indexes(["object_provides"], registry, {})
+        result = suggest_indexes(["object_provides"], None, registry, {})
         covered = [s for s in result if s["status"] == "already_covered"]
         assert len(covered) == 1
 
     def test_subject_already_covered(self):
         """Subject has a dedicated GIN index — always covered."""
         registry = _reg(Subject=IndexType.KEYWORD)
-        result = suggest_indexes(["Subject"], registry, {})
+        result = suggest_indexes(["Subject"], None, registry, {})
         covered = [s for s in result if s["status"] == "already_covered"]
         assert len(covered) == 1
 
     def test_empty_keys_returns_empty(self):
         registry = _reg()
-        result = suggest_indexes([], registry, {})
+        result = suggest_indexes([], None, registry, {})
         assert result == []
 
     def test_all_filtered_keys_returns_empty(self):
         registry = _reg()
-        result = suggest_indexes(["sort_on", "b_size"], registry, {})
+        result = suggest_indexes(["sort_on", "b_size"], None, registry, {})
         assert result == []
 
     def test_selectivity_ordering(self):
@@ -211,7 +235,7 @@ class TestSuggestIndexes:
             review_state=IndexType.FIELD,
             UID=IndexType.UUID,
         )
-        result = suggest_indexes(["review_state", "UID"], registry, {})
+        result = suggest_indexes(["review_state", "UID"], None, registry, {})
         composites = [s for s in result if len(s["fields"]) > 1]
         if composites:
             assert composites[0]["fields"][0] == "UID"
@@ -219,22 +243,40 @@ class TestSuggestIndexes:
     def test_naming_convention(self):
         """Generated index names use idx_os_sug_ prefix."""
         registry = _reg(portal_type=IndexType.FIELD)
-        result = suggest_indexes(["portal_type"], registry, {})
+        result = suggest_indexes(["portal_type"], None, registry, {})
         new = [s for s in result if s["status"] == "new"]
         for s in new:
             assert "idx_os_sug_" in s["ddl"]
 
     def test_date_range_excluded(self):
-        """DATE_RANGE (effectiveRange) should be filtered by _NON_IDX_FIELDS."""
+        """The effectiveRange virtual key never appears verbatim in outputs."""
         registry = _reg(portal_type=IndexType.FIELD)
-        result = suggest_indexes(["portal_type", "effectiveRange"], registry, {})
+        result = suggest_indexes(["portal_type", "effectiveRange"], None, registry, {})
         for s in result:
             assert "effectiveRange" not in s["fields"]
+
+    def test_effective_range_expands_to_effective(self):
+        """effectiveRange in query keys yields a composite mentioning effective."""
+        registry = _reg(portal_type=IndexType.FIELD)
+        result = suggest_indexes(["portal_type", "effectiveRange"], None, registry, {})
+        new = [s for s in result if s["status"] == "new"]
+        assert len(new) == 1
+        assert "portal_type" in new[0]["fields"]
+        assert "effective" in new[0]["fields"]
+        assert "pgcatalog_to_timestamptz(idx->>'effective')" in new[0]["ddl"]
+
+    def test_effective_range_narrow_no_expires(self):
+        """Narrow expansion — expires is NOT added to the composite."""
+        registry = _reg(portal_type=IndexType.FIELD)
+        result = suggest_indexes(["portal_type", "effectiveRange"], None, registry, {})
+        for s in result:
+            assert "expires" not in s["fields"]
+            assert "'expires'" not in s["ddl"]
 
     def test_gopip_skipped(self):
         """GopipIndex fields are skipped (no meaningful PG index type)."""
         registry = _reg(getObjPositionInParent=IndexType.GOPIP)
-        result = suggest_indexes(["getObjPositionInParent"], registry, {})
+        result = suggest_indexes(["getObjPositionInParent"], None, registry, {})
         assert result == []
 
     def test_mixed_case_name_already_covered(self):
@@ -253,8 +295,120 @@ class TestSuggestIndexes:
                 "WHERE (idx IS NOT NULL)"
             )
         }
-        result = suggest_indexes(["Language"], registry, existing)
+        result = suggest_indexes(["Language"], None, registry, existing)
         assert all(s["status"] == "already_covered" for s in result)
+
+    def test_sort_on_appends_trailing_column(self):
+        """sort_on in params appends the sort field as the last composite column."""
+        registry = _reg(
+            portal_type=IndexType.FIELD,
+            effective=IndexType.DATE,
+        )
+        result = suggest_indexes(
+            ["portal_type"],
+            {"sort_on": "effective"},
+            registry,
+            {},
+        )
+        new = [s for s in result if s["status"] == "new"]
+        assert len(new) == 1
+        assert new[0]["fields"] == ["portal_type", "effective"]
+        ddl = new[0]["ddl"]
+        assert ddl.index("pgcatalog_to_timestamptz(idx->>'effective')") > ddl.index(
+            "(idx->>'portal_type')"
+        )
+        assert "ORDER BY effective" in new[0]["reason"]
+
+    def test_sort_on_deduped_when_already_leading(self):
+        """Sort field already present as filter column — not appended twice."""
+        registry = _reg(
+            portal_type=IndexType.FIELD,
+            effective=IndexType.DATE,
+        )
+        result = suggest_indexes(
+            ["portal_type", "effectiveRange"],
+            {"sort_on": "effective"},
+            registry,
+            {},
+        )
+        new = [s for s in result if s["status"] == "new"]
+        assert len(new) == 1
+        assert new[0]["fields"].count("effective") == 1
+
+    def test_sort_on_ignored_for_non_composite_type(self):
+        """Sort on a TEXT field does not add a trailing column."""
+        registry = _reg(
+            portal_type=IndexType.FIELD,
+            Title=IndexType.TEXT,
+        )
+        result = suggest_indexes(
+            ["portal_type"],
+            {"sort_on": "Title"},
+            registry,
+            {},
+        )
+        new = [
+            s for s in result if s["status"] == "new" and "portal_type" in s["fields"]
+        ]
+        assert all("Title" not in s["fields"] for s in new)
+
+    def test_sort_on_unknown_field_ignored(self):
+        """Sort on an unregistered field produces no covering column, no crash."""
+        registry = _reg(portal_type=IndexType.FIELD)
+        result = suggest_indexes(
+            ["portal_type"],
+            {"sort_on": "not_in_registry"},
+            registry,
+            {},
+        )
+        new = [s for s in result if s["status"] == "new"]
+        assert len(new) == 1
+        assert new[0]["fields"] == ["portal_type"]
+
+    def test_composite_cap_includes_sort(self):
+        """Three filter fields + sort → filter list truncated to 2, sort appended."""
+        registry = _reg(
+            a=IndexType.FIELD,
+            b=IndexType.FIELD,
+            c=IndexType.FIELD,
+            effective=IndexType.DATE,
+        )
+        result = suggest_indexes(
+            ["a", "b", "c"],
+            {"sort_on": "effective"},
+            registry,
+            {},
+        )
+        new = [s for s in result if s["status"] == "new"]
+        assert len(new) == 1
+        assert len(new[0]["fields"]) == 3
+        assert new[0]["fields"][-1] == "effective"
+
+    def test_issue_122_pattern(self):
+        """Regression for #122: portal_type + effectiveRange + sort_on=effective."""
+        registry = _reg(
+            portal_type=IndexType.FIELD,
+            effective=IndexType.DATE,
+        )
+        result = suggest_indexes(
+            ["portal_type", "effectiveRange"],
+            {"sort_on": "effective"},
+            registry,
+            {},
+        )
+        new = [s for s in result if s["status"] == "new"]
+        assert len(new) == 1
+        assert new[0]["fields"] == ["portal_type", "effective"]
+        ddl = new[0]["ddl"]
+        assert "(idx->>'portal_type')" in ddl
+        assert "pgcatalog_to_timestamptz(idx->>'effective')" in ddl
+
+    def test_params_none_behaves_as_before(self):
+        """Passing params=None is equivalent to the pre-PR-2 behavior."""
+        registry = _reg(portal_type=IndexType.FIELD)
+        r_none = suggest_indexes(["portal_type"], None, registry, {})
+        r_empty = suggest_indexes(["portal_type"], {}, registry, {})
+        assert [s["ddl"] for s in r_none] == [s["ddl"] for s in r_empty]
 
     def test_composite_already_covered_by_pg_normalized_indexdef(self):
         """Composite suggestion detects equivalent PG-stored indexdef.
@@ -281,7 +435,9 @@ class TestSuggestIndexes:
                 ") WHERE (idx IS NOT NULL)"
             )
         }
-        result = suggest_indexes(["Language", "portal_type", "end"], registry, existing)
+        result = suggest_indexes(
+            ["Language", "portal_type", "end"], None, registry, existing
+        )
         assert all(s["status"] == "already_covered" for s in result)
 
 
@@ -411,3 +567,55 @@ class TestApplyIndexPreflight:
         # No DROP, just CREATE
         assert not any("DROP INDEX CONCURRENTLY IF EXISTS" in s for s in executed_sqls)
         assert any("CREATE INDEX CONCURRENTLY" in s for s in executed_sqls)
+
+
+class TestExtractSortField:
+    """Unit tests for _extract_sort_field helper."""
+
+    def test_returns_none_when_params_is_none(self):
+        from plone.pgcatalog.suggestions import _extract_sort_field
+
+        assert _extract_sort_field(None, _reg()) is None
+
+    def test_returns_none_when_params_empty(self):
+        from plone.pgcatalog.suggestions import _extract_sort_field
+
+        assert _extract_sort_field({}, _reg()) is None
+
+    def test_plain_sort_on_extracted(self):
+        from plone.pgcatalog.suggestions import _extract_sort_field
+
+        registry = _reg(effective=IndexType.DATE)
+        result = _extract_sort_field({"sort_on": "effective"}, registry)
+        assert result == ("effective", IndexType.DATE)
+
+    def test_plone_aliased_sort_on_extracted(self):
+        """Plone generates p_sort_on_1 etc. — substring match wins."""
+        from plone.pgcatalog.suggestions import _extract_sort_field
+
+        registry = _reg(effective=IndexType.DATE)
+        result = _extract_sort_field({"p_sort_on_1": "effective"}, registry)
+        assert result == ("effective", IndexType.DATE)
+
+    def test_returns_none_for_unknown_field(self):
+        """Sort value not in registry → None (no crash)."""
+        from plone.pgcatalog.suggestions import _extract_sort_field
+
+        registry = _reg(effective=IndexType.DATE)
+        assert _extract_sort_field({"sort_on": "bogus"}, registry) is None
+
+    def test_returns_none_for_non_composite_type(self):
+        """Sort on a KEYWORD/TEXT field → None (cannot be a trailing btree column)."""
+        from plone.pgcatalog.suggestions import _extract_sort_field
+
+        registry = _reg(Subject=IndexType.KEYWORD)
+        assert _extract_sort_field({"sort_on": "Subject"}, registry) is None
+
+    def test_returns_none_for_skip_type(self):
+        """GOPIP / DATE_RANGE cannot be a trailing btree column either."""
+        from plone.pgcatalog.suggestions import _extract_sort_field
+
+        registry = _reg(getObjPositionInParent=IndexType.GOPIP)
+        assert (
+            _extract_sort_field({"sort_on": "getObjPositionInParent"}, registry) is None
+        )

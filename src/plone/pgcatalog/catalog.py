@@ -1186,15 +1186,31 @@ class PlonePGCatalogTool(UniqueObject, Folder):
 
                 with pg_conn.cursor() as cur:
                     cur.execute(
-                        "SELECT query_keys, "
-                        "  COUNT(*) AS cnt, "
-                        "  ROUND(AVG(duration_ms)::numeric, 1) AS avg_ms, "
-                        "  ROUND(MAX(duration_ms)::numeric, 1) AS max_ms, "
-                        "  MAX(created_at) AS last_seen "
-                        "FROM pgcatalog_slow_queries "
-                        "GROUP BY query_keys "
-                        "ORDER BY max_ms DESC "
-                        "LIMIT 50"
+                        "SELECT grp.query_keys, "
+                        "  grp.cnt, "
+                        "  grp.avg_ms, "
+                        "  grp.max_ms, "
+                        "  grp.last_seen, "
+                        "  slowest.params AS representative_params "
+                        "FROM ( "
+                        "  SELECT query_keys, "
+                        "    COUNT(*) AS cnt, "
+                        "    ROUND(AVG(duration_ms)::numeric, 1) AS avg_ms, "
+                        "    ROUND(MAX(duration_ms)::numeric, 1) AS max_ms, "
+                        "    MAX(created_at) AS last_seen "
+                        "  FROM pgcatalog_slow_queries "
+                        "  GROUP BY query_keys "
+                        "  ORDER BY max_ms DESC "
+                        "  LIMIT 50 "
+                        ") grp "
+                        "LEFT JOIN LATERAL ( "
+                        "  SELECT params "
+                        "  FROM pgcatalog_slow_queries s "
+                        "  WHERE s.query_keys = grp.query_keys "
+                        "  ORDER BY s.duration_ms DESC "
+                        "  LIMIT 1 "
+                        ") slowest ON TRUE "
+                        "ORDER BY grp.max_ms DESC"
                     )
                     rows = cur.fetchall()
             finally:
@@ -1205,6 +1221,7 @@ class PlonePGCatalogTool(UniqueObject, Folder):
         result = []
         for row in rows:
             keys = row["query_keys"]
+            params = row["representative_params"]
             result.append(
                 {
                     "query_keys": ", ".join(keys),
@@ -1212,7 +1229,7 @@ class PlonePGCatalogTool(UniqueObject, Folder):
                     "avg_ms": float(row["avg_ms"]),
                     "max_ms": float(row["max_ms"]),
                     "last_seen": str(row["last_seen"])[:19],
-                    "suggestions": suggest_indexes(keys, registry, existing),
+                    "suggestions": suggest_indexes(keys, params, registry, existing),
                 }
             )
         return result
