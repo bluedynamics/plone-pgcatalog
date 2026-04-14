@@ -298,6 +298,118 @@ class TestSuggestIndexes:
         result = suggest_indexes(["Language"], None, registry, existing)
         assert all(s["status"] == "already_covered" for s in result)
 
+    def test_sort_on_appends_trailing_column(self):
+        """sort_on in params appends the sort field as the last composite column."""
+        registry = _reg(
+            portal_type=IndexType.FIELD,
+            effective=IndexType.DATE,
+        )
+        result = suggest_indexes(
+            ["portal_type"],
+            {"sort_on": "effective"},
+            registry,
+            {},
+        )
+        new = [s for s in result if s["status"] == "new"]
+        assert len(new) == 1
+        assert new[0]["fields"] == ["portal_type", "effective"]
+        ddl = new[0]["ddl"]
+        assert ddl.index("pgcatalog_to_timestamptz(idx->>'effective')") > ddl.index(
+            "(idx->>'portal_type')"
+        )
+        assert "ORDER BY effective" in new[0]["reason"]
+
+    def test_sort_on_deduped_when_already_leading(self):
+        """Sort field already present as filter column — not appended twice."""
+        registry = _reg(
+            portal_type=IndexType.FIELD,
+            effective=IndexType.DATE,
+        )
+        result = suggest_indexes(
+            ["portal_type", "effectiveRange"],
+            {"sort_on": "effective"},
+            registry,
+            {},
+        )
+        new = [s for s in result if s["status"] == "new"]
+        assert len(new) == 1
+        assert new[0]["fields"].count("effective") == 1
+
+    def test_sort_on_ignored_for_non_composite_type(self):
+        """Sort on a TEXT field does not add a trailing column."""
+        registry = _reg(
+            portal_type=IndexType.FIELD,
+            Title=IndexType.TEXT,
+        )
+        result = suggest_indexes(
+            ["portal_type"],
+            {"sort_on": "Title"},
+            registry,
+            {},
+        )
+        new = [
+            s for s in result if s["status"] == "new" and "portal_type" in s["fields"]
+        ]
+        assert all("Title" not in s["fields"] for s in new)
+
+    def test_sort_on_unknown_field_ignored(self):
+        """Sort on an unregistered field produces no covering column, no crash."""
+        registry = _reg(portal_type=IndexType.FIELD)
+        result = suggest_indexes(
+            ["portal_type"],
+            {"sort_on": "not_in_registry"},
+            registry,
+            {},
+        )
+        new = [s for s in result if s["status"] == "new"]
+        assert len(new) == 1
+        assert new[0]["fields"] == ["portal_type"]
+
+    def test_composite_cap_includes_sort(self):
+        """Three filter fields + sort → filter list truncated to 2, sort appended."""
+        registry = _reg(
+            a=IndexType.FIELD,
+            b=IndexType.FIELD,
+            c=IndexType.FIELD,
+            effective=IndexType.DATE,
+        )
+        result = suggest_indexes(
+            ["a", "b", "c"],
+            {"sort_on": "effective"},
+            registry,
+            {},
+        )
+        new = [s for s in result if s["status"] == "new"]
+        assert len(new) == 1
+        assert len(new[0]["fields"]) == 3
+        assert new[0]["fields"][-1] == "effective"
+
+    def test_issue_122_pattern(self):
+        """Regression for #122: portal_type + effectiveRange + sort_on=effective."""
+        registry = _reg(
+            portal_type=IndexType.FIELD,
+            effective=IndexType.DATE,
+        )
+        result = suggest_indexes(
+            ["portal_type", "effectiveRange"],
+            {"sort_on": "effective"},
+            registry,
+            {},
+        )
+        new = [s for s in result if s["status"] == "new"]
+        assert len(new) == 1
+        assert new[0]["fields"] == ["portal_type", "effective"]
+        ddl = new[0]["ddl"]
+        assert "(idx->>'portal_type')" in ddl
+        assert "pgcatalog_to_timestamptz(idx->>'effective')" in ddl
+
+    def test_params_none_behaves_as_before(self):
+        """Passing params=None is equivalent to the pre-PR-2 behavior."""
+        registry = _reg(portal_type=IndexType.FIELD)
+        r_none = suggest_indexes(["portal_type"], None, registry, {})
+        r_empty = suggest_indexes(["portal_type"], {}, registry, {})
+        assert [s["ddl"] for s in r_none] == [s["ddl"] for s in r_empty]
+
     def test_composite_already_covered_by_pg_normalized_indexdef(self):
         """Composite suggestion detects equivalent PG-stored indexdef.
 
