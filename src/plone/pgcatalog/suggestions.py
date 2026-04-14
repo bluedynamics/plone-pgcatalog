@@ -179,6 +179,40 @@ def suggest_indexes(query_keys, params, registry, existing_indexes):
     return suggestions
 
 
+def _extract_sort_field(params, registry):
+    """Return ``(field_name, IndexType)`` for a composite-eligible sort
+    column, or ``None``.
+
+    Plone emits the sort key under various param names — plain
+    ``sort_on`` for direct catalog searches, ``p_sort_on_1`` for
+    restapi-generated queries, etc.  Substring matching on
+    ``"sort_on"`` is the pragmatic fit.
+
+    Only btree-composite-eligible types are returned — KEYWORD, TEXT,
+    GOPIP, and DATE_RANGE cannot be trailing columns of a btree index.
+    """
+    if not params:
+        return None
+
+    sort_value = None
+    for param_name, value in params.items():
+        if "sort_on" in param_name:
+            sort_value = value
+            break
+    if not sort_value:
+        return None
+
+    # Registry lookup.  items() returns name -> (IndexType, idx_key, source_attrs).
+    for name, (idx_type, _idx_key, _source_attrs) in registry.items():
+        if name == sort_value:
+            if idx_type in _NON_COMPOSITE_TYPES:
+                return None
+            if idx_type in _SKIP_TYPES:
+                return None
+            return (name, idx_type)
+    return None
+
+
 def _add_standalone_suggestion(field, idx_type, existing_indexes, suggestions):
     """Add a standalone GIN/tsvector suggestion for KEYWORD or TEXT field."""
     if idx_type == IndexType.KEYWORD:

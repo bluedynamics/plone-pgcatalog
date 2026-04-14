@@ -455,3 +455,55 @@ class TestApplyIndexPreflight:
         # No DROP, just CREATE
         assert not any("DROP INDEX CONCURRENTLY IF EXISTS" in s for s in executed_sqls)
         assert any("CREATE INDEX CONCURRENTLY" in s for s in executed_sqls)
+
+
+class TestExtractSortField:
+    """Unit tests for _extract_sort_field helper."""
+
+    def test_returns_none_when_params_is_none(self):
+        from plone.pgcatalog.suggestions import _extract_sort_field
+
+        assert _extract_sort_field(None, _reg()) is None
+
+    def test_returns_none_when_params_empty(self):
+        from plone.pgcatalog.suggestions import _extract_sort_field
+
+        assert _extract_sort_field({}, _reg()) is None
+
+    def test_plain_sort_on_extracted(self):
+        from plone.pgcatalog.suggestions import _extract_sort_field
+
+        registry = _reg(effective=IndexType.DATE)
+        result = _extract_sort_field({"sort_on": "effective"}, registry)
+        assert result == ("effective", IndexType.DATE)
+
+    def test_plone_aliased_sort_on_extracted(self):
+        """Plone generates p_sort_on_1 etc. — substring match wins."""
+        from plone.pgcatalog.suggestions import _extract_sort_field
+
+        registry = _reg(effective=IndexType.DATE)
+        result = _extract_sort_field({"p_sort_on_1": "effective"}, registry)
+        assert result == ("effective", IndexType.DATE)
+
+    def test_returns_none_for_unknown_field(self):
+        """Sort value not in registry → None (no crash)."""
+        from plone.pgcatalog.suggestions import _extract_sort_field
+
+        registry = _reg(effective=IndexType.DATE)
+        assert _extract_sort_field({"sort_on": "bogus"}, registry) is None
+
+    def test_returns_none_for_non_composite_type(self):
+        """Sort on a KEYWORD/TEXT field → None (cannot be a trailing btree column)."""
+        from plone.pgcatalog.suggestions import _extract_sort_field
+
+        registry = _reg(Subject=IndexType.KEYWORD)
+        assert _extract_sort_field({"sort_on": "Subject"}, registry) is None
+
+    def test_returns_none_for_skip_type(self):
+        """GOPIP / DATE_RANGE cannot be a trailing btree column either."""
+        from plone.pgcatalog.suggestions import _extract_sort_field
+
+        registry = _reg(getObjPositionInParent=IndexType.GOPIP)
+        assert (
+            _extract_sort_field({"sort_on": "getObjPositionInParent"}, registry) is None
+        )
