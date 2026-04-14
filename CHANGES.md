@@ -2,6 +2,44 @@
 
 ## 1.0.0b53 (unreleased)
 
+### Fixed
+
+- Migration install handler silently dropped every
+  `DateRecurringIndex` (DRI) — e.g. `plone.app.event`'s / `bda.aaf.site`'s
+  `general_start` / `general_end` — when replacing a foreign
+  `portal_catalog` with `PlonePGCatalogTool`.  `_snapshot_catalog`
+  correctly captured the stored `attr_recurdef` / `attr_until`
+  attributes, but `_build_extra` had no DRI branch, so the restored
+  `extra` namespace lacked the `recurdef` / `until` keys that
+  `DateRecurringIndex.__init__` reads.  The constructor raised
+  `AttributeError`, the outer `try/except` in `_restore_from_snapshot`
+  swallowed it as a warning, and the index was never created — which
+  meant `extract_idx` never indexed those fields, the IndexRegistry
+  had no entry for them, and every site-wide Collection filtering on
+  `general_end` returned zero results.
+
+  Added the DRI translation in `_build_extra`, plus a roundtrip test
+  that actually instantiates `DateRecurringIndex` with the built extra
+  — the kind of assertion that would have caught this before it ever
+  shipped.  Issue #126.
+
+  Existing deployments that migrated on an affected build have to
+  re-add the missing indexes manually (the upgrade can't recover them
+  without the original catalog snapshot).  Run:
+
+  ```python
+  catalog = portal.portal_catalog
+  class _Extra: pass
+  extra = _Extra()
+  extra.recurdef = "recurrence"
+  extra.until = ""
+  for name in ("general_start", "general_end"):
+      if name not in catalog._catalog.indexes:
+          catalog.addIndex(name, "DateRecurringIndex", extra)
+  catalog.reindexIndex("general_start")
+  catalog.reindexIndex("general_end")
+  ```
+
 ### Added
 
 - Slow-query suggestions now produce covering composite indexes for the

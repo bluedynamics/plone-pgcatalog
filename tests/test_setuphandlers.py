@@ -244,6 +244,62 @@ class TestBuildExtra:
         extra = _build_extra(entry)
         assert not hasattr(extra, "indexed_attrs")
 
+    def test_date_recurring_index_extra(self):
+        """DRI needs extra.recurdef / extra.until — not attr_recurdef.
+
+        ``DateRecurringIndex.__init__`` reads ``extra.recurdef`` and
+        ``extra.until`` and stores them on ``self.attr_recurdef`` /
+        ``self.attr_until``.  The snapshot captures the *stored* form
+        (``attr_recurdef``), so ``_build_extra`` has to translate the
+        key back.  Missing this translation is how pre-fix migrations
+        silently lost every DRI in the site (issue #126).
+        """
+        entry = {
+            "meta_type": "DateRecurringIndex",
+            "source_attrs": ["general_end"],
+            "attr_recurdef": "recurrence",
+            "attr_until": "open_end",
+        }
+        extra = _build_extra(entry)
+        assert extra.recurdef == "recurrence"
+        assert extra.until == "open_end"
+
+    def test_date_recurring_index_extra_missing_attrs_defaults_to_empty(self):
+        """Snapshot captured a DRI but recurdef/until weren't set.
+
+        Still produce a usable extra — DateRecurringIndex tolerates
+        empty strings and falls back to no recurrence handling, which
+        is better than the index silently failing to restore.
+        """
+        entry = {
+            "meta_type": "DateRecurringIndex",
+            "source_attrs": ["general_start"],
+        }
+        extra = _build_extra(entry)
+        assert extra.recurdef == ""
+        assert extra.until == ""
+
+    def test_date_recurring_extra_is_accepted_by_dri_constructor(self):
+        """The extra object actually constructs a DateRecurringIndex.
+
+        The whole point of this translation: without ``extra.recurdef``
+        the constructor raises ``AttributeError`` and the index is
+        silently lost.  Instantiate the real class to prove our
+        ``extra`` satisfies its contract.
+        """
+        from Products.DateRecurringIndex.index import DateRecurringIndex
+
+        entry = {
+            "meta_type": "DateRecurringIndex",
+            "source_attrs": ["general_end"],
+            "attr_recurdef": "recurrence",
+            "attr_until": "",
+        }
+        extra = _build_extra(entry)
+        index = DateRecurringIndex("general_end", extra=extra)
+        assert index.attr_recurdef == "recurrence"
+        assert index.attr_until == ""
+
 
 # ===========================================================================
 # _replace_catalog

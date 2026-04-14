@@ -324,6 +324,10 @@ def _build_extra(entry):
     - FieldIndex/KeywordIndex/etc.: ``indexed_attrs``
     - DateRangeIndex: ``since_field``, ``until_field``
     - ZCTextIndex: ``lexicon_id``, ``index_type``, ``doc_attr``
+    - DateRecurringIndex: ``recurdef``, ``until`` (NOT ``attr_recurdef`` —
+      the index reads ``extra.recurdef`` in its constructor and stores it
+      on ``self.attr_recurdef``; the snapshot captures the stored attribute
+      so we have to translate the key back here).
     """
     extra = _Extra()
 
@@ -345,6 +349,16 @@ def _build_extra(entry):
     # ZCTextIndex: doc_attr from source_attrs
     if entry.get("meta_type") == "ZCTextIndex" and source_attrs:
         extra.doc_attr = source_attrs[0]
+
+    # DateRecurringIndex (plone.app.event / bda.aaf.site etc.):
+    # the constructor expects extra.recurdef / extra.until — without
+    # these, DateRecurringIndex.__init__ raises AttributeError and the
+    # index silently fails to restore.  Default to empty strings so the
+    # index creates even when the snapshot didn't capture one of them
+    # (rare but possible for hand-written catalog.xml imports).
+    if entry.get("meta_type") == "DateRecurringIndex":
+        extra.recurdef = entry.get("attr_recurdef", "")
+        extra.until = entry.get("attr_until", "")
 
     return extra
 
