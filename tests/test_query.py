@@ -308,8 +308,10 @@ class TestSearchableText:
 class TestPathIndex:
     def test_subtree_default(self):
         qr = build_query({"path": "/plone/folder"})
-        assert "idx->>'path' =" in qr["where"]
-        assert "idx->>'path' LIKE" in qr["where"]
+        # Built-in "path" dispatches to typed columns (#132)
+        assert "path =" in qr["where"]
+        assert "path LIKE" in qr["where"]
+        assert "idx->>'path'" not in qr["where"]
         # LIKE pattern should end with /%
         like_val = [
             v for v in qr["params"].values() if isinstance(v, str) and v.endswith("/%")
@@ -318,29 +320,35 @@ class TestPathIndex:
 
     def test_exact_depth_0(self):
         qr = build_query({"path": {"query": "/plone/folder", "depth": 0}})
-        assert "idx->>'path' =" in qr["where"]
+        assert "path = " in qr["where"]
+        assert "idx->>'path'" not in qr["where"]
         assert "LIKE" not in qr["where"]
 
     def test_children_depth_1(self):
         qr = build_query({"path": {"query": "/plone/folder", "depth": 1}})
-        assert "idx->>'path_parent' =" in qr["where"]
+        assert "parent_path =" in qr["where"]
+        assert "idx->>'path_parent'" not in qr["where"]
 
     def test_limited_depth(self):
         qr = build_query({"path": {"query": "/plone/folder", "depth": 2}})
-        assert "idx->>'path' LIKE" in qr["where"]
-        assert "(idx->>'path_depth')::integer <=" in qr["where"]
+        assert "path LIKE" in qr["where"]
+        assert "path_depth <=" in qr["where"]
+        assert "idx->>'path'" not in qr["where"]
+        assert "idx->>'path_depth'" not in qr["where"]
 
     def test_navtree_depth_1(self):
         qr = build_query(
             {"path": {"query": "/plone/folder/doc", "navtree": True, "depth": 1}}
         )
-        assert "idx->>'path_parent' = ANY(" in qr["where"]
+        assert "parent_path = ANY(" in qr["where"]
+        assert "idx->>'path_parent'" not in qr["where"]
 
     def test_navtree_depth_0_breadcrumbs(self):
         qr = build_query(
             {"path": {"query": "/plone/folder/doc", "navtree": True, "depth": 0}}
         )
-        assert "idx->>'path' = ANY(" in qr["where"]
+        assert "path = ANY(" in qr["where"]
+        assert "idx->>'path'" not in qr["where"]
 
     def test_navtree_start(self):
         qr = build_query(
@@ -704,11 +712,12 @@ class TestAdditionalPathIndex:
         )
         assert qr["order_by"] == "idx->>'tgpath' DESC"
 
-    def test_builtin_path_uses_same_pattern(self):
-        """Built-in 'path' index uses same idx JSONB pattern as tgpath."""
+    def test_builtin_path_uses_typed_columns(self):
+        """Built-in 'path' index dispatches to typed columns, not idx JSONB (#132)."""
         qr = build_query({"path": "/plone/folder"})
-        assert "idx->>'path' =" in qr["where"]
-        assert "idx->>'path' LIKE" in qr["where"]
+        assert "path =" in qr["where"]
+        assert "path LIKE" in qr["where"]
+        assert "idx->>'path'" not in qr["where"]
 
     def test_builtin_path_sort(self):
         """Built-in 'path' sort uses idx JSONB."""
@@ -716,7 +725,7 @@ class TestAdditionalPathIndex:
         assert qr["order_by"] == "idx->>'path' ASC"
 
     def test_combined_path_and_tgpath(self):
-        """Both path and tgpath can be queried simultaneously."""
+        """Built-in path uses typed columns; tgpath (custom) still uses idx JSONB (#132)."""
         qr = build_query(
             {
                 "path": "/plone/folder",
@@ -724,8 +733,10 @@ class TestAdditionalPathIndex:
             }
         )
         where = qr["where"]
-        # Both use idx JSONB with different keys
-        assert "idx->>'path' =" in where or "idx->>'path' LIKE" in where
+        # Built-in path dispatches to typed columns
+        assert "path = " in where or "path LIKE" in where
+        assert "idx->>'path'" not in where
+        # Custom tgpath still uses idx JSONB
         assert "idx->>'tgpath_parent' =" in where
 
 

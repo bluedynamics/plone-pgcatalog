@@ -514,12 +514,19 @@ class _QueryBuilder:
 
         paths = [_validate_path(p) for p in paths]  # validates AND normalizes
 
-        # All path indexes (built-in "path" and additional like "tgpath")
-        # store their data in idx JSONB and query via expression indexes.
-        key = name if idx_key is None else idx_key
-        expr_path = f"idx->>'{key}'"
-        expr_parent = f"idx->>'{key}_parent'"
-        expr_depth = f"(idx->>'{key}_depth')::integer"
+        # Dispatch: the built-in "path" index lives in typed columns
+        # (path, parent_path, path_depth).  Custom path indexes
+        # (e.g. "tgpath") still store their data in idx JSONB.
+        # See: docs/plans/2026-04-15-strip-path-from-idx-jsonb.md (#132)
+        if idx_key is None and name == "path":
+            expr_path = "path"
+            expr_parent = "parent_path"
+            expr_depth = "path_depth"
+        else:
+            key = name if idx_key is None else idx_key
+            expr_path = f"idx->>'{key}'"
+            expr_parent = f"idx->>'{key}_parent'"
+            expr_depth = f"(idx->>'{key}_depth')::integer"
 
         if navtree:
             self._path_navtree(expr_path, expr_parent, paths[0], depth, navtree_start)
