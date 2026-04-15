@@ -514,12 +514,19 @@ class _QueryBuilder:
 
         paths = [_validate_path(p) for p in paths]  # validates AND normalizes
 
-        # All path indexes (built-in "path" and additional like "tgpath")
-        # store their data in idx JSONB and query via expression indexes.
-        key = name if idx_key is None else idx_key
-        expr_path = f"idx->>'{key}'"
-        expr_parent = f"idx->>'{key}_parent'"
-        expr_depth = f"(idx->>'{key}_depth')::integer"
+        # Dispatch: the built-in "path" index lives in typed columns
+        # (path, parent_path, path_depth).  Custom path indexes
+        # (e.g. "tgpath") still store their data in idx JSONB.
+        # See: docs/plans/2026-04-15-strip-path-from-idx-jsonb.md (#132)
+        if idx_key is None and name == "path":
+            expr_path = "path"
+            expr_parent = "parent_path"
+            expr_depth = "path_depth"
+        else:
+            key = name if idx_key is None else idx_key
+            expr_path = f"idx->>'{key}'"
+            expr_parent = f"idx->>'{key}_parent'"
+            expr_depth = f"(idx->>'{key}_depth')::integer"
 
         if navtree:
             self._path_navtree(expr_path, expr_parent, paths[0], depth, navtree_start)
@@ -652,6 +659,11 @@ class _QueryBuilder:
                 continue
 
             idx_type, idx_key, _source_attrs = entry
+            # Built-in "path" sort lives in the typed `path` column (#132).
+            # Custom PATH indexes (e.g. "tgpath") still store data in idx JSONB.
+            if idx_type == IndexType.PATH and idx_key is None and sort_on == "path":
+                parts.append(f"path {direction}")
+                continue
             if idx_key is None:
                 if idx_type == IndexType.PATH:
                     idx_key = sort_on

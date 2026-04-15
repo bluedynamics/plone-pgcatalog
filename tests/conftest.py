@@ -7,6 +7,7 @@ from plone.pgcatalog.schema import install_catalog_schema
 from plone.pgcatalog.testing import PGCATALOG_INTEGRATION_TESTING
 from psycopg.rows import dict_row
 from psycopg.types.json import Json
+from types import SimpleNamespace
 from zodb_pgjsonb.schema import HISTORY_FREE_SCHEMA
 from zodb_pgjsonb.testing import get_test_dsn
 from zope.pytestlayer import fixture
@@ -180,6 +181,115 @@ def query_zoids(conn, query_dict):
 
     rows = execute_query(conn, query_dict, columns="zoid")
     return sorted(row["zoid"] for row in rows)
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Fixtures for test_strip_path_from_idx.py (issue #132).
+# ─────────────────────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def sample_zoid(pg_conn_with_catalog):
+    """A zoid with a bare object_state row already inserted."""
+    zoid = 1001
+    insert_object(pg_conn_with_catalog, zoid)
+    return zoid
+
+
+@pytest.fixture
+def plone_obj():
+    """Minimal stub object for ``PlonePGCatalogTool._set_pg_annotation``.
+
+    Needs ``getPhysicalPath()``, an assigned ``_p_oid`` (so the tool
+    takes the happy-path branch — set_pending + _p_changed), and a
+    real ``__dict__`` for the fallback branch.  We mock the tool's
+    ``_wrap_object`` / ``_extract_idx`` / ``_extract_searchable_text``
+    in the test so no Plone adapter layer is needed.
+    """
+
+    return SimpleNamespace(getPhysicalPath=lambda: ("", "Plone", "doc"))
+
+
+@pytest.fixture
+def sample_pending():
+    """A pending annotation dict shaped like _set_pg_annotation produces."""
+    return {
+        "path": "/a/b/c",
+        "idx": {"portal_type": "Document"},
+        "searchable_text": None,
+    }
+
+
+@pytest.fixture
+def two_objects_at(pg_conn_with_catalog):
+    """Insert two objects under ``/Plone/old`` with typed cols + empty idx.
+
+    Returns the list of zoids.  Used by the bulk-move test: after
+    ``add_pending_move('/Plone/old', '/Plone/new', 0)`` + finalize(),
+    both rows should end up at ``/Plone/new/*`` with no path keys in idx.
+    """
+    zoids = []
+    for zoid, path in ((2001, "/Plone/old/a"), (2002, "/Plone/old/b")):
+        insert_object(pg_conn_with_catalog, zoid)
+        pg_conn_with_catalog.execute(
+            """
+            UPDATE object_state SET
+                path = %(path)s,
+                parent_path = %(parent)s,
+                path_depth = %(depth)s,
+                idx = %(idx)s
+            WHERE zoid = %(zoid)s
+            """,
+            {
+                "zoid": zoid,
+                "path": path,
+                "parent": "/Plone/old",
+                "depth": 3,
+                "idx": Json({"portal_type": "Document"}),
+            },
+        )
+        zoids.append(zoid)
+    pg_conn_with_catalog.commit()
+    return zoids
+
+
+@pytest.fixture
+def dirty_rows(pg_conn_with_catalog):
+    """Insert 5 rows whose idx JSONB contains legacy path keys.
+
+    Simulates a pre-migration database state.  Returns the list of zoids.
+    """
+    zoids = []
+    for i in range(5):
+        zoid = 3000 + i
+        path = f"/Plone/item-{i}"
+        insert_object(pg_conn_with_catalog, zoid)
+        legacy_idx = {
+            "portal_type": "Document",
+            "path": path,
+            "path_parent": "/Plone",
+            "path_depth": 2,
+        }
+        pg_conn_with_catalog.execute(
+            """
+            UPDATE object_state SET
+                path = %(path)s,
+                parent_path = %(parent)s,
+                path_depth = %(depth)s,
+                idx = %(idx)s
+            WHERE zoid = %(zoid)s
+            """,
+            {
+                "zoid": zoid,
+                "path": path,
+                "parent": "/Plone",
+                "depth": 2,
+                "idx": Json(legacy_idx),
+            },
+        )
+        zoids.append(zoid)
+    pg_conn_with_catalog.commit()
+    return zoids
 
 
 def insert_object(conn, zoid, tid=1, class_mod="myapp", class_name="Doc", state=None):

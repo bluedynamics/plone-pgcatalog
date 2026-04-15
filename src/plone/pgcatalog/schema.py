@@ -7,8 +7,8 @@ only extends it.
 
 CATALOG_COLUMNS = """\
 -- Catalog columns on object_state (plone.pgcatalog extension)
--- path: dedicated column for brain construction (SELECT zoid, path)
--- parent_path/path_depth: legacy columns, path queries use idx JSONB
+-- path / parent_path / path_depth: typed columns are the source of truth
+-- for path-related queries and indexes (idx JSONB no longer carries them).
 ALTER TABLE object_state ADD COLUMN IF NOT EXISTS path TEXT;
 ALTER TABLE object_state ADD COLUMN IF NOT EXISTS parent_path TEXT;
 ALTER TABLE object_state ADD COLUMN IF NOT EXISTS path_depth INTEGER;
@@ -102,15 +102,21 @@ CREATE INDEX IF NOT EXISTS idx_os_path
 CREATE INDEX IF NOT EXISTS idx_os_catalog
     ON object_state USING gin (idx) WHERE idx IS NOT NULL;
 
--- Path expression indexes on idx JSONB (unified path query support)
+-- Path indexes on typed columns (path / parent_path / path_depth).
+-- DROP + CREATE so existing installs self-heal when the idx-JSONB form
+-- from older versions is still present under the same name.
+DROP INDEX IF EXISTS idx_os_cat_path;
 CREATE INDEX IF NOT EXISTS idx_os_cat_path
-    ON object_state ((idx->>'path')) WHERE idx IS NOT NULL;
+    ON object_state (path) WHERE path IS NOT NULL;
+DROP INDEX IF EXISTS idx_os_cat_path_pattern;
 CREATE INDEX IF NOT EXISTS idx_os_cat_path_pattern
-    ON object_state USING btree ((idx->>'path') text_pattern_ops) WHERE idx IS NOT NULL;
+    ON object_state USING btree (path text_pattern_ops) WHERE path IS NOT NULL;
+DROP INDEX IF EXISTS idx_os_cat_path_parent;
 CREATE INDEX IF NOT EXISTS idx_os_cat_path_parent
-    ON object_state ((idx->>'path_parent')) WHERE idx IS NOT NULL;
+    ON object_state (parent_path) WHERE parent_path IS NOT NULL;
+DROP INDEX IF EXISTS idx_os_cat_path_depth;
 CREATE INDEX IF NOT EXISTS idx_os_cat_path_depth
-    ON object_state (((idx->>'path_depth')::integer)) WHERE idx IS NOT NULL;
+    ON object_state (path_depth) WHERE path_depth IS NOT NULL;
 
 -- Expression indexes for date range queries (B-tree via immutable wrapper)
 CREATE INDEX IF NOT EXISTS idx_os_cat_modified
@@ -138,22 +144,25 @@ CREATE INDEX IF NOT EXISTS idx_os_cat_uid
 -- multi-column index scan (sub-millisecond).
 
 -- Folder listings, navigation: parent + type (most common pattern)
+DROP INDEX IF EXISTS idx_os_cat_parent_type;
 CREATE INDEX IF NOT EXISTS idx_os_cat_parent_type
-    ON object_state ((idx->>'path_parent'), (idx->>'portal_type'))
-    WHERE idx IS NOT NULL;
+    ON object_state (parent_path, (idx->>'portal_type'))
+    WHERE parent_path IS NOT NULL;
 
 -- Path prefix queries with type filter (collections, search)
+DROP INDEX IF EXISTS idx_os_cat_path_type;
 CREATE INDEX IF NOT EXISTS idx_os_cat_path_type
-    ON object_state ((idx->>'path') text_pattern_ops, (idx->>'portal_type'))
-    WHERE idx IS NOT NULL;
+    ON object_state (path text_pattern_ops, (idx->>'portal_type'))
+    WHERE path IS NOT NULL;
 
 -- Path prefix + depth (navigation tree queries)
+DROP INDEX IF EXISTS idx_os_cat_path_depth_type;
 CREATE INDEX IF NOT EXISTS idx_os_cat_path_depth_type
     ON object_state (
-        (idx->>'path') text_pattern_ops,
-        ((idx->>'path_depth')::integer),
+        path text_pattern_ops,
+        path_depth,
         (idx->>'portal_type')
-    ) WHERE idx IS NOT NULL;
+    ) WHERE path IS NOT NULL;
 
 -- Type + review state (workflow-filtered listings)
 CREATE INDEX IF NOT EXISTS idx_os_cat_type_state
@@ -162,9 +171,10 @@ CREATE INDEX IF NOT EXISTS idx_os_cat_type_state
 
 -- Partial index for navigation listings (exclude_from_nav = false is ~1.6%
 -- of rows — highly selective, eliminates 98% before heap scan).
+DROP INDEX IF EXISTS idx_os_cat_nav_visible;
 CREATE INDEX IF NOT EXISTS idx_os_cat_nav_visible
-    ON object_state ((idx->>'path') text_pattern_ops, (idx->>'portal_type'))
-    WHERE idx IS NOT NULL AND (idx->>'exclude_from_nav')::boolean = false;
+    ON object_state (path text_pattern_ops, (idx->>'portal_type'))
+    WHERE path IS NOT NULL AND (idx->>'exclude_from_nav')::boolean = false;
 
 -- Partial index for upcoming events (portal_type = Event + sidecalendar).
 -- Allows direct index scan on end date for calendar widgets.
@@ -229,28 +239,29 @@ CREATE STATISTICS IF NOT EXISTS stts_os_type_state
 
 -- Folder listings: parent path x type filter (every navigation render).
 -- Matches idx_os_cat_parent_type.
+DROP STATISTICS IF EXISTS stts_os_parent_type;
 CREATE STATISTICS IF NOT EXISTS stts_os_parent_type
     (mcv, dependencies)
-    ON (idx->>'path_parent'), (idx->>'portal_type')
+    ON parent_path, (idx->>'portal_type')
     FROM object_state;
 
 -- Path prefix + type: matches idx_os_cat_path_type and idx_os_cat_nav_visible
 -- (same expression pair; one stats object covers both).  Path is
 -- high-cardinality in CMS (essentially unique per row) so no mcv.
+DROP STATISTICS IF EXISTS stts_os_path_type;
 CREATE STATISTICS IF NOT EXISTS stts_os_path_type
     (dependencies)
-    ON (idx->>'path'), (idx->>'portal_type')
+    ON path, (idx->>'portal_type')
     FROM object_state;
 
 -- Navigation tree: path prefix + depth + type.  Matches
 -- idx_os_cat_path_depth_type.  CMS structures are wide-shallow so
 -- path_depth has very few distinct values; the dependency between
 -- it and path is the interesting bit for the planner.
+DROP STATISTICS IF EXISTS stts_os_path_depth_type;
 CREATE STATISTICS IF NOT EXISTS stts_os_path_depth_type
     (dependencies)
-    ON (idx->>'path'),
-       ((idx->>'path_depth')::integer),
-       (idx->>'portal_type')
+    ON path, path_depth, (idx->>'portal_type')
     FROM object_state;
 
 -- Published-content filters: type x effective date.
