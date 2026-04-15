@@ -21,6 +21,8 @@
       handler="plone.pgcatalog.setuphandlers.install"
       />
 
+  <include package=".upgrades" />
+
   <!-- Register PlonePGCatalogTool as IPGCatalogTool utility -->
   <utility
       factory="plone.pgcatalog.catalog.PlonePGCatalogTool"

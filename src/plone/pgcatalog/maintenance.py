@@ -5,17 +5,18 @@ requiring a Plone context.  Also contains the ``_CatalogCompat`` shim
 and the unsupported-method factory used by ``PlonePGCatalogTool``.
 """
 
-from Acquisition import aq_inner
-from Acquisition import aq_parent
-from Acquisition import Implicit
+import logging
+
+from Acquisition import Implicit, aq_inner, aq_parent
 from Persistence import Persistent
 from persistent.mapping import PersistentMapping
+from psycopg import sql as pgsql
+
 from plone.pgcatalog.backends import get_backend
 from plone.pgcatalog.indexing import reindex_object as _sql_reindex
 from plone.pgcatalog.pgindex import _maybe_wrap_index
-from psycopg import sql as pgsql
 
-import logging
+from plone import api
 
 
 log = logging.getLogger(__name__)
@@ -91,6 +92,45 @@ def clear_catalog_data(conn):
 # ---------------------------------------------------------------------------
 
 
+class _CatalogIndexMapping(PersistentMapping):
+    """Custom PersistentMapping that auto-wraps indexes when accessed.
+
+    This ensures that direct dictionary access like `catalog._catalog.indexes["name"]`
+    returns wrapped PGIndex objects instead of raw ZCatalog indexes, maintaining
+    compatibility with code that bypasses the official `catalog.Indexes[name]` API.
+    """
+
+    def __getitem__(self, key):
+        """Return wrapped index for the given key."""
+        raw_index = super().__getitem__(key)
+
+        # TODO: can we avoid a plone.api call and maybe use Acquisition
+        # here? But when using Acquisition.Implicite as another base
+        # Class we get a metaclass error.
+        catalog = api.portal.get_tool("portal_catalog")
+        # catalog = aq_parent(aq_parent(aq_inner(self)))
+        if catalog is None:
+            return raw_index
+        return _maybe_wrap_index(catalog, key, raw_index)
+
+    def get(self, key, default=None):
+        """Return wrapped index for the given key, or default if not found."""
+        try:
+            return self[key]
+        except KeyError:
+            return default
+
+    def values(self):
+        """Return iterator of wrapped index values."""
+        for key in self:
+            yield self[key]
+
+    def items(self):
+        """Return iterator of (key, wrapped_index) pairs."""
+        for key in self:
+            yield (key, self[key])
+
+
 class _CatalogCompat(Implicit, Persistent):
     """Minimal _catalog providing index object storage.
 
@@ -99,12 +139,12 @@ class _CatalogCompat(Implicit, Persistent):
     This shim provides just enough API for both.
 
     For existing ZODB instances the old full Catalog object persists
-    and already has .indexes and .schema — our code only reads those
-    attrs, so it works without migration.
+    and already has .indexes and .schema — our code migrates them
+    on first access to use the new wrapping behavior.
     """
 
     def __init__(self):
-        self.indexes = PersistentMapping()
+        self.indexes = _CatalogIndexMapping()
         self.schema = PersistentMapping()
 
     def getIndex(self, name):

@@ -328,6 +328,52 @@ class TestCatalogIndexesWrapper:
         assert "Document" in values
         assert "Folder" in values
 
+    def test_direct_indexes_access_returns_pg_index(self, pg_conn_with_catalog):
+        """Direct dictionary access catalog._catalog.indexes["name"] returns wrapped PGIndex.
+
+        This tests the fix for the issue where direct dictionary access like
+        `cat.indexes["tags"]` was returning unwrapped KeywordIndex objects
+        instead of wrapped PGIndex objects.
+        """
+        from plone.pgcatalog.catalog import PlonePGCatalogTool
+        from plone.pgcatalog.maintenance import _CatalogCompat
+        from plone.pgcatalog.pgindex import PGIndex
+
+        _catalog_objects(pg_conn_with_catalog)
+
+        # Build a catalog with a real _CatalogCompat
+        catalog = PlonePGCatalogTool.__new__(PlonePGCatalogTool)
+        catalog._get_pg_read_connection = lambda: pg_conn_with_catalog
+
+        compat = _CatalogCompat()
+        portal_type_index = mock.Mock()
+        portal_type_index.id = "portal_type"
+        portal_type_index.meta_type = "FieldIndex"
+        compat.indexes["portal_type"] = portal_type_index
+        catalog._catalog = compat
+
+        # Test direct dictionary access - this was the problem case
+        # Previously this returned the raw mock object, now should return PGIndex
+        index_direct = catalog._catalog.indexes["portal_type"]
+
+        # Should return a wrapped PGIndex, not the raw mock
+        assert isinstance(index_direct, PGIndex)
+        assert hasattr(index_direct, "_wrapped")
+        assert index_direct._wrapped is portal_type_index
+
+        # Test .get() method as well
+        index_get = catalog._catalog.indexes.get("portal_type")
+        assert isinstance(index_get, PGIndex)
+        assert index_get._wrapped is portal_type_index
+
+        # Test missing key behavior
+        missing_direct = catalog._catalog.indexes.get("nonexistent")
+        assert missing_direct is None
+
+        # Both methods should return equivalent wrapped objects
+        assert type(index_direct) is type(index_get)
+        assert index_direct._wrapped is index_get._wrapped
+
 
 class TestUUIDToPathFlow:
     """Integration test simulating the exact plone.app.uuid code path.

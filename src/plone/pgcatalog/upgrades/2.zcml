@@ -1,0 +1,19 @@
+<configure
+    xmlns="http://namespaces.zope.org/zope"
+    xmlns:gs="http://namespaces.zope.org/genericsetup"
+    >
+
+  <gs:upgradeSteps
+      profile="plone.pgcatalog:default"
+      source="1"
+      destination="2"
+      >
+
+    <gs:upgradeStep
+        title="Fix _catalog.indexes access."
+      handler=".upgrade_to_2.fix_catalog_indexes"
+        />
+
+  </gs:upgradeSteps>
+
+</configure>
