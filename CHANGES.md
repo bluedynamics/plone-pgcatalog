@@ -1,5 +1,32 @@
 # Changelog
 
+## 1.0.0b54
+
+### Changed
+
+- Stop duplicating `path`, `path_parent`, and `path_depth` between the typed
+  columns on `object_state` and the `idx` JSONB.  These three fields now live
+  exclusively in their typed columns (`path`, `parent_path`, `path_depth`) —
+  previously identical values were stored in both places, wasting ~10 % of
+  JSONB storage and (more importantly) blocking the planner from collecting
+  selectivity statistics on path-subtree filters.  Indexes and extended
+  statistics on these fields have been migrated to reference the typed columns
+  directly.  Custom `PATH`-type indexes (e.g. `tgpath`) are unaffected and
+  continue to store their data in `idx`.
+
+  **Migration:** Schema and writer changes are picked up automatically on
+  startup (the eight affected indexes and three extended-statistics objects
+  are reissued with idempotent `DROP … IF EXISTS` / `CREATE … IF NOT EXISTS`
+  pairs).  To strip the obsolete keys from existing JSONB on large catalogs,
+  run:
+
+  ```python
+  from plone.pgcatalog.migrations.strip_path_keys import run
+  run(conn, batch_size=5000)
+  ```
+
+  Safe to run online, idempotent, batched.  Issue #132.
+
 ## 1.0.0b53
 
 ### Fixed
