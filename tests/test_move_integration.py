@@ -1102,14 +1102,12 @@ class TestRenameUpdatesDescendants:
         assert row["path"] == "/plone/source-renamed/doc-a"
         assert row["parent_path"] == "/plone/source-renamed"
         assert row["path_depth"] == 3
-        assert row["idx"]["path"] == "/plone/source-renamed/doc-a"
 
         row = _get_row(conn, 103)
         assert row["path"] == "/plone/source-renamed/sub"
 
         row = _get_row(conn, 104)
         assert row["path"] == "/plone/source-renamed/sub/deep-doc"
-        assert row["idx"]["path"] == "/plone/source-renamed/sub/deep-doc"
 
     def test_rename_parent_updated(self, pg_conn_with_catalog):
         conn = pg_conn_with_catalog
@@ -1125,7 +1123,6 @@ class TestRenameUpdatesDescendants:
 
         row = _get_row(conn, 101)
         assert row["path"] == "/plone/source-renamed"
-        assert row["idx"]["path"] == "/plone/source-renamed"
 
     def test_rename_siblings_unchanged(self, pg_conn_with_catalog):
         conn = pg_conn_with_catalog
@@ -1161,7 +1158,6 @@ class TestMoveUpdatesDescendants:
         row = _get_row(conn, 102)
         assert row["path"] == "/plone/target/source/doc-a"
         assert row["path_depth"] == 4
-        assert row["idx"]["path_depth"] == 4
 
         row = _get_row(conn, 104)
         assert row["path"] == "/plone/target/source/sub/deep-doc"

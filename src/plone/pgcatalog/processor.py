@@ -285,7 +285,9 @@ class CatalogStateProcessor:
                     {"zoid": zoid, "patch": Json(idx_updates), **extra_params},
                 )
 
-        # Execute bulk path moves (one SQL per moved subtree)
+        # Execute bulk path moves (one SQL per moved subtree).
+        # Touches typed columns only — idx no longer carries path keys.
+        # See: docs/plans/2026-04-15-strip-path-from-idx-jsonb.md (#132)
         moves = pop_all_pending_moves()
         for old_prefix, new_prefix, depth_delta in moves:
             cursor.execute(
@@ -293,17 +295,8 @@ class CatalogStateProcessor:
                 UPDATE object_state SET
                     path = %(new)s || substring(path FROM length(%(old)s) + 1),
                     parent_path = %(new)s || substring(parent_path FROM length(%(old)s) + 1),
-                    path_depth = path_depth + %(dd)s,
-                    idx = idx || jsonb_build_object(
-                        'path',
-                        %(new)s || substring(idx->>'path' FROM length(%(old)s) + 1),
-                        'path_parent',
-                        %(new)s || substring(idx->>'path_parent' FROM length(%(old)s) + 1),
-                        'path_depth',
-                        (idx->>'path_depth')::int + %(dd)s
-                    )
+                    path_depth = path_depth + %(dd)s
                 WHERE path LIKE %(like)s
-                  AND idx IS NOT NULL
                 """,
                 {
                     "old": old_prefix,
