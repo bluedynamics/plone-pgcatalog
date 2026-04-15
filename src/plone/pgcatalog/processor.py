@@ -6,6 +6,7 @@ state during tpc_vote.
 """
 
 from plone.pgcatalog.backends import get_backend
+from plone.pgcatalog.columns import compute_path_info
 from plone.pgcatalog.columns import extract_extra_idx_columns
 from plone.pgcatalog.columns import get_extra_idx_columns
 from plone.pgcatalog.pending import _MISSING
@@ -228,10 +229,19 @@ class CatalogStateProcessor:
         idx = pending.get("idx")
         extra_values = extract_extra_idx_columns(idx)
 
+        # Path data lives in typed columns only.  parent_path and path_depth
+        # are derived from the canonical `path` field — not from idx.
+        # See: docs/plans/2026-04-15-strip-path-from-idx-jsonb.md (#132)
+        path = pending.get("path")
+        if path:
+            parent_path, path_depth = compute_path_info(path)
+        else:
+            parent_path, path_depth = None, None
+
         result = {
-            "path": pending.get("path"),
-            "parent_path": idx.get("path_parent") if idx else None,
-            "path_depth": idx.get("path_depth") if idx else None,
+            "path": path,
+            "parent_path": parent_path,
+            "path_depth": path_depth,
             "idx": Json(idx) if idx else None,
             "searchable_text": pending.get("searchable_text"),
             **extra_values,
