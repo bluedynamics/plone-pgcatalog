@@ -40,6 +40,7 @@ class TestWriterDoesNotDuplicatePath:
             "FROM object_state WHERE zoid = %s",
             (sample_zoid,),
         ).fetchone()
+        assert row is not None
         assert row["path"] == "/Plone/doc"
         assert row["parent_path"] == "/Plone"
         assert row["path_depth"] == 2
@@ -65,6 +66,9 @@ class TestWriterDoesNotDuplicatePath:
             ok = tool._set_pg_annotation(plone_obj, "/Plone/doc")
         assert ok is True
         pending = plone_obj.__dict__[ANNOTATION_KEY]
+        # Positive contract: path stays on the pending dict itself —
+        # only the duplication into idx JSONB should be removed.
+        assert pending["path"] == "/Plone/doc"
         for key in PATH_KEYS_IN_IDX:
             assert key not in pending["idx"], (
                 f"{key!r} must not be in pending idx after cleanup"
@@ -111,19 +115,21 @@ class TestBulkMoveDoesNotTouchIdxPathKeys:
 class TestQueryBuilderDispatchesPathToTypedColumns:
     def test_builtin_path_index_uses_typed_columns(self):
         sql, _ = _build_sql({"path": {"query": "/Plone/x", "depth": -1}})
+        # Contract: don't use the JSONB extract. The builder is free to
+        # emit `path = …`, `path LIKE …`, or any other typed-column form.
         assert "idx->>'path'" not in sql, (
             f"subtree path query should use typed column, got: {sql}"
         )
-        assert "path" in sql  # the typed column must appear
 
     def test_builtin_path_navtree_uses_typed_parent_path(self):
         sql, _ = _build_sql(
             {"path": {"query": "/Plone/a/b", "navtree": True, "depth": 1}}
         )
+        # No positive column assertion: navtree may use `parent_path = …`
+        # OR `path LIKE … AND path_depth = …` — both are valid typed forms.
         assert "idx->>'path_parent'" not in sql, (
             f"navtree query should use typed parent_path, got: {sql}"
         )
-        assert "parent_path" in sql
 
     def test_builtin_path_depth_uses_typed_path_depth(self):
         sql, _ = _build_sql({"path": {"query": "/Plone", "depth": 2}})
@@ -158,6 +164,11 @@ class TestSchemaUsesTypedColumns:
             (self.EXPECTED_INDEXES,),
         ).fetchall()
         assert rows, "expected catalog path indexes to be present"
+        found = {r["indexname"] for r in rows}
+        missing = set(self.EXPECTED_INDEXES) - found
+        assert not missing, (
+            f"expected indexes missing after migration: {sorted(missing)}"
+        )
         for r in rows:
             assert "idx ->> 'path'" not in r["indexdef"], (
                 f"{r['indexname']}: still uses idx->>'path' — migration incomplete"
@@ -197,6 +208,9 @@ class TestMigrationStripsPathKeys:
             "SELECT idx FROM object_state WHERE zoid = ANY(%s)",
             (dirty_rows,),
         ).fetchall()
+        assert len(rows) == len(dirty_rows), (
+            f"expected {len(dirty_rows)} rows, got {len(rows)}"
+        )
         for r in rows:
             for key in PATH_KEYS_IN_IDX:
                 assert key not in r["idx"]

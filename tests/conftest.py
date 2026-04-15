@@ -7,6 +7,7 @@ from plone.pgcatalog.schema import install_catalog_schema
 from plone.pgcatalog.testing import PGCATALOG_INTEGRATION_TESTING
 from psycopg.rows import dict_row
 from psycopg.types.json import Json
+from types import SimpleNamespace
 from zodb_pgjsonb.schema import HISTORY_FREE_SCHEMA
 from zodb_pgjsonb.testing import get_test_dsn
 from zope.pytestlayer import fixture
@@ -206,12 +207,7 @@ def plone_obj():
     in the test so no Plone adapter layer is needed.
     """
 
-    class _Obj:
-        pass
-
-    obj = _Obj()
-    obj.getPhysicalPath = lambda: ("", "Plone", "doc")
-    return obj
+    return SimpleNamespace(getPhysicalPath=lambda: ("", "Plone", "doc"))
 
 
 @pytest.fixture
