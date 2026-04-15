@@ -479,12 +479,15 @@ class TestSetPGAnnotationPipeline:
                 data = all_pending.get(zoid, {})
 
             expected_path = "/".join(doc.getPhysicalPath())
+            # Path lives in pending["path"] (typed column target); idx no
+            # longer carries path/path_parent/path_depth (#132).  parent_path
+            # and path_depth are derived by CatalogStateProcessor from path.
             assert data.get("path") == expected_path
 
             idx = data.get("idx", {})
-            assert idx.get("path") == expected_path
-            assert "path_parent" in idx
-            assert "path_depth" in idx
+            assert "path" not in idx
+            assert "path_parent" not in idx
+            assert "path_depth" not in idx
         finally:
             registry._indexes = old_indexes
             registry._metadata = old_metadata

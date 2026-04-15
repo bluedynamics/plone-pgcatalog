@@ -58,23 +58,18 @@ def _get_row(conn, zoid):
 
 
 def _execute_bulk_path_update(conn, old_prefix, new_prefix, depth_delta):
-    """Execute the bulk path update SQL (same as processor.finalize will use)."""
+    """Execute the bulk path update SQL (same as processor.finalize uses).
+
+    Path data lives in typed columns only since #132; idx JSONB is not
+    touched by bulk path updates.
+    """
     conn.execute(
         """
         UPDATE object_state SET
             path = %(new)s || substring(path FROM length(%(old)s) + 1),
             parent_path = %(new)s || substring(parent_path FROM length(%(old)s) + 1),
-            path_depth = path_depth + %(dd)s,
-            idx = idx || jsonb_build_object(
-                'path',
-                %(new)s || substring(idx->>'path' FROM length(%(old)s) + 1),
-                'path_parent',
-                %(new)s || substring(idx->>'path_parent' FROM length(%(old)s) + 1),
-                'path_depth',
-                (idx->>'path_depth')::int + %(dd)s
-            )
+            path_depth = path_depth + %(dd)s
         WHERE path LIKE %(like)s
-          AND idx IS NOT NULL
         """,
         {
             "old": old_prefix,
@@ -107,15 +102,19 @@ class TestBulkPathUpdateRename:
         assert row["path_depth"] == 3  # unchanged
 
     def test_rename_updates_child_idx(self, pg_conn_with_catalog):
+        # Path keys moved to typed columns (#132); idx no longer carries them.
+        # Verify typed columns, and that idx preserves the non-path keys.
         conn = pg_conn_with_catalog
         _setup_tree(conn)
 
         _execute_bulk_path_update(conn, "/plone/source", "/plone/source-renamed", 0)
 
         row = _get_row(conn, 102)
-        assert row["idx"]["path"] == "/plone/source-renamed/doc-a"
-        assert row["idx"]["path_parent"] == "/plone/source-renamed"
-        assert row["idx"]["path_depth"] == 3
+        assert row["path"] == "/plone/source-renamed/doc-a"
+        assert row["parent_path"] == "/plone/source-renamed"
+        assert row["path_depth"] == 3
+        # idx preserves the non-path keys
+        assert row["idx"]["Title"] == "Doc A"
 
     def test_rename_updates_deep_descendant(self, pg_conn_with_catalog):
         conn = pg_conn_with_catalog
@@ -124,10 +123,9 @@ class TestBulkPathUpdateRename:
         _execute_bulk_path_update(conn, "/plone/source", "/plone/source-renamed", 0)
 
         row = _get_row(conn, 104)  # was /plone/source/sub/deep-doc
+        # Path lives in typed columns only (#132).
         assert row["path"] == "/plone/source-renamed/sub/deep-doc"
         assert row["parent_path"] == "/plone/source-renamed/sub"
-        assert row["idx"]["path"] == "/plone/source-renamed/sub/deep-doc"
-        assert row["idx"]["path_parent"] == "/plone/source-renamed/sub"
 
     def test_rename_updates_intermediate_folder(self, pg_conn_with_catalog):
         conn = pg_conn_with_catalog
@@ -162,9 +160,9 @@ class TestBulkPathUpdateCrossContainer:
         _execute_bulk_path_update(conn, "/plone/source", "/plone/target/source", 1)
 
         row = _get_row(conn, 104)  # was /plone/source/sub/deep-doc
+        # Path depth lives in typed column only (#132).
         assert row["path"] == "/plone/target/source/sub/deep-doc"
         assert row["path_depth"] == 5  # was 4, +1
-        assert row["idx"]["path_depth"] == 5
 
     def test_move_up_decreases_depth(self, pg_conn_with_catalog):
         """Move from /plone/source/sub to /plone/sub (depth decreases by 1)."""
@@ -198,10 +196,11 @@ class TestBulkPathUpdatePreservesOtherIdx:
         _execute_bulk_path_update(conn, "/plone/source", "/plone/source-renamed", 0)
 
         row = _get_row(conn, 103)
+        # Non-path idx keys survive the bulk path update.
         assert row["idx"]["Title"] == "Subfolder"
         assert row["idx"]["portal_type"] == "Folder"
-        # Path keys updated
-        assert row["idx"]["path"] == "/plone/source-renamed/sub"
+        # Path updated on typed column (idx no longer carries path keys, #132).
+        assert row["path"] == "/plone/source-renamed/sub"
 
 
 class TestParentNotMatchedByLike:
@@ -215,8 +214,8 @@ class TestParentNotMatchedByLike:
         _execute_bulk_path_update(conn, "/plone/source", "/plone/source-renamed", 0)
 
         row = _get_row(conn, 101)  # /plone/source (the parent)
+        # Path lives in typed column only (#132); parent row not matched by LIKE.
         assert row["path"] == "/plone/source"  # unchanged!
-        assert row["idx"]["path"] == "/plone/source"
 
     def test_sibling_unchanged(self, pg_conn_with_catalog):
         conn = pg_conn_with_catalog
