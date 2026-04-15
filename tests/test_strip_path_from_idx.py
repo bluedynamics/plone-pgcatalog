@@ -199,6 +199,48 @@ class TestSchemaUsesTypedColumns:
             assert "idx ->> 'path_depth'" not in r["stxdef"]
 
 
+class TestBuiltinPathSortEndToEnd:
+    """Regression guard: built-in 'path' sort must order rows correctly (#132).
+
+    After stripping path keys from idx JSONB, ``ORDER BY idx->>'path'`` returns
+    NULL for every row.  This test asserts that ``sort_on='path'`` against the
+    typed column produces the expected alphabetical order.
+    """
+
+    def test_path_sort_orders_rows_alphabetically(self, pg_conn_with_catalog):
+        from plone.pgcatalog.indexing import catalog_object
+        from plone.pgcatalog.query import build_query
+        from tests.conftest import insert_object
+
+        # Insert in non-alphabetical order to prove the ORDER BY is doing work.
+        objects = [
+            (5001, "/Plone/b"),
+            (5002, "/Plone/a"),
+            (5003, "/Plone/c"),
+        ]
+        for zoid, path in objects:
+            insert_object(pg_conn_with_catalog, zoid)
+            catalog_object(
+                pg_conn_with_catalog,
+                zoid,
+                path,
+                {"portal_type": "Document"},
+            )
+        pg_conn_with_catalog.commit()
+
+        qr = build_query({"path": "/Plone", "sort_on": "path"})
+        sql = (
+            f"SELECT zoid, path FROM object_state "
+            f"WHERE {qr['where']} ORDER BY {qr['order_by']}"
+        )
+        rows = pg_conn_with_catalog.execute(sql, qr["params"]).fetchall()
+        inserted_paths = {p for _, p in objects}
+        paths = [r["path"] for r in rows if r["path"] in inserted_paths]
+        assert paths == ["/Plone/a", "/Plone/b", "/Plone/c"], (
+            f"sort_on='path' must use typed column, got: {paths}"
+        )
+
+
 class TestMigrationStripsPathKeys:
     def test_strip_removes_keys_idempotently(self, pg_conn_with_catalog, dirty_rows):
         from plone.pgcatalog.migrations.strip_path_keys import run

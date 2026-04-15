@@ -659,6 +659,11 @@ class _QueryBuilder:
                 continue
 
             idx_type, idx_key, _source_attrs = entry
+            # Built-in "path" sort lives in the typed `path` column (#132).
+            # Custom PATH indexes (e.g. "tgpath") still store data in idx JSONB.
+            if idx_type == IndexType.PATH and idx_key is None and sort_on == "path":
+                parts.append(f"path {direction}")
+                continue
             if idx_key is None:
                 if idx_type == IndexType.PATH:
                     idx_key = sort_on

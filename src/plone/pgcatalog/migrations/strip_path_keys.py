@@ -42,50 +42,61 @@ _BATCH_SQL = f"""
 def run(conn, batch_size: int = 5000) -> dict:
     """Strip path keys from idx in batches.
 
+    The connection is switched to autocommit for the duration of the
+    migration so each batch commits independently; the prior autocommit
+    state is restored on return (even if an exception escapes).  If the
+    caller had an open transaction, ``conn.commit()`` is called first to
+    flush pending work before flipping autocommit on.
+
     Args:
         conn: psycopg connection.  Each batch commits independently --
               the caller's transaction state (if any) is committed first
-              before switching to autocommit.
+              before switching to autocommit, and the original autocommit
+              flag is restored on exit.
         batch_size: rows per batch.  Default 5000 keeps each UPDATE under
                     ~10 MB WAL and ~1 s on a typical pod.
 
     Returns: {"batches": int, "rows_updated": int}
     """
-    if not conn.autocommit:
-        conn.commit()
+    original_autocommit = conn.autocommit
+    if not original_autocommit:
+        conn.commit()  # flush any pending work; migration needs per-batch commits
         conn.autocommit = True
 
     after_zoid = -1
     batches = 0
     total = 0
 
-    while True:
-        with conn.cursor() as cur:
-            cur.execute(
-                _BATCH_SQL,
-                {
-                    "after_zoid": after_zoid,
-                    "batch_size": batch_size,
-                },
+    try:
+        while True:
+            with conn.cursor() as cur:
+                cur.execute(
+                    _BATCH_SQL,
+                    {
+                        "after_zoid": after_zoid,
+                        "batch_size": batch_size,
+                    },
+                )
+                zoids = [
+                    row[0] if isinstance(row, tuple) else row["zoid"]
+                    for row in cur.fetchall()
+                ]
+
+            if not zoids:
+                break
+
+            batches += 1
+            total += len(zoids)
+            after_zoid = max(zoids)
+            log.info(
+                "strip_path_keys: batch %d, %d rows, last zoid=%d, total=%d",
+                batches,
+                len(zoids),
+                after_zoid,
+                total,
             )
-            zoids = [
-                row[0] if isinstance(row, tuple) else row["zoid"]
-                for row in cur.fetchall()
-            ]
 
-        if not zoids:
-            break
-
-        batches += 1
-        total += len(zoids)
-        after_zoid = max(zoids)
-        log.info(
-            "strip_path_keys: batch %d, %d rows, last zoid=%d, total=%d",
-            batches,
-            len(zoids),
-            after_zoid,
-            total,
-        )
-
-    log.info("strip_path_keys: done. %d batches, %d rows updated.", batches, total)
-    return {"batches": batches, "rows_updated": total}
+        log.info("strip_path_keys: done. %d batches, %d rows updated.", batches, total)
+        return {"batches": batches, "rows_updated": total}
+    finally:
+        conn.autocommit = original_autocommit

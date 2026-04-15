@@ -720,9 +720,18 @@ class TestAdditionalPathIndex:
         assert "idx->>'path'" not in qr["where"]
 
     def test_builtin_path_sort(self):
-        """Built-in 'path' sort uses idx JSONB."""
+        """Built-in 'path' sort uses the typed `path` column, not idx JSONB (#132)."""
         qr = build_query({"path": "/plone", "sort_on": "path"})
-        assert qr["order_by"] == "idx->>'path' ASC"
+        assert qr["order_by"] == "path ASC"
+        assert "idx->>'path'" not in qr["order_by"]
+
+    def test_builtin_path_sort_descending(self):
+        """Built-in 'path' sort honors descending order on typed column (#132)."""
+        qr = build_query(
+            {"path": "/plone", "sort_on": "path", "sort_order": "descending"}
+        )
+        assert qr["order_by"] == "path DESC"
+        assert "idx->>'path'" not in qr["order_by"]
 
     def test_combined_path_and_tgpath(self):
         """Built-in path uses typed columns; tgpath (custom) still uses idx JSONB (#132)."""
