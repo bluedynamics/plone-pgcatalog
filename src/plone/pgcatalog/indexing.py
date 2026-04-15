@@ -40,10 +40,8 @@ def catalog_object(conn, zoid, path, idx, searchable_text=None, language="simple
     """
     parent_path, path_depth = compute_path_info(path)
 
-    # Store path data in idx JSONB for unified path queries
-    idx.setdefault("path", path)
-    idx.setdefault("path_parent", parent_path)
-    idx.setdefault("path_depth", path_depth)
+    # Path data lives in typed columns only (path, parent_path, path_depth).
+    # See: docs/plans/2026-04-15-strip-path-from-idx-jsonb.md (#132)
 
     # Extract registered extra idx columns (pops from idx → dedicated columns)
     extra = extract_extra_idx_columns(idx)
