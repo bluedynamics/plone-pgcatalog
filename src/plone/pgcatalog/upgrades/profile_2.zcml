@@ -1,0 +1,19 @@
+<configure
+    xmlns="http://namespaces.zope.org/zope"
+    xmlns:gs="http://namespaces.zope.org/genericsetup"
+    i18n_domain="plone.pgcatalog"
+    >
+
+  <gs:upgradeStep
+      profile="plone.pgcatalog:default"
+      source="1"
+      destination="2"
+      title="Wrap _catalog.indexes"
+      description="Rename _catalog.indexes -> _raw_indexes so the new view-backed
+                   property can wrap reads with PGIndex.  Also set __parent__
+                   on the compat so aq_parent() works through bare attribute
+                   access.  See #137."
+      handler=".profile_2.migrate_catalog_indexes"
+      />
+
+</configure>

@@ -1,0 +1,3 @@
+<configure xmlns="http://namespaces.zope.org/zope">
+  <include file="profile_2.zcml" />
+</configure>
