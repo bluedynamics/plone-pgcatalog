@@ -22,12 +22,13 @@
   sites, or let the next ``runAllImportSteps`` on the default profile
   pick it up.
 
-  Known callers fixed by this change include
+  Likely-affected callers include
   ``plone.base.utils.check_id`` (reserved-name check),
   ``plone.restapi.search.query.Query.get_index``,
   ``plone.app.discussion``, ``plone.app.referenceablebehavior``,
   ``plone.volto``, ``collective.collectionfilter``, and
-  ``collective.exportimport``.
+  ``collective.exportimport`` — per-package verification is
+  recommended after upgrade.
 
   Based on prior prototyping by @thet on ``thet/indexes-wrapper``.
   Closes #137.

@@ -139,12 +139,12 @@ class _CatalogIndexesView:
         return self._raw.keys()
 
     def values(self):
-        for key in self._raw:
-            yield self[key]
+        # Materialize so callers can iterate twice (matches keys()'s
+        # repeatable-view semantics from the underlying PersistentMapping).
+        return [self[key] for key in self._raw]
 
     def items(self):
-        for key in self._raw:
-            yield (key, self[key])
+        return [(key, self[key]) for key in self._raw]
 
     # mutations → bypass wrapping, go to raw
     def __setitem__(self, key, value):

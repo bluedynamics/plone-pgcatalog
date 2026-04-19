@@ -196,7 +196,10 @@ class TestProfileUpgradeV1ToV2:
         compat.__dict__["indexes"] = PersistentMapping()
         compat._p_changed = False  # simulate freshly loaded
 
-        migrate_catalog_indexes(compat)
+        # The unjarred-compat branch of the migration requires an explicit
+        # opt-in so production GenericSetup calls can't accidentally
+        # install a no-op jar.
+        migrate_catalog_indexes(compat, _test_inject_jar=True)
         assert compat._p_changed is True
 
 

@@ -15,7 +15,7 @@ import logging
 log = logging.getLogger(__name__)
 
 
-def migrate_catalog_indexes(context):
+def migrate_catalog_indexes(context, *, _test_inject_jar=False):
     """Rename ``indexes`` -> ``_raw_indexes`` on the catalog's ``_catalog``.
 
     Accepts either a ``_CatalogCompat`` instance (for unit tests) or a
@@ -24,6 +24,12 @@ def migrate_catalog_indexes(context):
 
     Idempotent.  Marks the instance persistent-dirty so ZODB commits
     capture the rename and the ``__parent__`` pointer.
+
+    The ``_test_inject_jar`` kwarg is a test-only escape hatch: when True
+    and the compat has no ``_p_jar``, a no-op jar is attached so that
+    ``_p_changed = True`` can be observed.  Production GenericSetup
+    callers never pass this — real compats loaded from ZODB already
+    carry a jar, so the flag transition works without intervention.
     """
     compat, catalog = _resolve_compat(context)
     if compat is None:
@@ -69,13 +75,9 @@ def migrate_catalog_indexes(context):
         log.info("migrate_catalog_indexes: set __parent__ on compat")
 
     if mutated:
-        # Persistent's _p_changed descriptor only takes effect when the
-        # instance is associated with a jar (ZODB Connection).  Unit tests
-        # may hand us an unjarred compat (built with __new__); in that case
-        # we attach a minimal no-op jar so the flag observably flips to
-        # True.  Real ZODB objects already have a jar and this branch is a
-        # no-op for them.
-        if getattr(compat, "_p_jar", None) is None:
+        if _test_inject_jar and getattr(compat, "_p_jar", None) is None:
+            # Test-only: Persistent._p_changed needs a jar to flip True.
+            # Never fires in GenericSetup (real compats carry a real jar).
             compat._p_jar = _NoOpJar()
         compat._p_changed = True
 
