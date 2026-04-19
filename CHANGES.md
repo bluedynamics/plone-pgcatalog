@@ -1,5 +1,37 @@
 # Changelog
 
+## 1.0.0b55
+
+### Fixed
+
+- Plone and addon code commonly reaches into the catalog via the non-API-
+  conform pattern ``catalog._catalog.indexes[name]`` / ``.get(name)`` /
+  ``.items()``.  Previously this returned the raw ZCatalog index objects
+  with empty BTrees, so queries against them silently returned no results.
+  ``_CatalogCompat.indexes`` is now a property returning a transient view
+  that wraps each index with ``PGIndex`` (same behavior as
+  ``catalog.Indexes[name]``).  Custom ``PATH``-type indexes and other
+  special indexes (``idx_key=None``) continue to be returned raw, since
+  they have dedicated typed columns and don't need PG-backed wrapping.
+
+  **Migration:** GenericSetup profile bumped from v1 to v2.  The upgrade
+  step renames the persisted ``indexes`` attribute to ``_raw_indexes``
+  and sets ``__parent__`` on the compat so ``aq_parent`` can reach the
+  catalog tool through bare attribute access.  Run
+  *Plone Site Setup → Add-ons → plone.pgcatalog → Upgrade* on existing
+  sites, or let the next ``runAllImportSteps`` on the default profile
+  pick it up.
+
+  Known callers fixed by this change include
+  ``plone.base.utils.check_id`` (reserved-name check),
+  ``plone.restapi.search.query.Query.get_index``,
+  ``plone.app.discussion``, ``plone.app.referenceablebehavior``,
+  ``plone.volto``, ``collective.collectionfilter``, and
+  ``collective.exportimport``.
+
+  Based on prior prototyping by @thet on ``thet/indexes-wrapper``.
+  Closes #137.
+
 ## 1.0.0b54
 
 ### Changed
