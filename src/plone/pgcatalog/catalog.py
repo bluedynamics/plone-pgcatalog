@@ -240,7 +240,9 @@ class PlonePGCatalogTool(UniqueObject, Folder):
     def __init__(self, id=None):  # noqa: A002
         if id is not None:
             self.id = id
-        self._catalog = _CatalogCompat()
+        # Pass parent=self so _CatalogCompat's `indexes` view can find
+        # this tool even through bare attribute access (see #137).
+        self._catalog = _CatalogCompat(parent=self)
 
     # -- Methods copied from CMFPlone.CatalogTool (group-aware security) ----
 

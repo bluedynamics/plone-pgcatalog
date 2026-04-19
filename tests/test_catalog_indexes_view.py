@@ -52,13 +52,13 @@ class TestViewWithoutCatalog:
 
 class TestViewWithPgCatalog:
     def _setup(self, pg_conn_with_catalog):
-        """Build a PlonePGCatalogTool + _CatalogCompat chained by Acquisition."""
+        """Build a PlonePGCatalogTool + _CatalogCompat chained by parent pointer."""
         from plone.pgcatalog.catalog import PlonePGCatalogTool
         from plone.pgcatalog.maintenance import _CatalogCompat
 
         tool = PlonePGCatalogTool.__new__(PlonePGCatalogTool)
         tool._get_pg_read_connection = lambda: pg_conn_with_catalog
-        tool._catalog = _CatalogCompat()
+        tool._catalog = _CatalogCompat(parent=tool)
         return tool
 
     def _register_field_index(self, tool, name="portal_type"):
@@ -211,7 +211,7 @@ class TestGetIndexMethod:
 
         tool = PlonePGCatalogTool.__new__(PlonePGCatalogTool)
         tool._get_pg_read_connection = lambda: pg_conn_with_catalog
-        tool._catalog = _CatalogCompat()
+        tool._catalog = _CatalogCompat(parent=tool)
         raw = mock.Mock(id="portal_type", meta_type="FieldIndex")
         tool._catalog._raw_indexes["portal_type"] = raw
 
