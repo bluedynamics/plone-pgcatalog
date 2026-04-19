@@ -382,7 +382,9 @@ class TestUniqueValuesFor:
         original_getOb = tool.Indexes.__class__._getOb
 
         def _mock_getOb(self_idx, name, default=None):
-            idx = tool._catalog.indexes.get(name)
+            # Use raw mapping so the _FakeIndex.uniqueValues() is called
+            # directly (not the PGIndex override that would query PG).
+            idx = tool._catalog._raw_indexes.get(name)
             if idx is not None:
                 return idx
             return default
@@ -512,12 +514,16 @@ class TestAddIndexTypeResolution:
             tool.addIndex("bad", "NoSuchIndex")
 
     def test_add_index_with_object(self, tool):
-        """addIndex with an IPluggableIndex object should store it directly."""
+        """addIndex with an IPluggableIndex object should store it directly.
+
+        ``_catalog.indexes[name]`` returns a PGIndex view after #137; assert
+        on the underlying raw storage to verify the same object was stored.
+        """
         from Products.PluginIndexes.FieldIndex.FieldIndex import FieldIndex
 
         idx = FieldIndex("direct_idx")
         tool.addIndex("direct_idx", idx)
-        assert tool._catalog.indexes["direct_idx"] is idx
+        assert tool._catalog._raw_indexes["direct_idx"] is idx
 
     def test_add_index_syncs_registry(self, tool):
         """addIndex should register the index in IndexRegistry."""
@@ -827,7 +833,9 @@ class TestGetIndexObjects:
         original = tool.Indexes.__class__._getOb
 
         def _mock(self_idx, name, default=None):
-            return tool._catalog.indexes.get(name, default)
+            # Use raw mapping so the identity check below sees the actual
+            # FieldIndex, not a PGIndex wrapper over it.
+            return tool._catalog._raw_indexes.get(name, default)
 
         tool.Indexes.__class__._getOb = _mock
         try:

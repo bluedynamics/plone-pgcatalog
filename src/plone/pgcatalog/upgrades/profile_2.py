@@ -90,8 +90,8 @@ class _NoOpJar:
     a real one.
     """
 
-    def register(self, obj):
-        """Accept the registration and do nothing."""
+    def register(self, _obj):
+        """Accept the registration and do nothing (ZODB jar protocol)."""
 
 
 def _resolve_compat(context):
