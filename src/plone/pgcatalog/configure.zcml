@@ -39,5 +39,7 @@
       handler=".pool.release_request_connection"
       />
 
+  <!-- GenericSetup profile upgrade steps -->
+  <include package=".upgrades" />
 
 </configure>
