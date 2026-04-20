@@ -77,6 +77,50 @@ def _bool_to_lower_str(value):
     return str(value)
 
 
+#: Plone-native indexes with dedicated pgcatalog handling that isn't
+#: expressible via ``ExtraIdxColumn`` — their SQL lives inside the
+#: handler.  Mapped to ``(IndexType, idx_key)``.  ``TEXT[]``-typed
+#: ExtraIdxColumn keyword indexes (``allowedRolesAndUsers``,
+#: ``object_provides``, …) are added automatically by
+#: ``_builtin_index_type`` — no need to list them here.  See #154.
+_SPECIAL_BUILTIN_INDEX_TYPES: dict[str, tuple[IndexType, str | None]] = {
+    "path": (IndexType.PATH, None),
+    "effectiveRange": (IndexType.DATE_RANGE, None),
+    "SearchableText": (IndexType.TEXT, None),
+}
+
+
+def _builtin_index_type(name):
+    """Return ``(IndexType, idx_key)`` for a built-in Plone index, or None.
+
+    Resolves in two stages:
+
+    1. Plone-native specials hardcoded in ``_SPECIAL_BUILTIN_INDEX_TYPES``
+       (``path``, ``effectiveRange``, ``SearchableText``) — dedicated
+       typed columns with handler-specific SQL.
+    2. ``TEXT[]``-typed ``ExtraIdxColumn`` entries — every such column
+       represents a KEYWORD-shaped index backed by a dedicated GIN
+       column (``allowedRolesAndUsers`` → ``allowed_roles``,
+       ``object_provides`` → ``object_provides``, …).  Derived from
+       the extra-columns registry so additional entries get the
+       fallback treatment automatically.
+
+    Used by ``_QueryBuilder._process_index`` when the main
+    ``IndexRegistry`` doesn't know the name — falling through to
+    ``_handle_field`` in that case would bypass the dedicated column
+    index and trigger seq-scans.
+    """
+    special = _SPECIAL_BUILTIN_INDEX_TYPES.get(name)
+    if special is not None:
+        return special
+    from plone.pgcatalog.columns import get_extra_idx_columns
+
+    for col in get_extra_idx_columns():
+        if col.column_type == "TEXT[]" and col.idx_key == name:
+            return (IndexType.KEYWORD, name)
+    return None
+
+
 def _is_numeric_range(values):
     """Return True iff every value is numeric (``int`` or ``float``).
 
@@ -274,18 +318,31 @@ class _QueryBuilder:
 
         registry = get_registry()
         entry = registry.get(name)
-        if entry is None:
-            # Fall back to simple JSONB field query for unregistered indexes
-            # (e.g. Language, TranslationGroup from plone.app.multilingual).
-            validate_identifier(name)
+        if entry is not None:
+            idx_type, idx_key, _source_attrs = entry
             spec = _normalize_query(raw)
-            self._handle_field(name, name, spec)
+            handler = getattr(self, self._HANDLERS[idx_type])
+            handler(name, idx_key, spec)
             return
 
-        idx_type, idx_key, _source_attrs = entry
+        # Registry miss.  For built-in indexes with dedicated typed
+        # columns / SQL, route to the correct handler anyway — the
+        # generic ``_handle_field`` fallback would emit
+        # ``idx->>'name'`` and trigger seq-scans (#154).
+        builtin = _builtin_index_type(name)
+        if builtin is not None:
+            idx_type, idx_key = builtin
+            spec = _normalize_query(raw)
+            handler = getattr(self, self._HANDLERS[idx_type])
+            handler(name, idx_key, spec)
+            return
+
+        # Truly custom / unknown index — fall back to simple JSONB
+        # field query (e.g. Language, TranslationGroup from
+        # plone.app.multilingual).
+        validate_identifier(name)
         spec = _normalize_query(raw)
-        handler = getattr(self, self._HANDLERS[idx_type])
-        handler(name, idx_key, spec)
+        self._handle_field(name, name, spec)
 
     # -- FieldIndex / GopipIndex --------------------------------------------
 
