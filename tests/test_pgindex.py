@@ -810,3 +810,43 @@ class TestPGIndexApplyIndex:
         )
         assert set(result) == {100, 101}
         assert info == ("portal_type",)
+
+    def test_keyword_index_single_value(self, pg_conn_with_catalog):
+        from plone.pgcatalog.columns import IndexType
+
+        _catalog_keyword_objects(pg_conn_with_catalog)
+        # Fixture: 200={Werkvortrag, Tirol, Aktuelles}, 201={Tirol,
+        # AUSSCHREIBUNG}, 202={Aktuelles}
+        result, info = _apply_pg_index(
+            "Subject",
+            IndexType.KEYWORD,
+            pg_conn_with_catalog,
+            {"Subject": "Tirol"},
+        )
+        assert set(result) == {200, 201}
+
+    def test_keyword_index_or_operator(self, pg_conn_with_catalog):
+        from plone.pgcatalog.columns import IndexType
+
+        _catalog_keyword_objects(pg_conn_with_catalog)
+        result, info = _apply_pg_index(
+            "Subject",
+            IndexType.KEYWORD,
+            pg_conn_with_catalog,
+            {"Subject": {"query": ["Aktuelles", "AUSSCHREIBUNG"], "operator": "or"}},
+        )
+        assert set(result) == {200, 201, 202}
+
+    def test_path_index_subtree(self, pg_conn_with_catalog):
+        from plone.pgcatalog.columns import IndexType
+
+        _catalog_objects(pg_conn_with_catalog)  # paths /plone/doc1, etc.
+        result, info = _apply_pg_index(
+            "path",
+            IndexType.PATH,
+            pg_conn_with_catalog,
+            {"path": {"query": "/plone", "depth": -1}},
+        )
+        assert 100 in result
+        assert 101 in result
+        assert 102 in result
