@@ -1444,3 +1444,74 @@ class TestMaintenanceOps:
         )
         # Either no rows with path (path NULLed) or idx is None
         assert not rows or rows[0][0] is None
+
+
+# ===========================================================================
+# KeywordsVocabulary — end-to-end tag autocomplete via PGIndex (#146)
+# ===========================================================================
+
+
+class TestKeywordsVocabulary:
+    """Regression for #146: typing into the tag/Schlagwort autocomplete
+    offers individual keywords, not serialized JSON arrays or nothing."""
+
+    def test_keywords_vocabulary_returns_individual_keywords(self, pg_functional):
+        from plone.app.vocabularies.catalog import KeywordsVocabularyFactory
+
+        portal = pg_functional["portal"]
+        setRoles(portal, TEST_USER_ID, ["Manager"])
+
+        # Create two Documents with distinct Subject keywords.
+        doc1 = portal.invokeFactory(
+            "Document",
+            "kv-doc1",
+            title="D1",
+            subject=("alpha", "beta"),
+        )
+        doc2 = portal.invokeFactory(
+            "Document",
+            "kv-doc2",
+            title="D2",
+            subject=("beta", "gamma"),
+        )
+        portal[doc1].reindexObject()
+        portal[doc2].reindexObject()
+        transaction.commit()
+
+        vocab = KeywordsVocabularyFactory(portal)
+        tokens = {term.value for term in vocab}
+        assert tokens == {"alpha", "beta", "gamma"}
+
+    def test_keywords_vocabulary_survives_missing_parent(self, pg_functional):
+        """Regression guard for the __parent__-missing production case:
+        clear __parent__ on the compat, fetch vocabulary — ``getIndex``
+        still finds the tool via ``_resolve_catalog``'s ``getSite``
+        branch and the vocabulary returns correct tokens.
+
+        Persistent self-heal of ``__parent__`` is tested separately
+        against the ``.indexes`` property (Task 2).  The ``getIndex``
+        code path used by the vocabulary doesn't persist via self-heal
+        — it relies on the lookup fallback each time.  Both behaviors
+        are correct and complementary.
+        """
+        portal = pg_functional["portal"]
+        setRoles(portal, TEST_USER_ID, ["Manager"])
+
+        doc_id = portal.invokeFactory(
+            "Document",
+            "kv-doc-x",
+            title="X",
+            subject=("AT26",),
+        )
+        portal[doc_id].reindexObject()
+        transaction.commit()
+
+        # Simulate production state: wipe __parent__ from the compat.
+        compat = portal.portal_catalog._catalog
+        compat.__dict__.pop("__parent__", None)
+
+        from plone.app.vocabularies.catalog import KeywordsVocabularyFactory
+
+        vocab = KeywordsVocabularyFactory(portal)
+        tokens = {term.value for term in vocab}
+        assert "AT26" in tokens
