@@ -87,12 +87,29 @@ class PGCatalogBrain:
 
         Requires a catalog with traversal support (Phase 6 integration).
         Returns None if the object cannot be found.
+
+        Mirrors upstream ``Products.ZCatalog.CatalogBrains.AbstractCatalogBrain``
+        semantics: the catalog filter already authorized access to the
+        target object, so intermediate containers are traversed
+        unrestricted; only the leaf is permission-checked.  Without this
+        split, sites with a restricted parent folder (common pattern —
+        e.g. an internal calendar container publishing public events)
+        raise ``Unauthorized`` on the parent even though the user is
+        allowed to see the target.
         """
         if self._catalog is None:
             return None
         self._maybe_prefetch()
+        path = self.getPath().split("/")
+        if not path:
+            return None
         try:
-            return self._catalog.restrictedTraverse(self.getPath())
+            parent = (
+                self._catalog.unrestrictedTraverse(path[:-1])
+                if len(path) > 1
+                else self._catalog
+            )
+            return parent.restrictedTraverse(path[-1])
         except (KeyError, AttributeError):
             return None
 

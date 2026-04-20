@@ -61,21 +61,86 @@ class TestBrainBasics:
         assert brain.getObject() is None
 
     def test_get_object_with_catalog(self):
+        """getObject traverses the parent unrestricted and the leaf restricted.
+
+        Matches upstream ``AbstractCatalogBrain.getObject``: the catalog
+        filter already authorized access to the target, so intermediate
+        containers are bypassed — only the final object is permission-
+        checked.
+        """
         from unittest import mock
 
         obj = mock.Mock()
+        parent = mock.Mock()
+        parent.restrictedTraverse.return_value = obj
         catalog = mock.Mock()
-        catalog.restrictedTraverse.return_value = obj
-        brain = PGCatalogBrain(_make_row(path="/plone/doc"), catalog=catalog)
+        catalog.unrestrictedTraverse.return_value = parent
+        brain = PGCatalogBrain(
+            _make_row(path="/plone/kalender/event-xyz"), catalog=catalog
+        )
+
+        assert brain.getObject() is obj
+        catalog.unrestrictedTraverse.assert_called_once_with(["", "plone", "kalender"])
+        parent.restrictedTraverse.assert_called_once_with("event-xyz")
+
+    def test_get_object_restricted_only_on_leaf(self):
+        """Regression for #141 — parent folder with stricter permissions.
+
+        Production symptom:
+            AccessControl.unauthorized.Unauthorized: You are not allowed
+            to access 'kalender' in this context
+
+        A common Plone pattern is to have a restricted parent container
+        (e.g. ``kalender/``) that publishes individual public items.
+        The catalog filter already authorized the leaf, so traversal
+        must not re-check the parent.
+        """
+        from AccessControl.unauthorized import Unauthorized
+        from unittest import mock
+
+        obj = mock.Mock()
+        parent = mock.Mock()
+        parent.restrictedTraverse.return_value = obj
+        catalog = mock.Mock()
+        # restrictedTraverse on the parent path would raise Unauthorized
+        # — the buggy implementation called restrictedTraverse on the
+        # full path, which bubbles through ``kalender``.
+        catalog.restrictedTraverse.side_effect = Unauthorized(
+            "You are not allowed to access 'kalender'"
+        )
+        catalog.unrestrictedTraverse.return_value = parent
+        brain = PGCatalogBrain(
+            _make_row(path="/plone/kalender/event-xyz"), catalog=catalog
+        )
+
+        # Must succeed — parent traversal is unrestricted.
         assert brain.getObject() is obj
 
     def test_get_object_traversal_error(self):
         from unittest import mock
 
         catalog = mock.Mock()
-        catalog.restrictedTraverse.side_effect = KeyError("not found")
+        catalog.unrestrictedTraverse.side_effect = KeyError("not found")
         brain = PGCatalogBrain(_make_row(path="/plone/doc"), catalog=catalog)
         assert brain.getObject() is None
+
+    def test_get_object_site_root_path(self):
+        """Path ``/plone`` splits to ``['', 'plone']`` — site root is the
+        "parent" (traversed unrestricted to ``['']``), leaf is ``plone``
+        (restricted).  Matches upstream ZCatalog semantics.
+        """
+        from unittest import mock
+
+        obj = mock.Mock()
+        root = mock.Mock()
+        root.restrictedTraverse.return_value = obj
+        catalog = mock.Mock()
+        catalog.unrestrictedTraverse.return_value = root
+        brain = PGCatalogBrain(_make_row(path="/plone"), catalog=catalog)
+
+        assert brain.getObject() is obj
+        catalog.unrestrictedTraverse.assert_called_once_with([""])
+        root.restrictedTraverse.assert_called_once_with("plone")
 
     def test_unrestricted_get_object_without_catalog(self):
         brain = PGCatalogBrain(_make_row())

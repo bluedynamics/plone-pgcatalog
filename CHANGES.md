@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.0.0b57
+
+### Fixed
+
+- ``PGCatalogBrain.getObject()`` now mirrors upstream
+  ``Products.ZCatalog.CatalogBrains.AbstractCatalogBrain.getObject``:
+  the parent path is traversed *unrestricted* and only the final
+  object is ``restrictedTraverse``-checked.  Previously the full
+  path went through ``restrictedTraverse``, so any intermediate
+  container with stricter permissions than the leaf raised
+  ``AccessControl.unauthorized.Unauthorized`` — even though the
+  catalog filter had already authorized access to the target.
+  Sites with a private parent folder publishing individual public
+  items (the common "kalender/event-xyz" pattern) hit this on every
+  anonymous render.  Closes #141.
+
 ## 1.0.0b56
 
 ### Fixed
