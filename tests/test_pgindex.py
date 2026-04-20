@@ -850,3 +850,73 @@ class TestPGIndexApplyIndex:
         assert 100 in result
         assert 101 in result
         assert 102 in result
+
+    def test_date_index_range_query(self, pg_conn_with_catalog):
+        from datetime import datetime
+        from datetime import UTC
+        from plone.pgcatalog.columns import IndexType
+
+        insert_object(pg_conn_with_catalog, 300)
+        catalog_object(
+            pg_conn_with_catalog,
+            zoid=300,
+            path="/plone/event-2025",
+            idx={"portal_type": "Event", "start": "2025-06-15T10:00:00+00:00"},
+        )
+        insert_object(pg_conn_with_catalog, 301)
+        catalog_object(
+            pg_conn_with_catalog,
+            zoid=301,
+            path="/plone/event-2026",
+            idx={"portal_type": "Event", "start": "2026-03-15T10:00:00+00:00"},
+        )
+        pg_conn_with_catalog.commit()
+
+        result, info = _apply_pg_index(
+            "start",
+            IndexType.DATE,
+            pg_conn_with_catalog,
+            {"start": {"query": datetime(2026, 1, 1, tzinfo=UTC), "range": "min"}},
+        )
+        assert 301 in result
+        assert 300 not in result
+
+    def test_boolean_index(self, pg_conn_with_catalog):
+        from plone.pgcatalog.columns import IndexType
+
+        insert_object(pg_conn_with_catalog, 400)
+        catalog_object(
+            pg_conn_with_catalog,
+            zoid=400,
+            path="/plone/default",
+            idx={"portal_type": "Document", "is_default_page": True},
+        )
+        insert_object(pg_conn_with_catalog, 401)
+        catalog_object(
+            pg_conn_with_catalog,
+            zoid=401,
+            path="/plone/non-default",
+            idx={"portal_type": "Document", "is_default_page": False},
+        )
+        pg_conn_with_catalog.commit()
+
+        result, info = _apply_pg_index(
+            "is_default_page",
+            IndexType.BOOLEAN,
+            pg_conn_with_catalog,
+            {"is_default_page": True},
+        )
+        assert 400 in result
+        assert 401 not in result
+
+    def test_uuid_index(self, pg_conn_with_catalog):
+        from plone.pgcatalog.columns import IndexType
+
+        _catalog_objects(pg_conn_with_catalog)
+        result, info = _apply_pg_index(
+            "UID",
+            IndexType.UUID,
+            pg_conn_with_catalog,
+            {"UID": "uid-aaa-100"},
+        )
+        assert set(result) == {100}
