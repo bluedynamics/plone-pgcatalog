@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.0.0b63
+## 1.0.0b62
 
 ### Fixed
 
@@ -23,10 +23,6 @@
   ``searchable_text`` columns and the DateRangeIndex composite
   clause.  Explicit registry entries still win so addons can override
   behavior.  Closes #154.
-
-## 1.0.0b62
-
-### Fixed
 
 - ``_handle_keyword`` no longer crashes with ``TypeError: 'DateTime'
   object is not iterable`` when a caller passes a non-str, non-iterable
