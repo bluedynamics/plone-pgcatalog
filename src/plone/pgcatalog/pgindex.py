@@ -40,24 +40,38 @@ class _PGIndexMapping:
 
     Translates ``_index.get(value)`` into a PG query on the ``idx``
     JSONB column.  Returns ZOID as the record ID.
+
+    ``plone.app.vocabularies.Keywords.all_keywords`` iterates
+    ``index._index`` directly and feeds the values into
+    ``safe_simplevocabulary_from_values`` for the tag-autocomplete
+    widget — so the mapping must be iterable and, for KeywordIndex,
+    yield individual keywords instead of the JSON-text representation
+    of the whole array.
     """
 
-    __slots__ = ("_get_conn", "_idx_key")
+    __slots__ = ("_get_conn", "_idx_key", "_index_type")
 
-    def __init__(self, idx_key, get_conn):
+    def __init__(self, idx_key, get_conn, index_type=None):
         self._idx_key = idx_key
         self._get_conn = get_conn
+        self._index_type = index_type
 
     def get(self, value, default=None):
         try:
             conn = self._get_conn()
         except Exception:
             return default
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT zoid FROM object_state WHERE idx->>%(key)s = %(val)s LIMIT 1",
-                {"key": self._idx_key, "val": _bool_to_lower_str(value)},
+        if self._index_type == IndexType.KEYWORD:
+            sql = (
+                "SELECT zoid FROM object_state "
+                "WHERE idx->%(key)s @> to_jsonb(%(val)s::text) LIMIT 1"
             )
+            params = {"key": self._idx_key, "val": value}
+        else:
+            sql = "SELECT zoid FROM object_state WHERE idx->>%(key)s = %(val)s LIMIT 1"
+            params = {"key": self._idx_key, "val": _bool_to_lower_str(value)}
+        with conn.cursor() as cur:
+            cur.execute(sql, params)
             row = cur.fetchone()
         return row["zoid"] if row else default
 
@@ -69,13 +83,40 @@ class _PGIndexMapping:
             conn = self._get_conn()
         except Exception:
             return []
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT DISTINCT idx->>%(key)s AS val FROM object_state "
-                "WHERE idx ? %(key)s AND idx->>%(key)s IS NOT NULL",
-                {"key": self._idx_key},
+        if self._index_type == IndexType.KEYWORD:
+            # See PGIndex.uniqueValues for the ``UNION ALL`` rationale.
+            sql = (
+                "SELECT DISTINCT val FROM ("
+                "  SELECT jsonb_array_elements_text(idx->%(key)s) AS val "
+                "    FROM object_state "
+                "    WHERE idx ? %(key)s "
+                "      AND jsonb_typeof(idx->%(key)s) = 'array' "
+                "  UNION ALL "
+                "  SELECT idx->>%(key)s AS val "
+                "    FROM object_state "
+                "    WHERE idx ? %(key)s "
+                "      AND jsonb_typeof(idx->%(key)s) NOT IN ('array', 'null') "
+                ") u WHERE val IS NOT NULL"
             )
+        else:
+            sql = (
+                "SELECT DISTINCT idx->>%(key)s AS val FROM object_state "
+                "WHERE idx ? %(key)s AND idx->>%(key)s IS NOT NULL"
+            )
+        with conn.cursor() as cur:
+            cur.execute(sql, {"key": self._idx_key})
             return [row["val"] for row in cur.fetchall()]
+
+    def __iter__(self):
+        """Iterate over distinct values.
+
+        Matches ZCatalog's ``Index._index`` iteration shape: for a
+        FieldIndex / UUIDIndex the underlying OOBTree yields value
+        keys; for a KeywordIndex the OOBTree yields keyword keys.
+        The ``plone.app.vocabularies.Keywords`` vocabulary depends
+        on this.
+        """
+        return iter(self.keys())
 
 
 class PGIndex:
@@ -90,7 +131,7 @@ class PGIndex:
         self._wrapped = wrapped
         self._idx_key = idx_key
         self._index_type = index_type
-        self._pg_index = _PGIndexMapping(idx_key, get_conn)
+        self._pg_index = _PGIndexMapping(idx_key, get_conn, index_type=index_type)
 
     @property
     def _index(self):

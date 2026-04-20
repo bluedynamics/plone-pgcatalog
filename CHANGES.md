@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.0.0b60
+
+### Fixed
+
+- ``_PGIndexMapping`` (backing ``PGIndex._index``) is now iterable and
+  branches its SQL on the index type.  ``plone.app.vocabularies.Keywords``
+  iterates ``index._index`` directly to populate the tag-autocomplete
+  widget in the Plone edit form — the previous mapping had no
+  ``__iter__`` and its ``keys()`` coerced JSONB arrays to their text
+  representation.  Net effect on b59: typing into the ``Schlagwort``
+  field offered zero suggestions even when matching keywords existed.
+  ``keys()`` / ``__iter__`` now use the same ``UNION ALL`` expansion as
+  ``uniqueValues`` for KEYWORD, and ``get()`` uses ``idx->key @>
+  to_jsonb(value::text)`` so membership checks against a keyword
+  actually match.  Follow-up to #143.
+
 ## 1.0.0b59
 
 ### Fixed
