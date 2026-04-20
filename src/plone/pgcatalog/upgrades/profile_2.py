@@ -98,15 +98,29 @@ class _NoOpJar:
 
 def _resolve_compat(context):
     """Return ``(_CatalogCompat, catalog_tool)`` for either a compat
-    instance or a GenericSetup context.  Either element may be None."""
+    instance or a GenericSetup context.  Either element may be None.
+
+    GenericSetup hands two shapes to upgrade handlers depending on how
+    they're invoked:
+
+    * ``UpgradeStep.doStep`` (the normal v1->v2 path) passes the
+      ``portal_setup`` tool itself — acquisition-wrapped inside the
+      Plone site.
+    * ``UpgradeDepends.doStep`` / export+import helpers pass an
+      ``ImportContext`` exposing ``getSite()``.
+
+    Both must resolve to the site's ``portal_catalog._catalog``.  The
+    earlier version of this function only understood the ``ImportContext``
+    path and silently returned ``(None, None)`` for the setup-tool case,
+    so the migration no-op'd on every site that GenericSetup invokes via
+    the normal upgrade button (see #139).
+    """
+    from Acquisition import aq_parent
     from plone.pgcatalog.maintenance import _CatalogCompat
 
     if isinstance(context, _CatalogCompat):
-        # Unit-test shortcut: caller passed compat directly.  The catalog
-        # tool is reachable via aq_parent if already wired.
+        # Unit-test shortcut: caller passed compat directly.
         try:
-            from Acquisition import aq_parent
-
             catalog = aq_parent(context)
         except Exception:
             catalog = None
@@ -114,11 +128,14 @@ def _resolve_compat(context):
             catalog = context.__dict__.get("__parent__")
         return context, catalog
 
-    # GenericSetup: context is an ImportContext; its site is the Plone root.
+    # ImportContext-style callers first (preserves existing path).
+    # portal_setup-tool path: the setup tool's acquisition parent is
+    # the Plone site root.
     getSite = getattr(context, "getSite", None)
-    if getSite is None:
+    site = getSite() if getSite is not None else aq_parent(context)
+
+    if site is None:
         return None, None
-    site = getSite()
     catalog = getattr(site, "portal_catalog", None)
     if catalog is None:
         return None, None

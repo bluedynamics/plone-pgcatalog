@@ -205,8 +205,26 @@ class _CatalogCompat(Implicit, Persistent):
         ``self.__parent__`` (set by ``PlonePGCatalogTool`` or by the
         profile upgrade step), so the catalog tool is reachable even
         through bare attribute access like ``tool._catalog.indexes``.
+
+        Self-heals an unmigrated persisted state where the legacy
+        ``indexes`` PersistentMapping is still in ``__dict__`` instead of
+        ``_raw_indexes``.  This matters because any AttributeError raised
+        here is swallowed by Acquisition, which then returns the tool's
+        ``indexes()`` method from the parent — producing the
+        "'function' object has no attribute 'keys'" traceback at
+        ``catalog.indexes.keys()`` instead of surfacing the real cause.
+        Fresh-install sites and sites where the v1->v2 upgrade step
+        silently no-op'd (see #139) hit this path.
         """
-        return _CatalogIndexesView(self, self._raw_indexes)
+        state = self.__dict__
+        raw = state.get("_raw_indexes")
+        if raw is None:
+            raw = state.pop("indexes", None)
+            if raw is None:
+                raw = PersistentMapping()
+            state["_raw_indexes"] = raw
+            self._p_changed = True
+        return _CatalogIndexesView(self, raw)
 
     def getIndex(self, name):
         """Return a PG-backed index wrapper for *name*.

@@ -202,6 +202,105 @@ class TestProfileUpgradeV1ToV2:
         migrate_catalog_indexes(compat, _test_inject_jar=True)
         assert compat._p_changed is True
 
+    def test_migrate_from_portal_setup_tool_context(self):
+        """GenericSetup calls upgrade handlers with portal_setup as context.
+
+        Regression for #139: the upgrade was silently no-op on production
+        because ``_resolve_compat`` only understood ImportContext (getSite())
+        and returned (None, None) for the setup tool, logging a warning and
+        leaving the persisted state untouched even though GS bumped the
+        profile version to 2.
+        """
+        from OFS.Folder import Folder
+        from plone.pgcatalog.catalog import PlonePGCatalogTool
+        from plone.pgcatalog.maintenance import _CatalogCompat
+        from plone.pgcatalog.upgrades.profile_2 import migrate_catalog_indexes
+
+        # Build the shape GS gives us: portal_setup acquisition-wrapped
+        # inside a Plone site that owns portal_catalog -> _CatalogCompat.
+        site = Folder("plone")
+        tool = PlonePGCatalogTool.__new__(PlonePGCatalogTool)
+        compat = _CatalogCompat.__new__(_CatalogCompat)
+        legacy = PersistentMapping({"portal_type": mock.Mock()})
+        compat.__dict__["indexes"] = legacy
+        tool._catalog = compat
+        site.portal_catalog = tool
+
+        class _SetupTool(Folder):
+            pass
+
+        setup = _SetupTool("portal_setup")
+        site.portal_setup = setup
+        # GS passes the acquisition-wrapped setup tool
+        wrapped_setup = site.portal_setup
+
+        migrate_catalog_indexes(wrapped_setup, _test_inject_jar=True)
+
+        assert "_raw_indexes" in compat.__dict__, (
+            "migration must rename legacy 'indexes' attr when invoked "
+            "with the portal_setup tool context (real GS path)"
+        )
+        assert compat._raw_indexes is legacy
+        assert "indexes" not in compat.__dict__
+
+
+# ── Self-healing property survives unmigrated legacy state ──────────────
+
+
+class TestPropertySelfHealsLegacyState:
+    """If a site was installed with profile v2 directly (fresh install) or
+    the upgrade step silently no-op'd, ``_CatalogCompat`` may still have
+    the legacy ``indexes`` attribute in ``__dict__`` and no
+    ``_raw_indexes``.  Any AttributeError inside the property is
+    swallowed by Acquisition and the tool's ``indexes()`` method is
+    returned instead, producing ``'function' object has no attribute
+    'keys'`` on ``catalog.indexes.keys()``.  The property must handle
+    that state itself instead of raising.
+    """
+
+    def test_property_migrates_on_first_access(self):
+        from plone.pgcatalog.maintenance import _CatalogCompat
+
+        compat = _CatalogCompat.__new__(_CatalogCompat)
+        legacy = PersistentMapping({"portal_type": mock.Mock()})
+        compat.__dict__["indexes"] = legacy
+        # no _raw_indexes
+
+        view = compat.indexes
+        assert list(view.keys()) == ["portal_type"]
+        # side effect: state migrated in-place
+        assert "_raw_indexes" in compat.__dict__
+        assert compat._raw_indexes is legacy
+        assert "indexes" not in compat.__dict__
+
+    def test_property_creates_empty_when_no_legacy(self):
+        from plone.pgcatalog.maintenance import _CatalogCompat
+
+        compat = _CatalogCompat.__new__(_CatalogCompat)
+        # No indexes and no _raw_indexes — pathological but must not crash
+        view = compat.indexes
+        assert list(view.keys()) == []
+        assert "_raw_indexes" in compat.__dict__
+
+    def test_tool_indexes_method_works_on_unmigrated_compat(self):
+        """Regression for the observed production traceback:
+            AttributeError: 'function' object has no attribute 'keys'
+        at plone.pgcatalog.catalog:287.
+        """
+        from OFS.Folder import Folder
+        from plone.pgcatalog.catalog import PlonePGCatalogTool
+        from plone.pgcatalog.maintenance import _CatalogCompat
+
+        compat = _CatalogCompat.__new__(_CatalogCompat)
+        compat.__dict__["indexes"] = PersistentMapping({"a": mock.Mock()})
+        tool = PlonePGCatalogTool.__new__(PlonePGCatalogTool)
+        tool._catalog = compat
+        site = Folder("plone")
+        site.portal_catalog = tool
+
+        result = site.portal_catalog.indexes()
+        assert result == ["a"]
+
 
 # ── getIndex still works (existing API) ────────────────────────────────
 
