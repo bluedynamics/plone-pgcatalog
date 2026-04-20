@@ -1163,3 +1163,158 @@ class TestBoolToLowerStr:
     def test_none_conversion(self):
         """Test None converts to 'None'."""
         assert _bool_to_lower_str(None) == "None"
+
+
+# ---------------------------------------------------------------------------
+# Built-in index fallback dispatch (#154)
+# ---------------------------------------------------------------------------
+
+
+class TestBuiltinIndexFallbackDispatch:
+    """Regression for #154: `path`, `allowedRolesAndUsers`, `effectiveRange`,
+    and `SearchableText` are core Plone indexes backed by dedicated typed
+    columns in the pgcatalog schema.  When they are missing from the
+    IndexRegistry (fresh install, sync-from-catalog gap, broken ZCatalog
+    state), `_process_index` used to fall through to `_handle_field` which
+    emits `idx->>'name'` — bypassing the dedicated column and its index.
+
+    On aaf-6 prod that produced ~9-second seq-scans on 450k-row
+    object_state tables.  Built-in indexes must always route to the
+    correct handler even without a registry entry.
+    """
+
+    def _unregister(self, names):
+        """Temporarily remove *names* from the registry, returning a
+        teardown callable that re-registers them.
+        """
+        from plone.pgcatalog.columns import get_registry
+
+        registry = get_registry()
+        saved = {}
+        for name in names:
+            entry = registry.get(name)
+            if entry is not None:
+                saved[name] = entry
+                del registry._indexes[name]
+
+        def restore():
+            for name, entry in saved.items():
+                idx_type, idx_key, source_attrs = entry
+                registry.register(name, idx_type, idx_key, source_attrs)
+
+        return restore
+
+    def test_path_unregistered_hits_typed_column(self):
+        """`{path: [...]}` must use the dedicated `path` column, not
+        `idx->>'path'`.  The `path` column has an index; `idx->>'path'`
+        triggers a seq-scan.
+        """
+        restore = self._unregister(["path"])
+        try:
+            qr = build_query({"path": {"query": "/plone/folder", "depth": -1}})
+            assert "idx->>'path'" not in qr["where"]
+            # _handle_path emits `path = 'x' OR path LIKE 'x/%'` for
+            # subtree / depth=-1.
+            assert "path" in qr["where"]
+        finally:
+            restore()
+
+    def test_allowedRolesAndUsers_unregistered_hits_typed_column(self):
+        """`{allowedRolesAndUsers: [...]}` must use `allowed_roles && %s::text[]`
+        (GIN-indexed column), not `idx->>'allowedRolesAndUsers' = ANY(%s)`.
+        """
+        restore = self._unregister(["allowedRolesAndUsers"])
+        try:
+            qr = build_query(
+                {
+                    "allowedRolesAndUsers": {
+                        "query": ["Anonymous"],
+                        "operator": "or",
+                    }
+                }
+            )
+            assert "allowed_roles" in qr["where"]
+            assert "&&" in qr["where"]
+            assert "idx->>'allowedRolesAndUsers'" not in qr["where"]
+        finally:
+            restore()
+
+    def test_effectiveRange_unregistered_hits_date_range_handler(self):
+        """`{effectiveRange: <datetime>}` must use the composite effective
+        <= now AND (expires >= now OR expires IS NULL) clause, not a
+        `idx->>'effectiveRange' = <timestamp>` scalar equality.
+        """
+        from datetime import datetime
+        from datetime import UTC
+
+        restore = self._unregister(["effectiveRange"])
+        try:
+            now = datetime(2026, 6, 15, tzinfo=UTC)
+            qr = build_query({"effectiveRange": now})
+            where = qr["where"]
+            # Composite shape from _handle_date_range.
+            assert "idx->>'effective'" in where
+            assert "idx->>'expires'" in where
+            assert "IS NULL" in where
+            assert "idx->>'effectiveRange'" not in where
+        finally:
+            restore()
+
+    def test_searchable_text_unregistered_hits_text_handler(self):
+        """`{SearchableText: "..."}` must use the dedicated `searchable_text`
+        tsvector column (via `_handle_text`), not `idx->>'SearchableText' = ...`.
+        """
+        restore = self._unregister(["SearchableText"])
+        try:
+            qr = build_query({"SearchableText": "plone"})
+            # _handle_text emits a `@@` tsquery match against
+            # searchable_text.
+            assert "searchable_text" in qr["where"]
+            assert "@@" in qr["where"]
+            assert "idx->>'SearchableText'" not in qr["where"]
+        finally:
+            restore()
+
+    def test_explicit_registry_entry_still_wins(self):
+        """Regression guard — the built-in fallback kicks in only when
+        the registry misses.  An explicit registration (even a weird
+        one) takes precedence so addons can override behavior.
+        """
+        qr = build_query({"path": {"query": "/plone/folder", "depth": -1}})
+        # With registry populated via `populated_registry` fixture,
+        # path is (PATH, None) → same typed-column path as the
+        # fallback would produce.  The test here asserts the query
+        # still works correctly on the hot path.
+        assert "path" in qr["where"]
+
+    def test_unknown_non_builtin_still_falls_through_to_field(self):
+        """Regression guard — only known built-in names (the three
+        Plone specials plus any ``TEXT[]``-typed ``ExtraIdxColumn``
+        idx-keys) get the fallback treatment.  Any other unregistered
+        name keeps the existing ``_handle_field`` behavior for
+        addon-defined custom indexes (e.g. Language, TranslationGroup).
+        """
+        qr = build_query({"my_addon_field": "some_value"})
+        assert "idx->>'my_addon_field' =" in qr["where"]
+
+    def test_object_provides_unregistered_hits_typed_column(self):
+        """``object_provides`` is a ``TEXT[]`` ExtraIdxColumn, so the
+        built-in fallback picks it up via derivation from
+        ``get_extra_idx_columns()`` — without needing a hardcoded
+        entry.  Proves the derivation works end-to-end.
+        """
+        restore = self._unregister(["object_provides"])
+        try:
+            qr = build_query(
+                {
+                    "object_provides": {
+                        "query": ["some.iface.IMark"],
+                        "operator": "or",
+                    }
+                }
+            )
+            assert "object_provides" in qr["where"]
+            assert "&&" in qr["where"]
+            assert "idx->>'object_provides'" not in qr["where"]
+        finally:
+            restore()

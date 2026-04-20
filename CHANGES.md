@@ -1,5 +1,29 @@
 # Changelog
 
+## 1.0.0b63
+
+### Fixed
+
+- ``_process_index`` now falls back to the correct handler for built-in
+  Plone indexes when they are missing from the ``IndexRegistry`` —
+  previously the miss fell through to ``_handle_field`` which emits
+  ``idx->>'name'``, bypassing the dedicated typed columns and their
+  indexes.  On aaf-6 prod this produced 4-9 second seq-scans over a
+  450k-row ``object_state`` table for every folder-listing query,
+  saturating the worker pool and causing intermittent Varnish
+  backend-fetch errors.  Resolution happens via a new
+  ``_builtin_index_type(name)`` helper that combines two sources: the
+  three Plone-native specials (``path``, ``effectiveRange``,
+  ``SearchableText``) hardcoded because their SQL lives inside the
+  handler, and every ``TEXT[]``-typed ``ExtraIdxColumn`` (derived at
+  dispatch time — currently ``allowedRolesAndUsers`` and
+  ``object_provides``, extensible via
+  ``register_extra_idx_column``).  The correct handler then uses
+  ``path`` / ``allowed_roles`` / ``object_provides`` /
+  ``searchable_text`` columns and the DateRangeIndex composite
+  clause.  Explicit registry entries still win so addons can override
+  behavior.  Closes #154.
+
 ## 1.0.0b62
 
 ### Fixed
