@@ -4,6 +4,17 @@
 
 ### Fixed
 
+- ``_field_range`` on FieldIndex no longer silently returns zero rows
+  for numeric range queries.  Two stacked bugs: ``[max, min]`` order
+  from the caller was not normalized (produced always-false SQL), and
+  ``idx->>'key'`` comparisons ran lexicographically on text — so
+  ``'46.1' <= '5.0' <= '49.0'`` included values outside the range.
+  ``_field_range`` now sorts min/max and casts ``idx->>'key'`` to
+  ``::numeric`` when the range values are ``int`` / ``float``.  String
+  values (ISO dates etc.) keep text comparison.  Affected aaf-6 prod
+  map-widget bbox filter via ``collective.collectionfilter`` — closes
+  #150.
+
 - `_CatalogCompat.getIndex` and `_CatalogIndexesView.__getitem__` no
   longer silently fall back to the raw ZCatalog index when they
   cannot find the catalog tool — that fallback returned empty BTrees
