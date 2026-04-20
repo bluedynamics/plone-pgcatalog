@@ -721,3 +721,26 @@ class TestPGIndexMappingNewMethods:
             index_type=IndexType.KEYWORD,
         )
         assert len(mapping) == 5  # 4 array keywords + "Legacy" scalar
+
+    def test_items_raises_notimplemented_with_guidance(self, pg_conn_with_catalog):
+        import pytest
+
+        _catalog_objects(pg_conn_with_catalog)
+        mapping = _PGIndexMapping("UID", lambda: pg_conn_with_catalog)
+        with pytest.raises(NotImplementedError) as excinfo:
+            mapping.items()
+        msg = str(excinfo.value)
+        assert "items()" in msg
+        assert "uniqueValues" in msg
+        assert "_apply_index" in msg
+        assert "catalog(**query)" in msg
+        assert "https://github.com/bluedynamics/plone-pgcatalog/issues" in msg
+
+    def test_values_raises_notimplemented_with_guidance(self, pg_conn_with_catalog):
+        import pytest
+
+        _catalog_objects(pg_conn_with_catalog)
+        mapping = _PGIndexMapping("UID", lambda: pg_conn_with_catalog)
+        with pytest.raises(NotImplementedError) as excinfo:
+            mapping.values()
+        assert "values()" in str(excinfo.value)

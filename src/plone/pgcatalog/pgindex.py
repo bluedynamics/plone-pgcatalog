@@ -34,6 +34,19 @@ log = logging.getLogger(__name__)
 
 _marker = []
 
+_ITEMS_VALUES_NOT_IMPLEMENTED = (
+    "PGIndex._index.{method}() is not implemented in plone.pgcatalog: "
+    "the ZCatalog BTree shape [(value, IITreeSet(rids)), ...] materializes "
+    "all (value, objects)-pairs of the index, which would be prohibitively "
+    "expensive against the PG-backed catalog.  Alternatives:\n"
+    "  * catalog.Indexes[name].uniqueValues()                 — distinct values\n"
+    "  * catalog.Indexes[name]._apply_index({{name: value}})  — zoids per value\n"
+    "  * catalog(**query)                                      — full secured search\n"
+    "If you have a legitimate usecase, please file an issue at "
+    "https://github.com/bluedynamics/plone-pgcatalog/issues with the "
+    "caller and the expected result shape."
+)
+
 
 class _PGIndexMapping:
     """Dict-like object backing ``PGIndex._index``.
@@ -167,6 +180,12 @@ class _PGIndexMapping:
             cur.execute(sql, {"key": self._idx_key})
             row = cur.fetchone()
         return int(row["n"]) if row and row["n"] is not None else 0
+
+    def items(self):
+        raise NotImplementedError(_ITEMS_VALUES_NOT_IMPLEMENTED.format(method="items"))
+
+    def values(self):
+        raise NotImplementedError(_ITEMS_VALUES_NOT_IMPLEMENTED.format(method="values"))
 
 
 class PGIndex:
