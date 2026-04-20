@@ -297,6 +297,86 @@ class TestPGIndexKeyword:
         assert set(idx.uniqueValues()) == {"Document", "Folder"}
 
 
+class TestPGIndexMappingKeyword:
+    """``_PGIndexMapping`` must expose individual keywords to callers
+    that iterate it directly — ``plone.app.vocabularies.Keywords``
+    iterates ``index._index`` to build the tag-autocomplete vocabulary
+    (edit-form ``Schlagwort`` widget).  Before the fix, the mapping
+    was not iterable and ``keys()`` returned serialized JSON arrays;
+    the widget produced no suggestions.  See follow-up to #143.
+    """
+
+    def _make_mapping(self, idx_key, get_conn, index_type=None):
+        from plone.pgcatalog.pgindex import _PGIndexMapping
+
+        return _PGIndexMapping(idx_key, get_conn, index_type=index_type)
+
+    def test_mapping_is_iterable_for_scalar_index(self, pg_conn_with_catalog):
+        """Pre-existing callers iterating a scalar ``_index`` must keep
+        seeing scalar values.
+        """
+        _catalog_objects(pg_conn_with_catalog)
+        mapping = self._make_mapping("portal_type", lambda: pg_conn_with_catalog)
+        assert set(iter(mapping)) == {"Document", "Folder"}
+
+    def test_mapping_iterates_individual_keywords(self, pg_conn_with_catalog):
+        from plone.pgcatalog.columns import IndexType
+
+        _catalog_keyword_objects(pg_conn_with_catalog)
+        mapping = self._make_mapping(
+            "Subject",
+            lambda: pg_conn_with_catalog,
+            index_type=IndexType.KEYWORD,
+        )
+        values = set(iter(mapping))
+        assert values == {"Werkvortrag", "Tirol", "Aktuelles", "AUSSCHREIBUNG"}
+        for v in values:
+            assert not v.startswith("[")
+
+    def test_mapping_keys_returns_individual_keywords(self, pg_conn_with_catalog):
+        from plone.pgcatalog.columns import IndexType
+
+        _catalog_keyword_objects(pg_conn_with_catalog)
+        mapping = self._make_mapping(
+            "Subject",
+            lambda: pg_conn_with_catalog,
+            index_type=IndexType.KEYWORD,
+        )
+        assert set(mapping.keys()) == {
+            "Werkvortrag",
+            "Tirol",
+            "Aktuelles",
+            "AUSSCHREIBUNG",
+        }
+
+    def test_vocabulary_autocomplete_picks_substring(self, pg_conn_with_catalog):
+        """End-to-end-ish: plone.app.vocabularies.Keywords.all_keywords
+        iterates ``index._index`` and filters by substring.  Build a
+        ``PGIndex`` wired to the PG connection and reproduce the
+        ``safe_simplevocabulary_from_values(index._index, query=...)``
+        call pattern.
+        """
+        from plone.pgcatalog.columns import IndexType
+        from plone.pgcatalog.pgindex import PGIndex
+
+        _catalog_keyword_objects(pg_conn_with_catalog)
+        wrapped = mock.Mock()
+        wrapped.id = "Subject"
+        pg_index = PGIndex(
+            wrapped,
+            "Subject",
+            lambda: pg_conn_with_catalog,
+            index_type=IndexType.KEYWORD,
+        )
+        # Substring "AT" should not match any of our test keywords;
+        # "Tir" should match "Tirol".
+        matches_tir = [i for i in pg_index._index if "Tir" in i]
+        assert matches_tir == ["Tirol"]
+
+        matches_ak = [i for i in pg_index._index if "Ak" in i]
+        assert matches_ak == ["Aktuelles"]
+
+
 # ---------------------------------------------------------------------------
 # PlonePGCatalogTool.getpath / .getrid / .Indexes integration tests
 # ---------------------------------------------------------------------------
