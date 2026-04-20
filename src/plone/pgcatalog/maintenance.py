@@ -137,10 +137,11 @@ class _CatalogIndexesView:
     unchanged (they write raw ZCatalog index objects, as the upstream
     catalog.py / setuphandlers.py code expects).
 
-    Finds the catalog via acquisition from the _CatalogCompat instance
-    that built the view — no ``api.portal.get_tool`` needed.  When no
-    catalog is reachable (e.g. during tests or bootstrap), falls back
-    to returning the raw index.
+    Finds the catalog via ``_resolve_catalog(self._compat)`` which
+    tries ``__parent__`` → acquisition chain → ``getSite()``.  If
+    none of those three paths yield the catalog tool, a
+    ``RuntimeError`` propagates out of ``__getitem__`` — the old
+    silent raw-index fallback is gone (see #146).
     """
 
     __slots__ = ("_compat", "_raw")
@@ -152,12 +153,17 @@ class _CatalogIndexesView:
     # read-through access → wrapped
     def __getitem__(self, key):
         raw_index = self._raw[key]  # raises KeyError
-        catalog = aq_parent(aq_inner(self._compat))
-        if catalog is None:
-            return raw_index
+        catalog = _resolve_catalog(self._compat)
         return _maybe_wrap_index(catalog, key, raw_index)
 
     def get(self, key, default=None):
+        """Dict-style get with *default* on missing key.
+
+        Catches only ``KeyError`` (missing index name).  A
+        ``RuntimeError`` from an unreachable catalog is a configuration
+        bug and must propagate — suppressing it would recreate the
+        silent-empty-results failure mode #146 set out to eliminate.
+        """
         try:
             return self[key]
         except KeyError:

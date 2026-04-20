@@ -15,17 +15,29 @@ def _fresh_compat():
     return _CatalogCompat()
 
 
-# ── Wrapper contract when no catalog context is reachable ─────────────────
+# ── View with no reachable catalog: must raise, not return raw ───────────
 
 
 class TestViewWithoutCatalog:
-    def test_view_returns_raw_on_getitem_when_no_catalog(self):
-        """Without an acquisition parent, accessing a key returns the raw index."""
+    """Pre-#146 behavior: getitem returned the raw ZCatalog index when
+    aq_parent returned None.  That masked silent "empty results" bugs.
+    New contract: the view raises RuntimeError when no catalog is
+    reachable.  Callers that intentionally work without a catalog now
+    need to set __parent__ explicitly.
+    """
+
+    def test_getitem_raises_when_no_catalog_reachable(self):
+        import pytest
+
         compat = _fresh_compat()
         raw = mock.Mock(id="portal_type", meta_type="FieldIndex")
         compat._raw_indexes["portal_type"] = raw
-        # No acquisition parent — should fall back to raw
-        assert compat.indexes["portal_type"] is raw
+
+        with (
+            mock.patch("plone.pgcatalog.maintenance.getSite", return_value=None),
+            pytest.raises(RuntimeError, match="cannot find portal_catalog"),
+        ):
+            _ = compat.indexes["portal_type"]
 
     def test_view_keys_are_unwrapped_strings(self):
         compat = _fresh_compat()
