@@ -14,6 +14,7 @@ from plone.pgcatalog.backends import get_backend
 from plone.pgcatalog.indexing import reindex_object as _sql_reindex
 from plone.pgcatalog.pgindex import _maybe_wrap_index
 from psycopg import sql as pgsql
+from zope.component.hooks import getSite
 
 import logging
 
@@ -89,6 +90,42 @@ def clear_catalog_data(conn):
 # ---------------------------------------------------------------------------
 # _CatalogCompat: minimal shim for ZCatalogIndexes and addons
 # ---------------------------------------------------------------------------
+
+
+def _resolve_catalog(compat):
+    """Find the PlonePGCatalogTool that owns this _CatalogCompat.
+
+    Tries three resolution paths in order:
+
+    1. ``__parent__`` set on the bare instance (by the v1->v2 migration
+       step or by the ``indexes`` property's self-heal).
+    2. Acquisition chain — ``aq_parent(aq_inner(compat))`` — when the
+       compat is reached via an Acquisition wrapper and some parent in
+       the chain is the catalog tool.
+    3. ``zope.component.hooks.getSite().portal_catalog`` — works during
+       request handling and in any code path that sets up the local
+       site hook.
+
+    Raises ``RuntimeError`` if all three fail.  **Never returns
+    ``None``** — a silent ``None`` triggered the raw-index fallback
+    bug that masked #143 / #146 for weeks.
+    """
+    parent = compat.__dict__.get("__parent__")
+    if parent is not None:
+        return parent
+    via_aq = aq_parent(aq_inner(compat))
+    if via_aq is not None:
+        return via_aq
+    site = getSite()
+    if site is not None:
+        tool = getattr(site, "portal_catalog", None)
+        if tool is not None:
+            return tool
+    raise RuntimeError(
+        "plone.pgcatalog._CatalogCompat: cannot find portal_catalog "
+        "(no __parent__, no acquisition context, no getSite). "
+        "_CatalogCompat is not usable outside a Plone site."
+    )
 
 
 class _CatalogIndexesView:

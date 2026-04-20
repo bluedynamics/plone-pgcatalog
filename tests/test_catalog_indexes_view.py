@@ -320,3 +320,56 @@ class TestGetIndexMethod:
         result = tool._catalog.getIndex("portal_type")
         assert isinstance(result, PGIndex)
         assert result._wrapped is raw
+
+
+# ── _resolve_catalog: three-step lookup, no silent None ──────────────────
+
+
+class TestResolveCatalog:
+    def test_returns_explicit_parent_first(self):
+        from plone.pgcatalog.maintenance import _CatalogCompat
+        from plone.pgcatalog.maintenance import _resolve_catalog
+
+        compat = _CatalogCompat()
+        tool = mock.Mock(name="tool-via-parent")
+        compat.__dict__["__parent__"] = tool
+
+        assert _resolve_catalog(compat) is tool
+
+    def test_falls_through_to_acquisition_parent(self):
+        from Acquisition import Implicit
+        from plone.pgcatalog.maintenance import _CatalogCompat
+        from plone.pgcatalog.maintenance import _resolve_catalog
+
+        class _ParentHolder(Implicit):
+            pass
+
+        parent = _ParentHolder()
+        compat = _CatalogCompat()
+        wrapped = compat.__of__(parent)  # Acquisition wrapper
+
+        assert _resolve_catalog(wrapped) is parent
+
+    def test_falls_through_to_get_site_portal_catalog(self):
+        from plone.pgcatalog.maintenance import _CatalogCompat
+        from plone.pgcatalog.maintenance import _resolve_catalog
+
+        compat = _CatalogCompat()
+        tool = mock.Mock(name="tool-via-get-site")
+        site = mock.Mock(portal_catalog=tool)
+
+        with mock.patch("plone.pgcatalog.maintenance.getSite", return_value=site):
+            assert _resolve_catalog(compat) is tool
+
+    def test_raises_runtimeerror_when_all_three_fail(self):
+        from plone.pgcatalog.maintenance import _CatalogCompat
+        from plone.pgcatalog.maintenance import _resolve_catalog
+
+        import pytest
+
+        compat = _CatalogCompat()
+        with (
+            mock.patch("plone.pgcatalog.maintenance.getSite", return_value=None),
+            pytest.raises(RuntimeError, match="cannot find portal_catalog"),
+        ):
+            _resolve_catalog(compat)
