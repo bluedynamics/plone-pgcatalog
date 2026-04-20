@@ -21,6 +21,7 @@ matching ``getpath()``/``getrid()`` on the catalog.
 
 from Acquisition import aq_inner
 from Acquisition import aq_parent
+from BTrees.IIBTree import IITreeSet
 from plone.pgcatalog.columns import get_registry
 from plone.pgcatalog.columns import IndexType
 from plone.pgcatalog.interfaces import IPGCatalogTool
@@ -297,6 +298,56 @@ class PGIndex:
                 cur.execute(grouped_sql, params)
                 for row in cur.fetchall():
                     yield (row["val"], row["cnt"])
+
+    def _apply_index(self, request, resultset=None):
+        """ZCatalog-compatible low-level query entry point.
+
+        Returns ``(IITreeSet(zoids), (index_name,))``.  Matches
+        ZCatalog semantics:
+
+        * No implicit security filtering.  Callers that need secured
+          results must use ``catalog(**query)``.
+        * Empty set if this index isn't in ``request``.
+        * ``resultset`` is accepted for signature compatibility but
+          currently ignored (see #146 non-goals — index-chaining can
+          land in a follow-up issue if a caller needs SQL-side
+          intersection).
+
+        Implementation reuses ``plone.pgcatalog.query._QueryBuilder``
+        so every registered IndexType and every
+        ``IPGIndexTranslator`` utility works for free — the dispatch
+        table stays in one place.
+        """
+        from plone.pgcatalog.query import _QueryBuilder
+
+        index_id = getattr(self._wrapped, "id", self._idx_key)
+        if index_id not in request:
+            return IITreeSet(), (index_id,)
+
+        warnings.warn(
+            f"PGIndex._apply_index({index_id!r}) called: this is a "
+            f"ZCatalog-compatibility shim; prefer catalog(**query) for "
+            f"the full pgcatalog query pipeline.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+
+        try:
+            conn = self._pg_index._get_conn()
+        except Exception:
+            return IITreeSet(), (index_id,)
+
+        builder = _QueryBuilder()
+        builder._query = request  # for cross-index Language lookup
+        builder.clauses.append("idx IS NOT NULL")
+        builder._process_index(index_id, request[index_id])
+        result = builder.result()
+        sql = f"SELECT zoid FROM object_state WHERE {result['where']}"
+
+        with conn.cursor() as cur:
+            cur.execute(sql, result["params"])
+            zoids = IITreeSet(row["zoid"] for row in cur.fetchall())
+        return zoids, (index_id,)
 
     def __getattr__(self, name):
         return getattr(self._wrapped, name)

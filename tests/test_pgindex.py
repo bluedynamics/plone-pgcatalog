@@ -766,3 +766,47 @@ class TestPGIndexIndexDeprecation:
         idx = PGIndex(wrapped, "portal_type", no_conn)
         with pytest.warns(DeprecationWarning, match="PGIndex._index accessed"):
             _ = idx._index
+
+
+# ---------------------------------------------------------------------------
+# PGIndex._apply_index (issue #146)
+# ---------------------------------------------------------------------------
+
+
+def _apply_pg_index(idx_key, index_type, pg_conn, request):
+    """Test helper: build a PGIndex and call _apply_index."""
+    from plone.pgcatalog.pgindex import PGIndex
+
+    wrapped = mock.Mock()
+    wrapped.id = idx_key
+    pg_index = PGIndex(wrapped, idx_key, lambda: pg_conn, index_type=index_type)
+    return pg_index._apply_index(request)
+
+
+class TestPGIndexApplyIndex:
+    def test_returns_empty_set_when_index_not_in_request(self, pg_conn_with_catalog):
+        from BTrees.IIBTree import IITreeSet
+        from plone.pgcatalog.columns import IndexType
+
+        result, info = _apply_pg_index(
+            "portal_type",
+            IndexType.FIELD,
+            pg_conn_with_catalog,
+            {"other_index": "whatever"},
+        )
+        assert isinstance(result, IITreeSet)
+        assert list(result) == []
+        assert info == ("portal_type",)
+
+    def test_field_index_single_value(self, pg_conn_with_catalog):
+        from plone.pgcatalog.columns import IndexType
+
+        _catalog_objects(pg_conn_with_catalog)
+        result, info = _apply_pg_index(
+            "portal_type",
+            IndexType.FIELD,
+            pg_conn_with_catalog,
+            {"portal_type": "Document"},
+        )
+        assert set(result) == {100, 101}
+        assert info == ("portal_type",)
