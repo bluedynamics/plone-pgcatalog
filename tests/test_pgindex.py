@@ -685,3 +685,39 @@ class TestPGIndexMappingNewMethods:
         mapping = _PGIndexMapping("UID", lambda: pg_conn_with_catalog)
         with pytest.raises(KeyError, match="nonexistent-uid"):
             _ = mapping["nonexistent-uid"]
+
+    def test_len_scalar_index(self, pg_conn_with_catalog):
+        _catalog_objects(pg_conn_with_catalog)  # 2 Documents, 1 Folder
+        mapping = _PGIndexMapping("portal_type", lambda: pg_conn_with_catalog)
+        assert len(mapping) == 2  # distinct values
+
+    def test_len_keyword_index(self, pg_conn_with_catalog):
+        from plone.pgcatalog.columns import IndexType
+
+        _catalog_keyword_objects(pg_conn_with_catalog)
+        mapping = _PGIndexMapping(
+            "Subject",
+            lambda: pg_conn_with_catalog,
+            index_type=IndexType.KEYWORD,
+        )
+        # distinct keywords across the three fixture docs
+        assert len(mapping) == 4
+
+    def test_len_keyword_with_legacy_scalar_row(self, pg_conn_with_catalog):
+        from plone.pgcatalog.columns import IndexType
+
+        _catalog_keyword_objects(pg_conn_with_catalog)
+        insert_object(pg_conn_with_catalog, 299)
+        catalog_object(
+            pg_conn_with_catalog,
+            zoid=299,
+            path="/plone/legacy-scalar",
+            idx={"portal_type": "Document", "Subject": "Legacy"},
+        )
+        pg_conn_with_catalog.commit()
+        mapping = _PGIndexMapping(
+            "Subject",
+            lambda: pg_conn_with_catalog,
+            index_type=IndexType.KEYWORD,
+        )
+        assert len(mapping) == 5  # 4 array keywords + "Legacy" scalar

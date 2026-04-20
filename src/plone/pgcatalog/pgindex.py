@@ -132,6 +132,42 @@ class _PGIndexMapping:
         """
         return iter(self.keys())
 
+    def __len__(self):
+        """Count distinct index values.
+
+        For scalar indexes: ``SELECT COUNT(DISTINCT idx->>key)``.
+        For KEYWORD: same ``UNION ALL`` pattern as ``keys()``, wrapped
+        in ``COUNT(DISTINCT val)``.
+        """
+        try:
+            conn = self._get_conn()
+        except Exception:
+            return 0
+        if self._index_type == IndexType.KEYWORD:
+            sql = (
+                "SELECT COUNT(DISTINCT val) AS n FROM ("
+                "  SELECT jsonb_array_elements_text(idx->%(key)s) AS val "
+                "    FROM object_state "
+                "    WHERE idx ? %(key)s "
+                "      AND jsonb_typeof(idx->%(key)s) = 'array' "
+                "  UNION ALL "
+                "  SELECT idx->>%(key)s AS val "
+                "    FROM object_state "
+                "    WHERE idx ? %(key)s "
+                "      AND jsonb_typeof(idx->%(key)s) NOT IN ('array', 'null') "
+                ") u WHERE val IS NOT NULL"
+            )
+        else:
+            sql = (
+                "SELECT COUNT(DISTINCT idx->>%(key)s) AS n "
+                "FROM object_state "
+                "WHERE idx ? %(key)s AND idx->>%(key)s IS NOT NULL"
+            )
+        with conn.cursor() as cur:
+            cur.execute(sql, {"key": self._idx_key})
+            row = cur.fetchone()
+        return int(row["n"]) if row and row["n"] is not None else 0
+
 
 class PGIndex:
     """Proxy wrapping a ZCatalog index with PG-backed data access.
