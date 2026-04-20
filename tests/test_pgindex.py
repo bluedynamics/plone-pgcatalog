@@ -167,6 +167,137 @@ class TestPGIndex:
 
 
 # ---------------------------------------------------------------------------
+# KeywordIndex-specific uniqueValues behavior (#143)
+# ---------------------------------------------------------------------------
+
+
+def _catalog_keyword_objects(conn):
+    """Insert three docs with an array-valued ``Subject`` (KeywordIndex)."""
+    objects = {
+        200: {
+            "path": "/plone/tag-doc-1",
+            "idx": {
+                "portal_type": "Document",
+                "Subject": ["Werkvortrag", "Tirol", "Aktuelles"],
+            },
+        },
+        201: {
+            "path": "/plone/tag-doc-2",
+            "idx": {
+                "portal_type": "Document",
+                "Subject": ["Tirol", "AUSSCHREIBUNG"],
+            },
+        },
+        202: {
+            "path": "/plone/tag-doc-3",
+            "idx": {
+                "portal_type": "Folder",
+                "Subject": ["Aktuelles"],
+            },
+        },
+    }
+    for zoid, data in objects.items():
+        insert_object(conn, zoid)
+        catalog_object(conn, zoid=zoid, path=data["path"], idx=data["idx"])
+    conn.commit()
+    return objects
+
+
+class TestPGIndexKeyword:
+    """Regression tests for #143 — KeywordIndex must expose individual
+    keywords, not serialized JSON arrays, in ``uniqueValues()``.
+    """
+
+    def _make_keyword_pg_index(self, idx_key, get_conn):
+        from plone.pgcatalog.columns import IndexType
+        from plone.pgcatalog.pgindex import PGIndex
+
+        wrapped = mock.Mock()
+        wrapped.id = idx_key
+        return PGIndex(wrapped, idx_key, get_conn, index_type=IndexType.KEYWORD)
+
+    def test_keyword_unique_values_returns_individual_tags(self, pg_conn_with_catalog):
+        _catalog_keyword_objects(pg_conn_with_catalog)
+        idx = self._make_keyword_pg_index("Subject", lambda: pg_conn_with_catalog)
+
+        values = set(idx.uniqueValues())
+
+        assert values == {"Werkvortrag", "Tirol", "Aktuelles", "AUSSCHREIBUNG"}
+        for v in values:
+            assert not v.startswith("[")
+
+    def test_keyword_unique_values_with_lengths_counts_elements(
+        self, pg_conn_with_catalog
+    ):
+        _catalog_keyword_objects(pg_conn_with_catalog)
+        idx = self._make_keyword_pg_index("Subject", lambda: pg_conn_with_catalog)
+
+        result = dict(idx.uniqueValues(withLengths=True))
+
+        assert result == {
+            "Werkvortrag": 1,
+            "Tirol": 2,
+            "Aktuelles": 2,
+            "AUSSCHREIBUNG": 1,
+        }
+
+    def test_keyword_unique_values_survives_mixed_scalar_row(
+        self, pg_conn_with_catalog
+    ):
+        """Defensive branch: if some row's idx->'Subject' is a scalar
+        (corrupted legacy state) the query must not crash —
+        ``jsonb_array_elements_text`` would otherwise raise
+        ``cannot extract elements from a scalar``.  Treat the scalar as
+        a single-element "pseudo-keyword" to keep the query going.
+        """
+        _catalog_keyword_objects(pg_conn_with_catalog)
+        insert_object(pg_conn_with_catalog, 203)
+        catalog_object(
+            pg_conn_with_catalog,
+            zoid=203,
+            path="/plone/legacy-scalar",
+            idx={"portal_type": "Document", "Subject": "Legacy"},
+        )
+        pg_conn_with_catalog.commit()
+
+        idx = self._make_keyword_pg_index("Subject", lambda: pg_conn_with_catalog)
+
+        values = set(idx.uniqueValues())
+
+        assert "Legacy" in values
+        assert "Tirol" in values
+
+    def test_scalar_field_index_still_returns_scalars(self, pg_conn_with_catalog):
+        """Regression guard: FieldIndex-backed uniqueValues must keep
+        returning the scalar values (not wrapped in arrays).
+        """
+        _catalog_keyword_objects(pg_conn_with_catalog)
+        from plone.pgcatalog.columns import IndexType
+        from plone.pgcatalog.pgindex import PGIndex
+
+        wrapped = mock.Mock()
+        wrapped.id = "portal_type"
+        idx = PGIndex(
+            wrapped,
+            "portal_type",
+            lambda: pg_conn_with_catalog,
+            index_type=IndexType.FIELD,
+        )
+        assert set(idx.uniqueValues()) == {"Document", "Folder"}
+
+    def test_default_index_type_is_scalar(self, pg_conn_with_catalog):
+        """PGIndex without an explicit ``index_type`` keeps the
+        pre-#143 scalar SQL path.  Preserves behavior for any caller
+        that builds PGIndex directly without specifying the type.
+        """
+        _catalog_objects(pg_conn_with_catalog)
+        wrapped = mock.Mock()
+        wrapped.id = "portal_type"
+        idx = PGIndex(wrapped, "portal_type", lambda: pg_conn_with_catalog)
+        assert set(idx.uniqueValues()) == {"Document", "Folder"}
+
+
+# ---------------------------------------------------------------------------
 # PlonePGCatalogTool.getpath / .getrid / .Indexes integration tests
 # ---------------------------------------------------------------------------
 
