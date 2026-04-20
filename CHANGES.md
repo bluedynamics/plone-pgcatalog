@@ -1,5 +1,30 @@
 # Changelog
 
+## 1.0.0b59
+
+### Fixed
+
+- ``PGIndex.uniqueValues()`` now branches on the wrapped index type.
+  For ``IndexType.KEYWORD`` the JSONB value is a list of tags, so the
+  SQL uses ``jsonb_array_elements_text`` to expand it into individual
+  entries.  Previously all index types went through ``idx->>key``,
+  which coerces a JSONB array to its JSON text representation —
+  producing entries like ``'["Werkvortrag", "Tirol"]'`` instead of
+  ``'Werkvortrag'`` / ``'Tirol'``.  Callers (the querystring
+  composer vocabulary, ``plone.app.vocabularies.Keywords``,
+  ``collective.collectionfilter`` tag clouds, etc.) now see the
+  distinct set of elements as expected.
+
+  A defensive ``UNION ALL`` branch treats a scalar row under the
+  same keyword key (corrupt/legacy data) as a single-value keyword
+  so the query does not raise ``cannot extract elements from a
+  scalar``.  ``_maybe_wrap_index`` passes the registered
+  ``IndexType`` through to ``PGIndex`` so callers that build the
+  wrapper directly keep getting the (correct) scalar path by
+  default.
+
+  Closes #143.
+
 ## 1.0.0b58
 
 ### Fixed

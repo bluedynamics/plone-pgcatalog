@@ -22,6 +22,7 @@ matching ``getpath()``/``getrid()`` on the catalog.
 from Acquisition import aq_inner
 from Acquisition import aq_parent
 from plone.pgcatalog.columns import get_registry
+from plone.pgcatalog.columns import IndexType
 from plone.pgcatalog.interfaces import IPGCatalogTool
 from plone.pgcatalog.query import _bool_to_lower_str
 from Products.ZCatalog.ZCatalogIndexes import ZCatalogIndexes
@@ -85,9 +86,10 @@ class PGIndex:
     with PostgreSQL queries on the ``idx`` JSONB column.
     """
 
-    def __init__(self, wrapped, idx_key, get_conn):
+    def __init__(self, wrapped, idx_key, get_conn, index_type=None):
         self._wrapped = wrapped
         self._idx_key = idx_key
+        self._index_type = index_type
         self._pg_index = _PGIndexMapping(idx_key, get_conn)
 
     @property
@@ -95,6 +97,19 @@ class PGIndex:
         return self._pg_index
 
     def uniqueValues(self, name=None, withLengths=False):
+        """Return the distinct values of this index.
+
+        For ``IndexType.KEYWORD`` the JSONB value is a *list* of tags,
+        so the implementation expands the array with
+        ``jsonb_array_elements_text`` — otherwise ``idx->>key`` coerces
+        the array to its JSON text representation and callers (the
+        querybuilder vocabulary, tag-cloud widgets, ...) see entries
+        like ``'["a","b"]'`` instead of ``'a'`` and ``'b'``.  See #143.
+
+        A defensive ``CASE jsonb_typeof = 'array'`` branch keeps the
+        query alive if a single row holds a scalar under the same
+        keyword key (legacy/corrupted data).
+        """
         index_id = getattr(self._wrapped, "id", self._idx_key)
         if name is None:
             name = index_id
@@ -107,24 +122,50 @@ class PGIndex:
             return
 
         key = self._idx_key
+        params = {"key": key}
+
+        if self._index_type == IndexType.KEYWORD:
+            # ``jsonb_array_elements_text`` is a set-returning function
+            # and can't appear inside a ``CASE`` expression (Postgres
+            # raises 0A000), so the defensive array/scalar split is
+            # expressed as a ``UNION ALL`` subquery.  Array rows expand
+            # one row per element; a legacy scalar row yields itself.
+            inner = (
+                "SELECT jsonb_array_elements_text(idx->%(key)s) AS val "
+                "  FROM object_state "
+                "  WHERE idx ? %(key)s "
+                "    AND jsonb_typeof(idx->%(key)s) = 'array' "
+                "UNION ALL "
+                "SELECT idx->>%(key)s AS val "
+                "  FROM object_state "
+                "  WHERE idx ? %(key)s "
+                "    AND jsonb_typeof(idx->%(key)s) NOT IN ('array', 'null')"
+            )
+            distinct_sql = f"SELECT DISTINCT val FROM ({inner}) u WHERE val IS NOT NULL"
+            grouped_sql = (
+                f"SELECT val, COUNT(*) AS cnt FROM ({inner}) u "
+                "WHERE val IS NOT NULL GROUP BY val"
+            )
+        else:
+            distinct_sql = (
+                "SELECT DISTINCT idx->>%(key)s AS val "
+                "FROM object_state "
+                "WHERE idx ? %(key)s AND idx->>%(key)s IS NOT NULL"
+            )
+            grouped_sql = (
+                "SELECT idx->>%(key)s AS val, COUNT(*) AS cnt "
+                "FROM object_state "
+                "WHERE idx ? %(key)s AND idx->>%(key)s IS NOT NULL "
+                "GROUP BY 1"
+            )
+
         with conn.cursor() as cur:
             if not withLengths:
-                cur.execute(
-                    "SELECT DISTINCT idx->>%(key)s AS val "
-                    "FROM object_state "
-                    "WHERE idx ? %(key)s AND idx->>%(key)s IS NOT NULL",
-                    {"key": key},
-                )
+                cur.execute(distinct_sql, params)
                 for row in cur.fetchall():
                     yield row["val"]
             else:
-                cur.execute(
-                    "SELECT idx->>%(key)s AS val, COUNT(*) AS cnt "
-                    "FROM object_state "
-                    "WHERE idx ? %(key)s AND idx->>%(key)s IS NOT NULL "
-                    "GROUP BY 1",
-                    {"key": key},
-                )
+                cur.execute(grouped_sql, params)
                 for row in cur.fetchall():
                     yield (row["val"], row["cnt"])
 
@@ -154,14 +195,21 @@ def _maybe_wrap_index(catalog, name, raw_index):
 
     registry = get_registry()
     entry = registry.get(name)
+    index_type = None
     if entry is not None:
+        index_type = entry[0]
         idx_key = entry[1]  # (IndexType, idx_key, source_attrs)
         if idx_key is None:
             return raw_index  # Special index — no wrapping needed
     else:
         idx_key = name  # Fallback: use index name as JSONB key
 
-    return PGIndex(raw_index, idx_key, catalog._get_pg_read_connection)
+    return PGIndex(
+        raw_index,
+        idx_key,
+        catalog._get_pg_read_connection,
+        index_type=index_type,
+    )
 
 
 class PGCatalogIndexes(ZCatalogIndexes):
