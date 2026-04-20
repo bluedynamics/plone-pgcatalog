@@ -28,6 +28,7 @@ from plone.pgcatalog.query import _bool_to_lower_str
 from Products.ZCatalog.ZCatalogIndexes import ZCatalogIndexes
 
 import logging
+import warnings
 
 
 log = logging.getLogger(__name__)
@@ -204,6 +205,24 @@ class PGIndex:
 
     @property
     def _index(self):
+        """PG-backed mapping that emulates ZCatalog's ``Index._index``
+        OOBTree.
+
+        Emitting a ``DeprecationWarning`` signals callers that they are
+        on an emulation path; the preferred APIs are
+        ``catalog.Indexes[name].uniqueValues()`` for distinct values
+        and ``catalog(**query)`` for full searches.  Python's default
+        warning filter shows each unique ``(module, lineno, message)``
+        once per process, so this amounts to one log line per caller
+        site per deploy — no log flood.
+        """
+        warnings.warn(
+            f"PGIndex._index accessed for {self._idx_key!r}: ZCatalog "
+            f"BTree-shaped API is emulated against PostgreSQL; prefer "
+            f"catalog.Indexes[name].uniqueValues() or catalog(**query).",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         return self._pg_index
 
     def uniqueValues(self, name=None, withLengths=False):

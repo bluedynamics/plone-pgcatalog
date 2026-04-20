@@ -744,3 +744,25 @@ class TestPGIndexMappingNewMethods:
         with pytest.raises(NotImplementedError) as excinfo:
             mapping.values()
         assert "values()" in str(excinfo.value)
+
+
+# ---------------------------------------------------------------------------
+# PGIndex._index deprecation warning
+# ---------------------------------------------------------------------------
+
+
+class TestPGIndexIndexDeprecation:
+    def test_index_property_emits_deprecation_warning(self):
+        from plone.pgcatalog.pgindex import PGIndex
+
+        import pytest
+
+        wrapped = mock.Mock()
+        wrapped.id = "portal_type"
+
+        def no_conn():
+            raise RuntimeError("no conn")
+
+        idx = PGIndex(wrapped, "portal_type", no_conn)
+        with pytest.warns(DeprecationWarning, match="PGIndex._index accessed"):
+            _ = idx._index
