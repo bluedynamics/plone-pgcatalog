@@ -665,3 +665,23 @@ class TestMaybeWrapIndex:
 
         wrapped = _maybe_wrap_index(catalog, "SearchableText", raw_index)
         assert wrapped is raw_index
+
+
+# ---------------------------------------------------------------------------
+# _PGIndexMapping: __getitem__, __len__, items/values NotImplementedError
+# ---------------------------------------------------------------------------
+
+
+class TestPGIndexMappingNewMethods:
+    def test_getitem_returns_zoid_for_existing_value(self, pg_conn_with_catalog):
+        _catalog_objects(pg_conn_with_catalog)
+        mapping = _PGIndexMapping("UID", lambda: pg_conn_with_catalog)
+        assert mapping["uid-aaa-100"] == 100
+
+    def test_getitem_raises_keyerror_on_miss(self, pg_conn_with_catalog):
+        import pytest
+
+        _catalog_objects(pg_conn_with_catalog)
+        mapping = _PGIndexMapping("UID", lambda: pg_conn_with_catalog)
+        with pytest.raises(KeyError, match="nonexistent-uid"):
+            _ = mapping["nonexistent-uid"]

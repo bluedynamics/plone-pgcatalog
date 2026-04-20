@@ -78,6 +78,20 @@ class _PGIndexMapping:
     def __contains__(self, value):
         return self.get(value) is not None
 
+    def __getitem__(self, value):
+        """Dict-style lookup, raising ``KeyError`` on miss.
+
+        For KeywordIndex, returns the zoid of *some* object whose array
+        contains *value* (matches the ``get()`` semantics — not the
+        full IITreeSet that ZCatalog's OOBTree[value] would return).
+        Callers wanting the IITreeSet should use
+        ``PGIndex._apply_index({name: value})``.
+        """
+        zoid = self.get(value)
+        if zoid is None:
+            raise KeyError(value)
+        return zoid
+
     def keys(self):
         try:
             conn = self._get_conn()
