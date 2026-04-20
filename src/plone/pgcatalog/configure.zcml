@@ -39,6 +39,16 @@
       handler=".pool.release_request_connection"
       />
 
+  <!-- Filter malformed query rows (missing/None/non-string 'i') before
+       plone.app.querystring.parseFormquery turns them into a
+       parsedquery[None]=... entry that breaks catalog(**kw).  See
+       src/plone/pgcatalog/querymodifier.py for the full rationale. -->
+  <utility
+      factory=".querymodifier.SanitizeRowsModifier"
+      provides="plone.app.querystring.interfaces.IQueryModifier"
+      name="plone.pgcatalog.sanitize_rows"
+      />
+
   <!-- GenericSetup profile upgrade steps -->
   <include package=".upgrades" />
 

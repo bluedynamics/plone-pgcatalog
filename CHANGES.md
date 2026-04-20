@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.0.0b58
+
+### Fixed
+
+- Register ``SanitizeRowsModifier`` as an ``IQueryModifier`` utility so
+  that malformed Collection-query rows (missing or non-string ``i``
+  field) are dropped before ``plone.app.querystring.parseFormquery``
+  processes them.  Upstream ``queryparser.py:73`` otherwise sets
+  ``query[None] = ...`` and the subsequent ``catalog(**parsedquery)``
+  in ``querybuilder._makequery`` fails at the Python level with
+  ``TypeError: keywords must be strings`` — which the Collection edit
+  widget cannot recover from.  With the sanitizer in place the
+  preview renders again, so editors can open their Collections and
+  repair corrupted ``Subject`` / tag data through the UI.
+
+  This is a defensive workaround for an upstream gotcha, not a fix for
+  the underlying ``plone.app.querystring`` behavior.  Closes #142.
+
 ## 1.0.0b57
 
 ### Fixed
