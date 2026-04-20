@@ -920,3 +920,81 @@ class TestPGIndexApplyIndex:
             {"UID": "uid-aaa-100"},
         )
         assert set(result) == {100}
+
+    def test_no_implicit_security_filter(self, pg_conn_with_catalog):
+        """_apply_index must NOT auto-inject allowed_roles — matches
+        ZCatalog semantics.  Object restricted to Managers still shows
+        up in the result set.
+        """
+        from plone.pgcatalog.columns import IndexType
+
+        insert_object(pg_conn_with_catalog, 500)
+        catalog_object(
+            pg_conn_with_catalog,
+            zoid=500,
+            path="/plone/private-event",
+            idx={
+                "portal_type": "Event",
+                "allowedRolesAndUsers": ["Manager"],
+            },
+        )
+        pg_conn_with_catalog.commit()
+
+        result, info = _apply_pg_index(
+            "portal_type",
+            IndexType.FIELD,
+            pg_conn_with_catalog,
+            {"portal_type": "Event"},
+        )
+        assert 500 in result
+
+    def test_resultset_parameter_ignored(self, pg_conn_with_catalog):
+        """The resultset kwarg is accepted but not yet wired to SQL."""
+        from BTrees.IIBTree import IITreeSet
+        from plone.pgcatalog.columns import IndexType
+        from plone.pgcatalog.pgindex import PGIndex
+
+        _catalog_objects(pg_conn_with_catalog)
+        wrapped = mock.Mock()
+        wrapped.id = "portal_type"
+        idx = PGIndex(
+            wrapped,
+            "portal_type",
+            lambda: pg_conn_with_catalog,
+            index_type=IndexType.FIELD,
+        )
+        base, _ = idx._apply_index({"portal_type": "Document"})
+        with_rs, _ = idx._apply_index(
+            {"portal_type": "Document"},
+            resultset=IITreeSet([100]),  # intentionally wrong
+        )
+        assert set(base) == set(with_rs)  # resultset ignored
+
+    def test_emits_deprecation_warning(self, pg_conn_with_catalog):
+        from plone.pgcatalog.columns import IndexType
+
+        import pytest
+
+        _catalog_objects(pg_conn_with_catalog)
+        with pytest.warns(DeprecationWarning, match="_apply_index"):
+            _apply_pg_index(
+                "portal_type",
+                IndexType.FIELD,
+                pg_conn_with_catalog,
+                {"portal_type": "Document"},
+            )
+
+    def test_handles_connection_error_returns_empty_set(self):
+        from BTrees.IIBTree import IITreeSet
+        from plone.pgcatalog.columns import IndexType
+        from plone.pgcatalog.pgindex import PGIndex
+
+        def bad_conn():
+            raise RuntimeError("no conn")
+
+        wrapped = mock.Mock()
+        wrapped.id = "portal_type"
+        idx = PGIndex(wrapped, "portal_type", bad_conn, index_type=IndexType.FIELD)
+        result, info = idx._apply_index({"portal_type": "Document"})
+        assert isinstance(result, IITreeSet)
+        assert list(result) == []
