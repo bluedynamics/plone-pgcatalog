@@ -86,6 +86,44 @@ class TestKeywordIndex:
         qr = build_query({"Subject": {"query": ["Python", "Zope"]}})
         assert "?|" in qr["where"]
 
+    def test_non_iterable_non_str_coerced_to_single_value(self):
+        """Regression for #152: a caller accidentally passing a non-string,
+        non-iterable value (e.g. a Zope ``DateTime``, a number, etc.) must
+        not crash the query builder with ``TypeError: object is not
+        iterable``.  Observed on aaf-6 prod where an addon passed a
+        ``DateTime`` through a keyword criterion by mistake.
+        """
+
+        class _NotIterable:
+            """Mimics Zope ``DateTime`` — has ``__str__`` but no
+            ``__iter__`` and isn't a ``str``."""
+
+            def __str__(self):
+                return "2026-04-20"
+
+        qr = build_query({"Subject": _NotIterable()})
+        # Falls into the single-value branch — containment (`@>`).
+        assert "idx @>" in qr["where"]
+        # Value was coerced to its str form.
+        param = _find_json_param(qr["params"])
+        assert param.obj == {"Subject": ["2026-04-20"]}
+
+    def test_zope_datetime_as_keyword_does_not_crash(self):
+        """The specific shape that surfaced in production: a Zope
+        ``DateTime`` passed as a keyword-index query value.  It should
+        be coerced via ``str()`` into a single-element list, not crash.
+        """
+        from datetime import datetime
+        from datetime import UTC
+
+        # Python ``datetime`` is also not iterable — exactly the same
+        # bug class.
+        dt = datetime(2026, 4, 20, tzinfo=UTC)
+        qr = build_query({"Subject": dt})
+        assert "idx @>" in qr["where"]
+        param = _find_json_param(qr["params"])
+        assert len(param.obj["Subject"]) == 1
+
 
 # ---------------------------------------------------------------------------
 # BooleanIndex
