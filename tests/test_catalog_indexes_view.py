@@ -430,3 +430,59 @@ class TestParentSelfHeal:
 
         # Still the explicit parent — self-heal must only set when missing.
         assert compat.__dict__["__parent__"] is explicit
+
+
+# ── getIndex no longer falls back to the raw index silently ─────────────
+
+
+class TestGetIndexWithoutParent:
+    def test_finds_catalog_via_get_site_returns_wrapped(self, pg_conn_with_catalog):
+        from plone.pgcatalog.catalog import PlonePGCatalogTool
+        from plone.pgcatalog.maintenance import _CatalogCompat
+        from plone.pgcatalog.pgindex import PGIndex
+
+        tool = PlonePGCatalogTool.__new__(PlonePGCatalogTool)
+        tool._get_pg_read_connection = lambda: pg_conn_with_catalog
+        compat = _CatalogCompat()
+        tool._catalog = compat
+        raw = mock.Mock(id="portal_type", meta_type="FieldIndex")
+        compat._raw_indexes["portal_type"] = raw
+
+        # no __parent__, no acquisition — only getSite works
+        site = mock.Mock(portal_catalog=tool)
+        with mock.patch("plone.pgcatalog.maintenance.getSite", return_value=site):
+            result = compat.getIndex("portal_type")
+
+        assert isinstance(result, PGIndex)
+        assert result._wrapped is raw
+
+    def test_raises_runtimeerror_when_all_three_fail(self):
+        from plone.pgcatalog.maintenance import _CatalogCompat
+
+        import pytest
+
+        compat = _CatalogCompat()
+        raw = mock.Mock(id="portal_type", meta_type="FieldIndex")
+        compat._raw_indexes["portal_type"] = raw
+
+        with (
+            mock.patch("plone.pgcatalog.maintenance.getSite", return_value=None),
+            pytest.raises(RuntimeError, match="cannot find portal_catalog"),
+        ):
+            compat.getIndex("portal_type")
+
+    def test_explicit_parent_still_works(self, pg_conn_with_catalog):
+        """Regression guard — the happy path remains unchanged."""
+        from plone.pgcatalog.catalog import PlonePGCatalogTool
+        from plone.pgcatalog.maintenance import _CatalogCompat
+        from plone.pgcatalog.pgindex import PGIndex
+
+        tool = PlonePGCatalogTool.__new__(PlonePGCatalogTool)
+        tool._get_pg_read_connection = lambda: pg_conn_with_catalog
+        compat = _CatalogCompat(parent=tool)
+        tool._catalog = compat
+        raw = mock.Mock(id="portal_type", meta_type="FieldIndex")
+        compat._raw_indexes["portal_type"] = raw
+
+        result = compat.getIndex("portal_type")
+        assert isinstance(result, PGIndex)

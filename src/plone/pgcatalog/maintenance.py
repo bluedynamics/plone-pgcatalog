@@ -273,17 +273,19 @@ class _CatalogCompat(Implicit, Persistent):
         """Return a PG-backed index wrapper for *name*.
 
         Mirrors ``self.indexes[name]`` but implemented directly on the
-        method so that when invoked through the Acquisition wrapper
-        (``tool._catalog.getIndex("x")``), ``self`` is the wrapper and
-        ``aq_parent(aq_inner(self))`` can reach the catalog — useful
-        for legacy objects that don't yet carry ``__parent__``.
+        method so legacy callers (``eea.facetednavigation``,
+        ``plone.app.vocabularies.Keywords``) keep working through the
+        Acquisition wrapper.
 
-        Raises ``KeyError`` if *name* is not a known index.
+        Unlike the pre-#146 implementation, this does **not** fall back
+        to the raw ZCatalog index when the catalog tool is
+        unreachable — a raw index has empty BTrees in pgcatalog and
+        silently returns empty result sets, which masked #143/#146 for
+        weeks.  Instead, ``_resolve_catalog`` raises ``RuntimeError``
+        if none of its three lookup strategies finds the catalog.
         """
         raw_index = self._raw_indexes[name]  # raises KeyError if missing
-        catalog = aq_parent(aq_inner(self))
-        if catalog is None:
-            return raw_index
+        catalog = _resolve_catalog(self)
         return _maybe_wrap_index(catalog, name, raw_index)
 
 
