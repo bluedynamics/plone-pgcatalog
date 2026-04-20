@@ -15,17 +15,29 @@ def _fresh_compat():
     return _CatalogCompat()
 
 
-# ── Wrapper contract when no catalog context is reachable ─────────────────
+# ── View with no reachable catalog: must raise, not return raw ───────────
 
 
 class TestViewWithoutCatalog:
-    def test_view_returns_raw_on_getitem_when_no_catalog(self):
-        """Without an acquisition parent, accessing a key returns the raw index."""
+    """Pre-#146 behavior: getitem returned the raw ZCatalog index when
+    aq_parent returned None.  That masked silent "empty results" bugs.
+    New contract: the view raises RuntimeError when no catalog is
+    reachable.  Callers that intentionally work without a catalog now
+    need to set __parent__ explicitly.
+    """
+
+    def test_getitem_raises_when_no_catalog_reachable(self):
+        import pytest
+
         compat = _fresh_compat()
         raw = mock.Mock(id="portal_type", meta_type="FieldIndex")
         compat._raw_indexes["portal_type"] = raw
-        # No acquisition parent — should fall back to raw
-        assert compat.indexes["portal_type"] is raw
+
+        with (
+            mock.patch("plone.pgcatalog.maintenance.getSite", return_value=None),
+            pytest.raises(RuntimeError, match="cannot find portal_catalog"),
+        ):
+            _ = compat.indexes["portal_type"]
 
     def test_view_keys_are_unwrapped_strings(self):
         compat = _fresh_compat()
@@ -320,3 +332,169 @@ class TestGetIndexMethod:
         result = tool._catalog.getIndex("portal_type")
         assert isinstance(result, PGIndex)
         assert result._wrapped is raw
+
+
+# ── _resolve_catalog: three-step lookup, no silent None ──────────────────
+
+
+class TestResolveCatalog:
+    def test_returns_explicit_parent_first(self):
+        from plone.pgcatalog.maintenance import _CatalogCompat
+        from plone.pgcatalog.maintenance import _resolve_catalog
+
+        compat = _CatalogCompat()
+        tool = mock.Mock(name="tool-via-parent")
+        compat.__dict__["__parent__"] = tool
+
+        assert _resolve_catalog(compat) is tool
+
+    def test_falls_through_to_acquisition_parent(self):
+        from Acquisition import Implicit
+        from plone.pgcatalog.maintenance import _CatalogCompat
+        from plone.pgcatalog.maintenance import _resolve_catalog
+
+        class _ParentHolder(Implicit):
+            pass
+
+        parent = _ParentHolder()
+        compat = _CatalogCompat()
+        wrapped = compat.__of__(parent)  # Acquisition wrapper
+
+        assert _resolve_catalog(wrapped) is parent
+
+    def test_falls_through_to_get_site_portal_catalog(self):
+        from plone.pgcatalog.maintenance import _CatalogCompat
+        from plone.pgcatalog.maintenance import _resolve_catalog
+
+        compat = _CatalogCompat()
+        tool = mock.Mock(name="tool-via-get-site")
+        site = mock.Mock(portal_catalog=tool)
+
+        with mock.patch("plone.pgcatalog.maintenance.getSite", return_value=site):
+            assert _resolve_catalog(compat) is tool
+
+    def test_raises_runtimeerror_when_all_three_fail(self):
+        from plone.pgcatalog.maintenance import _CatalogCompat
+        from plone.pgcatalog.maintenance import _resolve_catalog
+
+        import pytest
+
+        compat = _CatalogCompat()
+        with (
+            mock.patch("plone.pgcatalog.maintenance.getSite", return_value=None),
+            pytest.raises(RuntimeError, match="cannot find portal_catalog"),
+        ):
+            _resolve_catalog(compat)
+
+
+# ── Self-heal: __parent__ gets persisted on first indexes access ─────────
+
+
+class TestParentSelfHeal:
+    def test_property_heals_missing_parent_via_get_site(self):
+        from plone.pgcatalog.maintenance import _CatalogCompat
+
+        compat = _CatalogCompat.__new__(_CatalogCompat)
+        compat.__dict__["_raw_indexes"] = PersistentMapping()
+        compat.__dict__["schema"] = PersistentMapping()
+        # no __parent__
+        compat._p_changed = False
+
+        tool = mock.Mock(name="portal_catalog")
+        site = mock.Mock(portal_catalog=tool)
+
+        # Need a fake jar so ``_p_changed = True`` sticks under Persistent.
+        from plone.pgcatalog.upgrades.profile_2 import _NoOpJar
+
+        compat._p_jar = _NoOpJar()
+
+        with mock.patch("plone.pgcatalog.maintenance.getSite", return_value=site):
+            _view = compat.indexes  # trigger property
+
+        assert compat.__dict__.get("__parent__") is tool
+        assert compat._p_changed is True
+
+    def test_property_tolerates_get_site_returning_none(self):
+        from plone.pgcatalog.maintenance import _CatalogCompat
+
+        compat = _CatalogCompat.__new__(_CatalogCompat)
+        compat.__dict__["_raw_indexes"] = PersistentMapping()
+        # no __parent__, no site hook
+
+        with mock.patch("plone.pgcatalog.maintenance.getSite", return_value=None):
+            _view = compat.indexes  # must not raise
+
+        assert "__parent__" not in compat.__dict__
+
+    def test_property_leaves_existing_parent_untouched(self):
+        from plone.pgcatalog.maintenance import _CatalogCompat
+
+        explicit = mock.Mock(name="explicit-parent")
+        other = mock.Mock(name="get-site-tool")
+        site = mock.Mock(portal_catalog=other)
+
+        compat = _CatalogCompat.__new__(_CatalogCompat)
+        compat.__dict__["_raw_indexes"] = PersistentMapping()
+        compat.__dict__["__parent__"] = explicit
+
+        with mock.patch("plone.pgcatalog.maintenance.getSite", return_value=site):
+            _view = compat.indexes
+
+        # Still the explicit parent — self-heal must only set when missing.
+        assert compat.__dict__["__parent__"] is explicit
+
+
+# ── getIndex no longer falls back to the raw index silently ─────────────
+
+
+class TestGetIndexWithoutParent:
+    def test_finds_catalog_via_get_site_returns_wrapped(self, pg_conn_with_catalog):
+        from plone.pgcatalog.catalog import PlonePGCatalogTool
+        from plone.pgcatalog.maintenance import _CatalogCompat
+        from plone.pgcatalog.pgindex import PGIndex
+
+        tool = PlonePGCatalogTool.__new__(PlonePGCatalogTool)
+        tool._get_pg_read_connection = lambda: pg_conn_with_catalog
+        compat = _CatalogCompat()
+        tool._catalog = compat
+        raw = mock.Mock(id="portal_type", meta_type="FieldIndex")
+        compat._raw_indexes["portal_type"] = raw
+
+        # no __parent__, no acquisition — only getSite works
+        site = mock.Mock(portal_catalog=tool)
+        with mock.patch("plone.pgcatalog.maintenance.getSite", return_value=site):
+            result = compat.getIndex("portal_type")
+
+        assert isinstance(result, PGIndex)
+        assert result._wrapped is raw
+
+    def test_raises_runtimeerror_when_all_three_fail(self):
+        from plone.pgcatalog.maintenance import _CatalogCompat
+
+        import pytest
+
+        compat = _CatalogCompat()
+        raw = mock.Mock(id="portal_type", meta_type="FieldIndex")
+        compat._raw_indexes["portal_type"] = raw
+
+        with (
+            mock.patch("plone.pgcatalog.maintenance.getSite", return_value=None),
+            pytest.raises(RuntimeError, match="cannot find portal_catalog"),
+        ):
+            compat.getIndex("portal_type")
+
+    def test_explicit_parent_still_works(self, pg_conn_with_catalog):
+        """Regression guard — the happy path remains unchanged."""
+        from plone.pgcatalog.catalog import PlonePGCatalogTool
+        from plone.pgcatalog.maintenance import _CatalogCompat
+        from plone.pgcatalog.pgindex import PGIndex
+
+        tool = PlonePGCatalogTool.__new__(PlonePGCatalogTool)
+        tool._get_pg_read_connection = lambda: pg_conn_with_catalog
+        compat = _CatalogCompat(parent=tool)
+        tool._catalog = compat
+        raw = mock.Mock(id="portal_type", meta_type="FieldIndex")
+        compat._raw_indexes["portal_type"] = raw
+
+        result = compat.getIndex("portal_type")
+        assert isinstance(result, PGIndex)

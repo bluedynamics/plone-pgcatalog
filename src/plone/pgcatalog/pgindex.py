@@ -21,6 +21,7 @@ matching ``getpath()``/``getrid()`` on the catalog.
 
 from Acquisition import aq_inner
 from Acquisition import aq_parent
+from BTrees.IIBTree import IITreeSet
 from plone.pgcatalog.columns import get_registry
 from plone.pgcatalog.columns import IndexType
 from plone.pgcatalog.interfaces import IPGCatalogTool
@@ -28,11 +29,25 @@ from plone.pgcatalog.query import _bool_to_lower_str
 from Products.ZCatalog.ZCatalogIndexes import ZCatalogIndexes
 
 import logging
+import warnings
 
 
 log = logging.getLogger(__name__)
 
 _marker = []
+
+_ITEMS_VALUES_NOT_IMPLEMENTED = (
+    "PGIndex._index.{method}() is not implemented in plone.pgcatalog: "
+    "the ZCatalog BTree shape [(value, IITreeSet(rids)), ...] materializes "
+    "all (value, objects)-pairs of the index, which would be prohibitively "
+    "expensive against the PG-backed catalog.  Alternatives:\n"
+    "  * catalog.Indexes[name].uniqueValues()                 — distinct values\n"
+    "  * catalog.Indexes[name]._apply_index({{name: value}})  — zoids per value\n"
+    "  * catalog(**query)                                      — full secured search\n"
+    "If you have a legitimate usecase, please file an issue at "
+    "https://github.com/bluedynamics/plone-pgcatalog/issues with the "
+    "caller and the expected result shape."
+)
 
 
 class _PGIndexMapping:
@@ -78,6 +93,20 @@ class _PGIndexMapping:
     def __contains__(self, value):
         return self.get(value) is not None
 
+    def __getitem__(self, value):
+        """Dict-style lookup, raising ``KeyError`` on miss.
+
+        For KeywordIndex, returns the zoid of *some* object whose array
+        contains *value* (matches the ``get()`` semantics — not the
+        full IITreeSet that ZCatalog's OOBTree[value] would return).
+        Callers wanting the IITreeSet should use
+        ``PGIndex._apply_index({name: value})``.
+        """
+        zoid = self.get(value)
+        if zoid is None:
+            raise KeyError(value)
+        return zoid
+
     def keys(self):
         try:
             conn = self._get_conn()
@@ -118,6 +147,48 @@ class _PGIndexMapping:
         """
         return iter(self.keys())
 
+    def __len__(self):
+        """Count distinct index values.
+
+        For scalar indexes: ``SELECT COUNT(DISTINCT idx->>key)``.
+        For KEYWORD: same ``UNION ALL`` pattern as ``keys()``, wrapped
+        in ``COUNT(DISTINCT val)``.
+        """
+        try:
+            conn = self._get_conn()
+        except Exception:
+            return 0
+        if self._index_type == IndexType.KEYWORD:
+            sql = (
+                "SELECT COUNT(DISTINCT val) AS n FROM ("
+                "  SELECT jsonb_array_elements_text(idx->%(key)s) AS val "
+                "    FROM object_state "
+                "    WHERE idx ? %(key)s "
+                "      AND jsonb_typeof(idx->%(key)s) = 'array' "
+                "  UNION ALL "
+                "  SELECT idx->>%(key)s AS val "
+                "    FROM object_state "
+                "    WHERE idx ? %(key)s "
+                "      AND jsonb_typeof(idx->%(key)s) NOT IN ('array', 'null') "
+                ") u WHERE val IS NOT NULL"
+            )
+        else:
+            sql = (
+                "SELECT COUNT(DISTINCT idx->>%(key)s) AS n "
+                "FROM object_state "
+                "WHERE idx ? %(key)s AND idx->>%(key)s IS NOT NULL"
+            )
+        with conn.cursor() as cur:
+            cur.execute(sql, {"key": self._idx_key})
+            row = cur.fetchone()
+        return int(row["n"]) if row and row["n"] is not None else 0
+
+    def items(self):
+        raise NotImplementedError(_ITEMS_VALUES_NOT_IMPLEMENTED.format(method="items"))
+
+    def values(self):
+        raise NotImplementedError(_ITEMS_VALUES_NOT_IMPLEMENTED.format(method="values"))
+
 
 class PGIndex:
     """Proxy wrapping a ZCatalog index with PG-backed data access.
@@ -135,6 +206,24 @@ class PGIndex:
 
     @property
     def _index(self):
+        """PG-backed mapping that emulates ZCatalog's ``Index._index``
+        OOBTree.
+
+        Emitting a ``DeprecationWarning`` signals callers that they are
+        on an emulation path; the preferred APIs are
+        ``catalog.Indexes[name].uniqueValues()`` for distinct values
+        and ``catalog(**query)`` for full searches.  Python's default
+        warning filter shows each unique ``(module, lineno, message)``
+        once per process, so this amounts to one log line per caller
+        site per deploy — no log flood.
+        """
+        warnings.warn(
+            f"PGIndex._index accessed for {self._idx_key!r}: ZCatalog "
+            f"BTree-shaped API is emulated against PostgreSQL; prefer "
+            f"catalog.Indexes[name].uniqueValues() or catalog(**query).",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         return self._pg_index
 
     def uniqueValues(self, name=None, withLengths=False):
@@ -209,6 +298,56 @@ class PGIndex:
                 cur.execute(grouped_sql, params)
                 for row in cur.fetchall():
                     yield (row["val"], row["cnt"])
+
+    def _apply_index(self, request, resultset=None):
+        """ZCatalog-compatible low-level query entry point.
+
+        Returns ``(IITreeSet(zoids), (index_name,))``.  Matches
+        ZCatalog semantics:
+
+        * No implicit security filtering.  Callers that need secured
+          results must use ``catalog(**query)``.
+        * Empty set if this index isn't in ``request``.
+        * ``resultset`` is accepted for signature compatibility but
+          currently ignored (see #146 non-goals — index-chaining can
+          land in a follow-up issue if a caller needs SQL-side
+          intersection).
+
+        Implementation reuses ``plone.pgcatalog.query._QueryBuilder``
+        so every registered IndexType and every
+        ``IPGIndexTranslator`` utility works for free — the dispatch
+        table stays in one place.
+        """
+        from plone.pgcatalog.query import _QueryBuilder
+
+        index_id = getattr(self._wrapped, "id", self._idx_key)
+        if index_id not in request:
+            return IITreeSet(), (index_id,)
+
+        warnings.warn(
+            f"PGIndex._apply_index({index_id!r}) called: this is a "
+            f"ZCatalog-compatibility shim; prefer catalog(**query) for "
+            f"the full pgcatalog query pipeline.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+
+        try:
+            conn = self._pg_index._get_conn()
+        except Exception:
+            return IITreeSet(), (index_id,)
+
+        builder = _QueryBuilder()
+        builder._query = request  # for cross-index Language lookup
+        builder.clauses.append("idx IS NOT NULL")
+        builder._process_index(index_id, request[index_id])
+        result = builder.result()
+        sql = f"SELECT zoid FROM object_state WHERE {result['where']}"
+
+        with conn.cursor() as cur:
+            cur.execute(sql, result["params"])
+            zoids = IITreeSet(row["zoid"] for row in cur.fetchall())
+        return zoids, (index_id,)
 
     def __getattr__(self, name):
         return getattr(self._wrapped, name)

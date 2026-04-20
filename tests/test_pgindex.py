@@ -665,3 +665,336 @@ class TestMaybeWrapIndex:
 
         wrapped = _maybe_wrap_index(catalog, "SearchableText", raw_index)
         assert wrapped is raw_index
+
+
+# ---------------------------------------------------------------------------
+# _PGIndexMapping: __getitem__, __len__, items/values NotImplementedError
+# ---------------------------------------------------------------------------
+
+
+class TestPGIndexMappingNewMethods:
+    def test_getitem_returns_zoid_for_existing_value(self, pg_conn_with_catalog):
+        _catalog_objects(pg_conn_with_catalog)
+        mapping = _PGIndexMapping("UID", lambda: pg_conn_with_catalog)
+        assert mapping["uid-aaa-100"] == 100
+
+    def test_getitem_raises_keyerror_on_miss(self, pg_conn_with_catalog):
+        import pytest
+
+        _catalog_objects(pg_conn_with_catalog)
+        mapping = _PGIndexMapping("UID", lambda: pg_conn_with_catalog)
+        with pytest.raises(KeyError, match="nonexistent-uid"):
+            _ = mapping["nonexistent-uid"]
+
+    def test_len_scalar_index(self, pg_conn_with_catalog):
+        _catalog_objects(pg_conn_with_catalog)  # 2 Documents, 1 Folder
+        mapping = _PGIndexMapping("portal_type", lambda: pg_conn_with_catalog)
+        assert len(mapping) == 2  # distinct values
+
+    def test_len_keyword_index(self, pg_conn_with_catalog):
+        from plone.pgcatalog.columns import IndexType
+
+        _catalog_keyword_objects(pg_conn_with_catalog)
+        mapping = _PGIndexMapping(
+            "Subject",
+            lambda: pg_conn_with_catalog,
+            index_type=IndexType.KEYWORD,
+        )
+        # distinct keywords across the three fixture docs
+        assert len(mapping) == 4
+
+    def test_len_keyword_with_legacy_scalar_row(self, pg_conn_with_catalog):
+        from plone.pgcatalog.columns import IndexType
+
+        _catalog_keyword_objects(pg_conn_with_catalog)
+        insert_object(pg_conn_with_catalog, 299)
+        catalog_object(
+            pg_conn_with_catalog,
+            zoid=299,
+            path="/plone/legacy-scalar",
+            idx={"portal_type": "Document", "Subject": "Legacy"},
+        )
+        pg_conn_with_catalog.commit()
+        mapping = _PGIndexMapping(
+            "Subject",
+            lambda: pg_conn_with_catalog,
+            index_type=IndexType.KEYWORD,
+        )
+        assert len(mapping) == 5  # 4 array keywords + "Legacy" scalar
+
+    def test_items_raises_notimplemented_with_guidance(self, pg_conn_with_catalog):
+        import pytest
+
+        _catalog_objects(pg_conn_with_catalog)
+        mapping = _PGIndexMapping("UID", lambda: pg_conn_with_catalog)
+        with pytest.raises(NotImplementedError) as excinfo:
+            mapping.items()
+        msg = str(excinfo.value)
+        assert "items()" in msg
+        assert "uniqueValues" in msg
+        assert "_apply_index" in msg
+        assert "catalog(**query)" in msg
+        assert "https://github.com/bluedynamics/plone-pgcatalog/issues" in msg
+
+    def test_values_raises_notimplemented_with_guidance(self, pg_conn_with_catalog):
+        import pytest
+
+        _catalog_objects(pg_conn_with_catalog)
+        mapping = _PGIndexMapping("UID", lambda: pg_conn_with_catalog)
+        with pytest.raises(NotImplementedError) as excinfo:
+            mapping.values()
+        assert "values()" in str(excinfo.value)
+
+
+# ---------------------------------------------------------------------------
+# PGIndex._index deprecation warning
+# ---------------------------------------------------------------------------
+
+
+class TestPGIndexIndexDeprecation:
+    def test_index_property_emits_deprecation_warning(self):
+        from plone.pgcatalog.pgindex import PGIndex
+
+        import pytest
+
+        wrapped = mock.Mock()
+        wrapped.id = "portal_type"
+
+        def no_conn():
+            raise RuntimeError("no conn")
+
+        idx = PGIndex(wrapped, "portal_type", no_conn)
+        with pytest.warns(DeprecationWarning, match="PGIndex._index accessed"):
+            _ = idx._index
+
+
+# ---------------------------------------------------------------------------
+# PGIndex._apply_index (issue #146)
+# ---------------------------------------------------------------------------
+
+
+def _apply_pg_index(idx_key, index_type, pg_conn, request):
+    """Test helper: build a PGIndex and call _apply_index."""
+    from plone.pgcatalog.pgindex import PGIndex
+
+    wrapped = mock.Mock()
+    wrapped.id = idx_key
+    pg_index = PGIndex(wrapped, idx_key, lambda: pg_conn, index_type=index_type)
+    return pg_index._apply_index(request)
+
+
+class TestPGIndexApplyIndex:
+    def test_returns_empty_set_when_index_not_in_request(self, pg_conn_with_catalog):
+        from BTrees.IIBTree import IITreeSet
+        from plone.pgcatalog.columns import IndexType
+
+        result, info = _apply_pg_index(
+            "portal_type",
+            IndexType.FIELD,
+            pg_conn_with_catalog,
+            {"other_index": "whatever"},
+        )
+        assert isinstance(result, IITreeSet)
+        assert list(result) == []
+        assert info == ("portal_type",)
+
+    def test_field_index_single_value(self, pg_conn_with_catalog):
+        from plone.pgcatalog.columns import IndexType
+
+        _catalog_objects(pg_conn_with_catalog)
+        result, info = _apply_pg_index(
+            "portal_type",
+            IndexType.FIELD,
+            pg_conn_with_catalog,
+            {"portal_type": "Document"},
+        )
+        assert set(result) == {100, 101}
+        assert info == ("portal_type",)
+
+    def test_keyword_index_single_value(self, pg_conn_with_catalog):
+        from plone.pgcatalog.columns import IndexType
+
+        _catalog_keyword_objects(pg_conn_with_catalog)
+        # Fixture: 200={Werkvortrag, Tirol, Aktuelles}, 201={Tirol,
+        # AUSSCHREIBUNG}, 202={Aktuelles}
+        result, info = _apply_pg_index(
+            "Subject",
+            IndexType.KEYWORD,
+            pg_conn_with_catalog,
+            {"Subject": "Tirol"},
+        )
+        assert set(result) == {200, 201}
+
+    def test_keyword_index_or_operator(self, pg_conn_with_catalog):
+        from plone.pgcatalog.columns import IndexType
+
+        _catalog_keyword_objects(pg_conn_with_catalog)
+        result, info = _apply_pg_index(
+            "Subject",
+            IndexType.KEYWORD,
+            pg_conn_with_catalog,
+            {"Subject": {"query": ["Aktuelles", "AUSSCHREIBUNG"], "operator": "or"}},
+        )
+        assert set(result) == {200, 201, 202}
+
+    def test_path_index_subtree(self, pg_conn_with_catalog):
+        from plone.pgcatalog.columns import IndexType
+
+        _catalog_objects(pg_conn_with_catalog)  # paths /plone/doc1, etc.
+        result, info = _apply_pg_index(
+            "path",
+            IndexType.PATH,
+            pg_conn_with_catalog,
+            {"path": {"query": "/plone", "depth": -1}},
+        )
+        assert 100 in result
+        assert 101 in result
+        assert 102 in result
+
+    def test_date_index_range_query(self, pg_conn_with_catalog):
+        from datetime import datetime
+        from datetime import UTC
+        from plone.pgcatalog.columns import IndexType
+
+        insert_object(pg_conn_with_catalog, 300)
+        catalog_object(
+            pg_conn_with_catalog,
+            zoid=300,
+            path="/plone/event-2025",
+            idx={"portal_type": "Event", "start": "2025-06-15T10:00:00+00:00"},
+        )
+        insert_object(pg_conn_with_catalog, 301)
+        catalog_object(
+            pg_conn_with_catalog,
+            zoid=301,
+            path="/plone/event-2026",
+            idx={"portal_type": "Event", "start": "2026-03-15T10:00:00+00:00"},
+        )
+        pg_conn_with_catalog.commit()
+
+        result, info = _apply_pg_index(
+            "start",
+            IndexType.DATE,
+            pg_conn_with_catalog,
+            {"start": {"query": datetime(2026, 1, 1, tzinfo=UTC), "range": "min"}},
+        )
+        assert 301 in result
+        assert 300 not in result
+
+    def test_boolean_index(self, pg_conn_with_catalog):
+        from plone.pgcatalog.columns import IndexType
+
+        insert_object(pg_conn_with_catalog, 400)
+        catalog_object(
+            pg_conn_with_catalog,
+            zoid=400,
+            path="/plone/default",
+            idx={"portal_type": "Document", "is_default_page": True},
+        )
+        insert_object(pg_conn_with_catalog, 401)
+        catalog_object(
+            pg_conn_with_catalog,
+            zoid=401,
+            path="/plone/non-default",
+            idx={"portal_type": "Document", "is_default_page": False},
+        )
+        pg_conn_with_catalog.commit()
+
+        result, info = _apply_pg_index(
+            "is_default_page",
+            IndexType.BOOLEAN,
+            pg_conn_with_catalog,
+            {"is_default_page": True},
+        )
+        assert 400 in result
+        assert 401 not in result
+
+    def test_uuid_index(self, pg_conn_with_catalog):
+        from plone.pgcatalog.columns import IndexType
+
+        _catalog_objects(pg_conn_with_catalog)
+        result, info = _apply_pg_index(
+            "UID",
+            IndexType.UUID,
+            pg_conn_with_catalog,
+            {"UID": "uid-aaa-100"},
+        )
+        assert set(result) == {100}
+
+    def test_no_implicit_security_filter(self, pg_conn_with_catalog):
+        """_apply_index must NOT auto-inject allowed_roles — matches
+        ZCatalog semantics.  Object restricted to Managers still shows
+        up in the result set.
+        """
+        from plone.pgcatalog.columns import IndexType
+
+        insert_object(pg_conn_with_catalog, 500)
+        catalog_object(
+            pg_conn_with_catalog,
+            zoid=500,
+            path="/plone/private-event",
+            idx={
+                "portal_type": "Event",
+                "allowedRolesAndUsers": ["Manager"],
+            },
+        )
+        pg_conn_with_catalog.commit()
+
+        result, info = _apply_pg_index(
+            "portal_type",
+            IndexType.FIELD,
+            pg_conn_with_catalog,
+            {"portal_type": "Event"},
+        )
+        assert 500 in result
+
+    def test_resultset_parameter_ignored(self, pg_conn_with_catalog):
+        """The resultset kwarg is accepted but not yet wired to SQL."""
+        from BTrees.IIBTree import IITreeSet
+        from plone.pgcatalog.columns import IndexType
+        from plone.pgcatalog.pgindex import PGIndex
+
+        _catalog_objects(pg_conn_with_catalog)
+        wrapped = mock.Mock()
+        wrapped.id = "portal_type"
+        idx = PGIndex(
+            wrapped,
+            "portal_type",
+            lambda: pg_conn_with_catalog,
+            index_type=IndexType.FIELD,
+        )
+        base, _ = idx._apply_index({"portal_type": "Document"})
+        with_rs, _ = idx._apply_index(
+            {"portal_type": "Document"},
+            resultset=IITreeSet([100]),  # intentionally wrong
+        )
+        assert set(base) == set(with_rs)  # resultset ignored
+
+    def test_emits_deprecation_warning(self, pg_conn_with_catalog):
+        from plone.pgcatalog.columns import IndexType
+
+        import pytest
+
+        _catalog_objects(pg_conn_with_catalog)
+        with pytest.warns(DeprecationWarning, match="_apply_index"):
+            _apply_pg_index(
+                "portal_type",
+                IndexType.FIELD,
+                pg_conn_with_catalog,
+                {"portal_type": "Document"},
+            )
+
+    def test_handles_connection_error_returns_empty_set(self):
+        from BTrees.IIBTree import IITreeSet
+        from plone.pgcatalog.columns import IndexType
+        from plone.pgcatalog.pgindex import PGIndex
+
+        def bad_conn():
+            raise RuntimeError("no conn")
+
+        wrapped = mock.Mock()
+        wrapped.id = "portal_type"
+        idx = PGIndex(wrapped, "portal_type", bad_conn, index_type=IndexType.FIELD)
+        result, info = idx._apply_index({"portal_type": "Document"})
+        assert isinstance(result, IITreeSet)
+        assert list(result) == []

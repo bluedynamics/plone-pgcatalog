@@ -14,6 +14,7 @@ from plone.pgcatalog.backends import get_backend
 from plone.pgcatalog.indexing import reindex_object as _sql_reindex
 from plone.pgcatalog.pgindex import _maybe_wrap_index
 from psycopg import sql as pgsql
+from zope.component.hooks import getSite
 
 import logging
 
@@ -91,6 +92,42 @@ def clear_catalog_data(conn):
 # ---------------------------------------------------------------------------
 
 
+def _resolve_catalog(compat):
+    """Find the PlonePGCatalogTool that owns this _CatalogCompat.
+
+    Tries three resolution paths in order:
+
+    1. ``__parent__`` set on the bare instance (by the v1->v2 migration
+       step or by the ``indexes`` property's self-heal).
+    2. Acquisition chain — ``aq_parent(aq_inner(compat))`` — when the
+       compat is reached via an Acquisition wrapper and some parent in
+       the chain is the catalog tool.
+    3. ``zope.component.hooks.getSite().portal_catalog`` — works during
+       request handling and in any code path that sets up the local
+       site hook.
+
+    Raises ``RuntimeError`` if all three fail.  **Never returns
+    ``None``** — a silent ``None`` triggered the raw-index fallback
+    bug that masked #143 / #146 for weeks.
+    """
+    parent = compat.__dict__.get("__parent__")
+    if parent is not None:
+        return parent
+    via_aq = aq_parent(aq_inner(compat))
+    if via_aq is not None:
+        return via_aq
+    site = getSite()
+    if site is not None:
+        tool = getattr(site, "portal_catalog", None)
+        if tool is not None:
+            return tool
+    raise RuntimeError(
+        "plone.pgcatalog._CatalogCompat: cannot find portal_catalog "
+        "(no __parent__, no acquisition context, no getSite). "
+        "_CatalogCompat is not usable outside a Plone site."
+    )
+
+
 class _CatalogIndexesView:
     """Transient dict-like view over ``_CatalogCompat._raw_indexes``
     that wraps each index with ``PGIndex`` on read-through access.
@@ -100,10 +137,11 @@ class _CatalogIndexesView:
     unchanged (they write raw ZCatalog index objects, as the upstream
     catalog.py / setuphandlers.py code expects).
 
-    Finds the catalog via acquisition from the _CatalogCompat instance
-    that built the view — no ``api.portal.get_tool`` needed.  When no
-    catalog is reachable (e.g. during tests or bootstrap), falls back
-    to returning the raw index.
+    Finds the catalog via ``_resolve_catalog(self._compat)`` which
+    tries ``__parent__`` → acquisition chain → ``getSite()``.  If
+    none of those three paths yield the catalog tool, a
+    ``RuntimeError`` propagates out of ``__getitem__`` — the old
+    silent raw-index fallback is gone (see #146).
     """
 
     __slots__ = ("_compat", "_raw")
@@ -115,12 +153,17 @@ class _CatalogIndexesView:
     # read-through access → wrapped
     def __getitem__(self, key):
         raw_index = self._raw[key]  # raises KeyError
-        catalog = aq_parent(aq_inner(self._compat))
-        if catalog is None:
-            return raw_index
+        catalog = _resolve_catalog(self._compat)
         return _maybe_wrap_index(catalog, key, raw_index)
 
     def get(self, key, default=None):
+        """Dict-style get with *default* on missing key.
+
+        Catches only ``KeyError`` (missing index name).  A
+        ``RuntimeError`` from an unreachable catalog is a configuration
+        bug and must propagate — suppressing it would recreate the
+        silent-empty-results failure mode #146 set out to eliminate.
+        """
         try:
             return self[key]
         except KeyError:
@@ -206,15 +249,15 @@ class _CatalogCompat(Implicit, Persistent):
         profile upgrade step), so the catalog tool is reachable even
         through bare attribute access like ``tool._catalog.indexes``.
 
-        Self-heals an unmigrated persisted state where the legacy
-        ``indexes`` PersistentMapping is still in ``__dict__`` instead of
-        ``_raw_indexes``.  This matters because any AttributeError raised
-        here is swallowed by Acquisition, which then returns the tool's
-        ``indexes()`` method from the parent — producing the
-        "'function' object has no attribute 'keys'" traceback at
-        ``catalog.indexes.keys()`` instead of surfacing the real cause.
-        Fresh-install sites and sites where the v1->v2 upgrade step
-        silently no-op'd (see #139) hit this path.
+        Self-heals two forms of stale persisted state:
+
+        1. Legacy ``indexes`` attribute (pre-b55) is renamed to
+           ``_raw_indexes`` on first access.
+        2. Missing ``__parent__`` attribute (prod sites where the
+           v1->v2 upgrade ran before the #139 fix) is re-populated via
+           ``zope.component.hooks.getSite().portal_catalog`` when
+           available.  This avoids the silent raw-index fallback that
+           masked #143/#146 for weeks.
         """
         state = self.__dict__
         raw = state.get("_raw_indexes")
@@ -224,23 +267,31 @@ class _CatalogCompat(Implicit, Persistent):
                 raw = PersistentMapping()
             state["_raw_indexes"] = raw
             self._p_changed = True
+        if state.get("__parent__") is None:
+            site = getSite()
+            tool = getattr(site, "portal_catalog", None) if site else None
+            if tool is not None:
+                state["__parent__"] = tool
+                self._p_changed = True
         return _CatalogIndexesView(self, raw)
 
     def getIndex(self, name):
         """Return a PG-backed index wrapper for *name*.
 
         Mirrors ``self.indexes[name]`` but implemented directly on the
-        method so that when invoked through the Acquisition wrapper
-        (``tool._catalog.getIndex("x")``), ``self`` is the wrapper and
-        ``aq_parent(aq_inner(self))`` can reach the catalog — useful
-        for legacy objects that don't yet carry ``__parent__``.
+        method so legacy callers (``eea.facetednavigation``,
+        ``plone.app.vocabularies.Keywords``) keep working through the
+        Acquisition wrapper.
 
-        Raises ``KeyError`` if *name* is not a known index.
+        Unlike the pre-#146 implementation, this does **not** fall back
+        to the raw ZCatalog index when the catalog tool is
+        unreachable — a raw index has empty BTrees in pgcatalog and
+        silently returns empty result sets, which masked #143/#146 for
+        weeks.  Instead, ``_resolve_catalog`` raises ``RuntimeError``
+        if none of its three lookup strategies finds the catalog.
         """
         raw_index = self._raw_indexes[name]  # raises KeyError if missing
-        catalog = aq_parent(aq_inner(self))
-        if catalog is None:
-            return raw_index
+        catalog = _resolve_catalog(self)
         return _maybe_wrap_index(catalog, name, raw_index)
 
 

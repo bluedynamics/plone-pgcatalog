@@ -1,5 +1,54 @@
 # Changelog
 
+## 1.0.0b61
+
+### Fixed
+
+- `_CatalogCompat.getIndex` and `_CatalogIndexesView.__getitem__` no
+  longer silently fall back to the raw ZCatalog index when they
+  cannot find the catalog tool — that fallback returned empty BTrees
+  and masked #143 / #146 for weeks.  A new private helper
+  ``_resolve_catalog`` tries three paths in order (``__parent__`` →
+  Acquisition chain → ``zope.component.hooks.getSite().portal_catalog``)
+  and raises ``RuntimeError`` if all three fail.
+
+- ``_CatalogCompat.indexes`` property now self-heals a missing
+  ``__parent__`` on first access via ``getSite().portal_catalog``.
+  First page render after deploy persists ``__parent__``; no second
+  upgrade-step click required on sites where the #139 upgrade ran
+  before that fix landed.  Zero-touch prod recovery.
+
+### Added
+
+- ``PGIndex._apply_index(request, resultset=None)`` — ZCatalog-
+  compatible low-level query entry point.  Returns
+  ``(IITreeSet(zoids), (index_name,))``.  Reuses
+  ``_QueryBuilder._process_index`` so every registered IndexType
+  (FIELD, KEYWORD, PATH, DATE, DATE_RANGE, UUID, TEXT, BOOLEAN, GOPIP)
+  plus every ``IPGIndexTranslator`` utility works for free.  No
+  implicit security filtering — matches ZCatalog semantics; use
+  ``catalog(**query)`` for secured results.  Emits a
+  ``DeprecationWarning`` once per caller site.
+
+- ``_PGIndexMapping.__getitem__`` / ``__len__`` — round out the
+  PG-backed mapping so Plone core callers
+  (``plone.app.uuid.utils``, ``plone.app.vocabularies.Keywords``)
+  work against ``catalog._catalog.getIndex(name)._index`` without
+  needing ``catalog.Indexes[name]`` acquisition.
+
+- ``_PGIndexMapping.items()`` / ``values()`` raise
+  ``NotImplementedError`` with guidance pointing at ``uniqueValues``,
+  ``_apply_index``, and ``catalog(**query)`` as alternatives.  No
+  Plone-core caller uses them on a wrapped index; a concrete usecase
+  can land in a future issue with server-side-cursor streaming.
+
+- ``PGIndex._index`` property emits a ``DeprecationWarning`` on
+  access — signals callers that the BTree-shaped API is an
+  emulation and suggests the preferred pgcatalog-native
+  alternatives.
+
+Closes #146.
+
 ## 1.0.0b60
 
 ### Fixed
