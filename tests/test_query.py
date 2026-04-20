@@ -882,6 +882,94 @@ class TestDynamicFieldIndex:
         assert "= ANY(" in qr["where"]
 
 
+class TestFieldRangeNumeric:
+    """Regression for #150 — FieldIndex range on numeric fields.
+
+    Two stacked bugs the old ``_field_range`` had:
+
+    1. No min/max normalization: caller-supplied ``[max, min]`` produced
+       always-false SQL.  ``plone.app.querystring`` / ``collective.collectionfilter``
+       pass values in URL order and do not sort.
+    2. Lexicographic string comparison on ``idx->>'key'`` — wrong for
+       numeric fields (``'46.1' <= '5.0' <= '49.0'`` returns true).
+
+    Both shipped together — the map-widget bbox filter on aaf-6 silently
+    returned zero rows.
+    """
+
+    def _register(self, name):
+        from plone.pgcatalog.columns import get_registry
+        from plone.pgcatalog.columns import IndexType
+
+        get_registry().register(name, IndexType.FIELD, name)
+
+    def test_numeric_field_range_casts_to_numeric(self, populated_registry):
+        self._register("latitude")
+        qr = build_query({"latitude": {"query": [46.1, 49.0], "range": "minmax"}})
+        assert "(idx->>'latitude')::numeric" in qr["where"]
+        # min param gets the lower value, max param the upper — regardless
+        # of the caller-supplied order.
+        params = qr["params"]
+        min_key = next(k for k in params if k.endswith("_min_1"))
+        max_key = next(k for k in params if k.endswith("_max_2"))
+        assert params[min_key] == 46.1
+        assert params[max_key] == 49.0
+
+    def test_numeric_field_range_normalizes_reversed_order(self, populated_registry):
+        self._register("latitude")
+        # Caller sends [max, min] — collective.collectionfilter's map
+        # widget does this on every pan/zoom.
+        qr = build_query({"latitude": {"query": [49.0, 46.1], "range": "minmax"}})
+        params = qr["params"]
+        min_key = next(k for k in params if k.endswith("_min_1"))
+        max_key = next(k for k in params if k.endswith("_max_2"))
+        assert params[min_key] == 46.1
+        assert params[max_key] == 49.0
+
+    def test_numeric_field_range_int(self, populated_registry):
+        self._register("priority")
+        qr = build_query({"priority": {"query": [5, 1], "range": "minmax"}})
+        assert "(idx->>'priority')::numeric" in qr["where"]
+        params = qr["params"]
+        min_key = next(k for k in params if k.endswith("_min_1"))
+        max_key = next(k for k in params if k.endswith("_max_2"))
+        assert params[min_key] == 1
+        assert params[max_key] == 5
+
+    def test_numeric_field_range_min_only(self, populated_registry):
+        self._register("latitude")
+        qr = build_query({"latitude": {"query": 46.1, "range": "min"}})
+        assert "(idx->>'latitude')::numeric >=" in qr["where"]
+
+    def test_numeric_field_range_max_only(self, populated_registry):
+        self._register("latitude")
+        qr = build_query({"latitude": {"query": 49.0, "range": "max"}})
+        assert "(idx->>'latitude')::numeric <=" in qr["where"]
+
+    def test_string_field_range_keeps_text_comparison(self, populated_registry):
+        """Non-numeric values continue to use plain ``idx->>'key'``
+        comparison (correct for ISO-format dates and similar
+        lexicographically-orderable strings).
+        """
+        self._register("getId")
+        qr = build_query({"getId": {"query": ["a", "m"], "range": "minmax"}})
+        assert "::numeric" not in qr["where"]
+        assert "idx->>'getId' >=" in qr["where"]
+        assert "idx->>'getId' <=" in qr["where"]
+
+    def test_string_field_range_normalizes_order(self, populated_registry):
+        """Normalization applies regardless of type — ``_field_range`` sorts
+        caller-supplied values even for strings.
+        """
+        self._register("getId")
+        qr = build_query({"getId": {"query": ["m", "a"], "range": "minmax"}})
+        params = qr["params"]
+        min_key = next(k for k in params if k.endswith("_min_1"))
+        max_key = next(k for k in params if k.endswith("_max_2"))
+        assert params[min_key] == "a"
+        assert params[max_key] == "m"
+
+
 class TestDynamicKeywordIndex:
     """KeywordIndex dynamically registered via registry."""
 

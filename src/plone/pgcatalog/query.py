@@ -77,6 +77,16 @@ def _bool_to_lower_str(value):
     return str(value)
 
 
+def _is_numeric_range(values):
+    """Return True iff every value is numeric (``int`` or ``float``).
+
+    ``bool`` is deliberately excluded even though Python treats it as
+    ``int`` — a boolean range is nonsensical and should use the plain
+    text path.
+    """
+    return all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in values)
+
+
 def build_query(query_dict):
     """Translate a ZCatalog query dict into SQL components.
 
@@ -307,23 +317,44 @@ class _QueryBuilder:
                 self.params[p] = _bool_to_lower_str(not_val)
 
     def _field_range(self, idx_key, value, range_spec):
+        """Emit a range clause for a FieldIndex.
+
+        Two correctness properties matter (see #150):
+
+        1. **Min/max normalization.**  ``plone.app.querystring`` and
+           ``collective.collectionfilter`` pass values in caller order,
+           not sorted.  ZCatalog's FieldIndex silently normalizes; we
+           must do the same or caller-supplied ``[max, min]`` produces
+           always-false SQL.
+        2. **Numeric cast.**  ``idx->>'key'`` returns ``text``; ``>=`` /
+           ``<=`` on text is lexicographic — ``'46.1' <= '5.0'`` is
+           true.  For numeric values we cast to ``::numeric`` so the
+           comparison is arithmetic.  String values keep plain text
+           comparison (correct for ISO-format dates and similar
+           lexicographically-orderable strings).
+        """
         if range_spec in ("min:max", "minmax") and isinstance(value, (list, tuple)):
+            v0, v1 = value[0], value[1]
+            v_min, v_max = (v0, v1) if v0 <= v1 else (v1, v0)
+            cast = "::numeric" if _is_numeric_range((v_min, v_max)) else ""
+            col = f"(idx->>'{idx_key}'){cast}" if cast else f"idx->>'{idx_key}'"
             p_min = self._pname(idx_key + "_min")
             p_max = self._pname(idx_key + "_max")
-            self.clauses.append(
-                f"(idx->>'{idx_key}' >= %({p_min})s"
-                f" AND idx->>'{idx_key}' <= %({p_max})s)"
-            )
-            self.params[p_min] = _bool_to_lower_str(value[0])
-            self.params[p_max] = _bool_to_lower_str(value[1])
+            self.clauses.append(f"({col} >= %({p_min})s AND {col} <= %({p_max})s)")
+            self.params[p_min] = v_min if cast else _bool_to_lower_str(v_min)
+            self.params[p_max] = v_max if cast else _bool_to_lower_str(v_max)
         elif range_spec == "min":
+            cast = "::numeric" if _is_numeric_range((value,)) else ""
+            col = f"(idx->>'{idx_key}'){cast}" if cast else f"idx->>'{idx_key}'"
             p = self._pname(idx_key)
-            self.clauses.append(f"idx->>'{idx_key}' >= %({p})s")
-            self.params[p] = _bool_to_lower_str(value)
+            self.clauses.append(f"{col} >= %({p})s")
+            self.params[p] = value if cast else _bool_to_lower_str(value)
         elif range_spec == "max":
+            cast = "::numeric" if _is_numeric_range((value,)) else ""
+            col = f"(idx->>'{idx_key}'){cast}" if cast else f"idx->>'{idx_key}'"
             p = self._pname(idx_key)
-            self.clauses.append(f"idx->>'{idx_key}' <= %({p})s")
-            self.params[p] = _bool_to_lower_str(value)
+            self.clauses.append(f"{col} <= %({p})s")
+            self.params[p] = value if cast else _bool_to_lower_str(value)
 
     # -- KeywordIndex -------------------------------------------------------
 
