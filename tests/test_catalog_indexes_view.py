@@ -373,3 +373,60 @@ class TestResolveCatalog:
             pytest.raises(RuntimeError, match="cannot find portal_catalog"),
         ):
             _resolve_catalog(compat)
+
+
+# ── Self-heal: __parent__ gets persisted on first indexes access ─────────
+
+
+class TestParentSelfHeal:
+    def test_property_heals_missing_parent_via_get_site(self):
+        from plone.pgcatalog.maintenance import _CatalogCompat
+
+        compat = _CatalogCompat.__new__(_CatalogCompat)
+        compat.__dict__["_raw_indexes"] = PersistentMapping()
+        compat.__dict__["schema"] = PersistentMapping()
+        # no __parent__
+        compat._p_changed = False
+
+        tool = mock.Mock(name="portal_catalog")
+        site = mock.Mock(portal_catalog=tool)
+
+        # Need a fake jar so ``_p_changed = True`` sticks under Persistent.
+        from plone.pgcatalog.upgrades.profile_2 import _NoOpJar
+
+        compat._p_jar = _NoOpJar()
+
+        with mock.patch("plone.pgcatalog.maintenance.getSite", return_value=site):
+            _view = compat.indexes  # trigger property
+
+        assert compat.__dict__.get("__parent__") is tool
+        assert compat._p_changed is True
+
+    def test_property_tolerates_get_site_returning_none(self):
+        from plone.pgcatalog.maintenance import _CatalogCompat
+
+        compat = _CatalogCompat.__new__(_CatalogCompat)
+        compat.__dict__["_raw_indexes"] = PersistentMapping()
+        # no __parent__, no site hook
+
+        with mock.patch("plone.pgcatalog.maintenance.getSite", return_value=None):
+            _view = compat.indexes  # must not raise
+
+        assert "__parent__" not in compat.__dict__
+
+    def test_property_leaves_existing_parent_untouched(self):
+        from plone.pgcatalog.maintenance import _CatalogCompat
+
+        explicit = mock.Mock(name="explicit-parent")
+        other = mock.Mock(name="get-site-tool")
+        site = mock.Mock(portal_catalog=other)
+
+        compat = _CatalogCompat.__new__(_CatalogCompat)
+        compat.__dict__["_raw_indexes"] = PersistentMapping()
+        compat.__dict__["__parent__"] = explicit
+
+        with mock.patch("plone.pgcatalog.maintenance.getSite", return_value=site):
+            _view = compat.indexes
+
+        # Still the explicit parent — self-heal must only set when missing.
+        assert compat.__dict__["__parent__"] is explicit

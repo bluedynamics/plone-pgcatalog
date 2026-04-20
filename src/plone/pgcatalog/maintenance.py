@@ -243,15 +243,15 @@ class _CatalogCompat(Implicit, Persistent):
         profile upgrade step), so the catalog tool is reachable even
         through bare attribute access like ``tool._catalog.indexes``.
 
-        Self-heals an unmigrated persisted state where the legacy
-        ``indexes`` PersistentMapping is still in ``__dict__`` instead of
-        ``_raw_indexes``.  This matters because any AttributeError raised
-        here is swallowed by Acquisition, which then returns the tool's
-        ``indexes()`` method from the parent — producing the
-        "'function' object has no attribute 'keys'" traceback at
-        ``catalog.indexes.keys()`` instead of surfacing the real cause.
-        Fresh-install sites and sites where the v1->v2 upgrade step
-        silently no-op'd (see #139) hit this path.
+        Self-heals two forms of stale persisted state:
+
+        1. Legacy ``indexes`` attribute (pre-b55) is renamed to
+           ``_raw_indexes`` on first access.
+        2. Missing ``__parent__`` attribute (prod sites where the
+           v1->v2 upgrade ran before the #139 fix) is re-populated via
+           ``zope.component.hooks.getSite().portal_catalog`` when
+           available.  This avoids the silent raw-index fallback that
+           masked #143/#146 for weeks.
         """
         state = self.__dict__
         raw = state.get("_raw_indexes")
@@ -261,6 +261,12 @@ class _CatalogCompat(Implicit, Persistent):
                 raw = PersistentMapping()
             state["_raw_indexes"] = raw
             self._p_changed = True
+        if state.get("__parent__") is None:
+            site = getSite()
+            tool = getattr(site, "portal_catalog", None) if site else None
+            if tool is not None:
+                state["__parent__"] = tool
+                self._p_changed = True
         return _CatalogIndexesView(self, raw)
 
     def getIndex(self, name):
