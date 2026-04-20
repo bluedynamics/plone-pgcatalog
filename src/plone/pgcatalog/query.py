@@ -365,7 +365,16 @@ class _QueryBuilder:
 
         operator = spec.get("operator", "or")
 
-        query_val = [query_val] if isinstance(query_val, str) else list(query_val)
+        # Coerce to a list of strings.  The only "iterable" shape we want
+        # to expand is a real list/tuple/set — everything else (str, int,
+        # Python ``datetime``, Zope ``DateTime``, …) is a single-value
+        # scalar.  Without this, ``list(scalar)`` raises ``TypeError:
+        # object is not iterable`` on Zope DateTime and friends; str()
+        # coercion matches what JSONB keyword arrays store (#152).
+        if isinstance(query_val, (list, tuple, set, frozenset)):
+            query_val = [str(v) for v in query_val]
+        else:
+            query_val = [str(query_val)]
 
         # Check for dedicated TEXT[] column (generic ExtraIdxColumn mechanism)
         from plone.pgcatalog.columns import get_extra_idx_column_for_key

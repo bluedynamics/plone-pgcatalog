@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.0.0b62
+
+### Fixed
+
+- ``_handle_keyword`` no longer crashes with ``TypeError: 'DateTime'
+  object is not iterable`` when a caller passes a non-str, non-iterable
+  value (e.g. a Zope ``DateTime`` or a Python ``datetime``) as the
+  query for a KeywordIndex.  The old coercion assumed the value was
+  either a ``str`` or iterable; anything else (``DateTime``, ``int``,
+  …) hit ``list(value)`` and raised.  Values are now coerced via
+  ``str()`` into a single-element list, matching the JSONB storage
+  shape (keyword arrays always contain strings).  Closes #152.
+
 ## 1.0.0b61
 
 ### Fixed
