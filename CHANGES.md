@@ -1,5 +1,34 @@
 # Changelog
 
+## 1.0.0b56
+
+### Fixed
+
+- The v1->v2 upgrade step was silently no-op on production sites.  GenericSetup
+  invokes upgrade handlers with the ``portal_setup`` tool as the context, but
+  ``_resolve_compat`` only understood the ``ImportContext`` shape (``getSite()``),
+  so the setup-tool call path hit the ``return None, None`` branch and logged
+  ``migrate_catalog_indexes: no _CatalogCompat found; skipping`` — while
+  GenericSetup happily bumped the profile version to 2.  Net effect: the
+  persisted ``_CatalogCompat`` kept its legacy ``indexes`` attribute and the
+  new ``indexes`` property then raised ``AttributeError`` for ``_raw_indexes``,
+  which Acquisition swallowed and replaced with the tool's ``indexes()``
+  method — surfacing as ``'function' object has no attribute 'keys'`` from
+  ``catalog.indexes.keys()`` and ``'method' object is not subscriptable`` from
+  ``catalog.indexes[name]``.
+
+  ``_resolve_compat`` now also walks ``aq_parent(context)`` to reach the Plone
+  site when the context is the setup tool, so the normal ZMI
+  ``manage_upgrades`` path migrates the state as intended.
+
+- Made ``_CatalogCompat.indexes`` self-healing: if the legacy ``indexes``
+  attribute is still in ``__dict__`` (unmigrated or fresh-install site that
+  skipped v1), the property moves it to ``_raw_indexes`` on first access and
+  marks the instance dirty.  This avoids the Acquisition-swallowed
+  ``AttributeError`` failure mode even when the upgrade step never ran.
+
+  Closes #139.
+
 ## 1.0.0b55
 
 ### Fixed
