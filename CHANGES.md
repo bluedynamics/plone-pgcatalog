@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.0.0b64
+
+### Fixed
+
+- ``_process_sort`` now emits ``idx->'{key}'`` (JSONB operator) instead
+  of ``idx->>'{key}'`` (text operator) for the ``FieldIndex`` fallback.
+  Text-cast sorting compared everything lexicographically, so a
+  ``FieldIndex`` over a numeric attribute ranked ``"10"`` before
+  ``"2"``.  JSONB comparison is type-aware: numbers sort numerically,
+  strings lexically, so a homogeneous ``FieldIndex`` now always sorts
+  correctly regardless of value type.  Affects any ``FieldIndex`` with
+  numeric source data (counters, priorities, prices, weights).  #158
+
 ## 1.0.0b63
 
 ### Changed

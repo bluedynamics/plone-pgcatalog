@@ -455,3 +455,33 @@ class TestSortAndPagination:
         zoids1 = {r["zoid"] for r in rows1}
         zoids2 = {r["zoid"] for r in rows2}
         assert zoids1.isdisjoint(zoids2)
+
+    def test_sort_numeric_field_numerically(self, pg_conn_with_catalog):
+        """Numeric FieldIndex values must sort numerically, not lexically (#158).
+
+        Under text-cast sorting, 10 < 2 because "10" < "2" lexicographically.
+        The jsonb `->` operator preserves type and sorts numbers as numbers.
+        """
+        from plone.pgcatalog.columns import get_registry
+        from plone.pgcatalog.columns import IndexType
+
+        conn = pg_conn_with_catalog
+        get_registry().register("priority", IndexType.FIELD, "priority")
+
+        priorities = {200: 10, 201: 2, 202: 20, 203: 3, 204: 1}
+        for zoid, priority in priorities.items():
+            insert_object(conn, zoid=zoid)
+            catalog_object(
+                conn,
+                zoid=zoid,
+                path=f"/plone/item{zoid}",
+                idx={"portal_type": "Item", "priority": priority},
+            )
+        conn.commit()
+
+        rows = execute_query(
+            conn,
+            {"portal_type": "Item", "sort_on": "priority"},
+            columns="zoid",
+        )
+        assert [r["zoid"] for r in rows] == [204, 201, 203, 200, 202]  # 1,2,3,10,20
