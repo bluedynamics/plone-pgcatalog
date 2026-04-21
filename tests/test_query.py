@@ -428,7 +428,14 @@ class TestPathIndex:
 class TestSort:
     def test_sort_ascending(self):
         qr = build_query({"portal_type": "Document", "sort_on": "sortable_title"})
-        assert qr["order_by"] == "idx->>'sortable_title' ASC"
+        assert qr["order_by"] == "idx->'sortable_title' ASC"
+
+    def test_sort_field_uses_jsonb_operator(self):
+        """FIELD sort must use `->` (jsonb) not `->>` (text) so numeric
+        FieldIndexes sort numerically instead of lexicographically (#158)."""
+        qr = build_query({"sort_on": "sortable_title"})
+        assert "idx->'sortable_title'" in qr["order_by"]
+        assert "idx->>'sortable_title'" not in qr["order_by"]
 
     def test_sort_descending(self):
         qr = build_query(
@@ -481,7 +488,7 @@ class TestMultiSort:
                 "sort_on": ["portal_type", "sortable_title"],
             }
         )
-        assert qr["order_by"] == "idx->>'portal_type' ASC, idx->>'sortable_title' ASC"
+        assert qr["order_by"] == "idx->'portal_type' ASC, idx->'sortable_title' ASC"
 
     def test_sort_on_list_with_mixed_orders(self):
         qr = build_query(
@@ -494,7 +501,7 @@ class TestMultiSort:
         assert qr["order_by"] is not None
         parts = qr["order_by"].split(", ")
         assert len(parts) == 2
-        assert parts[0] == "idx->>'sortable_title' ASC"
+        assert parts[0] == "idx->'sortable_title' ASC"
         assert "pgcatalog_to_timestamptz" in parts[1]
         assert "DESC" in parts[1]
 
@@ -506,7 +513,7 @@ class TestMultiSort:
                 "sort_order": "descending",
             }
         )
-        assert qr["order_by"] == "idx->>'portal_type' DESC, idx->>'sortable_title' DESC"
+        assert qr["order_by"] == "idx->'portal_type' DESC, idx->'sortable_title' DESC"
 
     def test_sort_on_list_with_unknown_index_skipped(self):
         qr = build_query(
@@ -515,7 +522,7 @@ class TestMultiSort:
                 "sort_on": ["nonexistent", "sortable_title"],
             }
         )
-        assert qr["order_by"] == "idx->>'sortable_title' ASC"
+        assert qr["order_by"] == "idx->'sortable_title' ASC"
 
     def test_sort_on_list_all_unknown(self):
         qr = build_query(
@@ -529,7 +536,7 @@ class TestMultiSort:
     def test_sort_on_single_string_still_works(self):
         """Backward compat: single string sort_on unchanged."""
         qr = build_query({"portal_type": "Document", "sort_on": "sortable_title"})
-        assert qr["order_by"] == "idx->>'sortable_title' ASC"
+        assert qr["order_by"] == "idx->'sortable_title' ASC"
 
 
 # ---------------------------------------------------------------------------
@@ -742,13 +749,13 @@ class TestAdditionalPathIndex:
 
     def test_tgpath_sort(self):
         qr = build_query({"tgpath": "/uuid1", "sort_on": "tgpath"})
-        assert qr["order_by"] == "idx->>'tgpath' ASC"
+        assert qr["order_by"] == "idx->'tgpath' ASC"
 
     def test_tgpath_sort_descending(self):
         qr = build_query(
             {"tgpath": "/uuid1", "sort_on": "tgpath", "sort_order": "descending"}
         )
-        assert qr["order_by"] == "idx->>'tgpath' DESC"
+        assert qr["order_by"] == "idx->'tgpath' DESC"
 
     def test_builtin_path_uses_typed_columns(self):
         """Built-in 'path' index dispatches to typed columns, not idx JSONB (#132)."""
@@ -1054,7 +1061,7 @@ class TestDynamicSort:
         get_registry().register("my_sort_field", IndexType.FIELD, "my_sort_field")
 
         qr = build_query({"sort_on": "my_sort_field"})
-        assert qr["order_by"] == "idx->>'my_sort_field' ASC"
+        assert qr["order_by"] == "idx->'my_sort_field' ASC"
 
     def test_sort_dynamic_date(self, populated_registry):
         from plone.pgcatalog.columns import get_registry

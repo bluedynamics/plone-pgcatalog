@@ -774,7 +774,10 @@ class _QueryBuilder:
             elif idx_type == IndexType.BOOLEAN:
                 expr = f"(idx->>'{idx_key}')::boolean"
             else:
-                expr = f"idx->>'{idx_key}'"
+                # jsonb operator `->` instead of text `->>` so PG uses type-aware
+                # comparison: numbers sort numerically, strings lexicographically
+                # (#158 — otherwise numeric FieldIndexes sort "10" < "2").
+                expr = f"idx->'{idx_key}'"
 
             parts.append(f"{expr} {direction}")
 
