@@ -104,10 +104,19 @@ _SELECT_COLS_EAGER_COUNTED = "zoid, path, idx, meta, COUNT(*) OVER() AS _total_c
 
 
 def _build_results(rows, actual_count, catalog, lazy_conn):
-    """Build CatalogSearchResults from raw rows."""
-    brains = [PGCatalogBrain(row, catalog=catalog) for row in rows]
+    """Build CatalogSearchResults from raw rows.
+
+    Brains are catalog-independent (catalog-independent brains cache
+    cleanly across request boundaries — see #156).  The catalog ref
+    is only kept on the transient result set, where ZODB-prefetch
+    needs it to reach the storage jar.
+    """
+    brains = [PGCatalogBrain(row) for row in rows]
     results = CatalogSearchResults(
-        brains, actual_result_count=actual_count, conn=lazy_conn
+        brains,
+        actual_result_count=actual_count,
+        conn=lazy_conn,
+        catalog=catalog,
     )
     if lazy_conn is not None:
         for brain in brains:

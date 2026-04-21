@@ -29,24 +29,47 @@ class TestBrainBasics:
         brain = PGCatalogBrain(_make_row(path="/plone/folder/doc"))
         assert brain.getPath() == "/plone/folder/doc"
 
-    def test_get_url_without_catalog(self):
-        brain = PGCatalogBrain(_make_row(path="/plone/doc"))
-        assert brain.getURL() == "/plone/doc"
+    def test_get_url_uses_globalrequest(self):
+        """getURL resolves the request via ``zope.globalrequest.getRequest()``
+        — the catalog tool is intentionally NOT consulted, so brains can
+        be cached/pickled/re-queued without dragging the acquisition
+        chain along.
+        """
+        from unittest import mock
 
-    def test_get_url_with_request(self):
+        fake_request = mock.Mock()
+        fake_request.physicalPathToURL.return_value = "http://example.com/plone/doc"
+        brain = PGCatalogBrain(_make_row(path="/plone/doc"))
+
+        with mock.patch("plone.pgcatalog.brain.getRequest", return_value=fake_request):
+            assert brain.getURL() == "http://example.com/plone/doc"
+
+    def test_get_url_without_request_returns_path(self):
+        """Standalone / script mode: no request available, return the
+        raw path.
+        """
+        from unittest import mock
+
+        brain = PGCatalogBrain(_make_row(path="/plone/doc"))
+        with mock.patch("plone.pgcatalog.brain.getRequest", return_value=None):
+            assert brain.getURL() == "/plone/doc"
+
+    def test_get_url_ignores_catalog_request(self):
+        """Regression guard: even if the catalog carries a REQUEST
+        attribute, getURL must not consult it — it goes exclusively
+        through getRequest().  Prevents the acquisition-based lookup
+        from sneaking back in via copy-paste.
+        """
         from unittest import mock
 
         catalog = mock.Mock()
-        catalog.REQUEST.physicalPathToURL.return_value = "http://example.com/plone/doc"
+        # Deliberately different URL so the test fails loudly if the
+        # code ever reads catalog.REQUEST.
+        catalog.REQUEST.physicalPathToURL.return_value = "http://WRONG-via-catalog/doc"
         brain = PGCatalogBrain(_make_row(path="/plone/doc"), catalog=catalog)
-        assert brain.getURL() == "http://example.com/plone/doc"
-
-    def test_get_url_catalog_without_request(self):
-        from unittest import mock
-
-        catalog = mock.Mock(spec=[])
-        brain = PGCatalogBrain(_make_row(path="/plone/doc"), catalog=catalog)
-        assert brain.getURL() == "/plone/doc"
+        with mock.patch("plone.pgcatalog.brain.getRequest", return_value=None):
+            # No global request → path, NOT the catalog's mocked URL.
+            assert brain.getURL() == "/plone/doc"
 
     def test_get_rid(self):
         brain = PGCatalogBrain(_make_row(zoid=42))
@@ -56,112 +79,115 @@ class TestBrainBasics:
         brain = PGCatalogBrain(_make_row(zoid=42))
         assert brain.data_record_id_ == 42
 
-    def test_get_object_without_catalog(self):
-        brain = PGCatalogBrain(_make_row())
-        assert brain.getObject() is None
+    def _mock_root(self, root):
+        """Patch ``_traversal_root`` to return *root*."""
+        from unittest import mock
 
-    def test_get_object_with_catalog(self):
+        return mock.patch("plone.pgcatalog.brain._traversal_root", return_value=root)
+
+    def test_get_object_without_traversal_root(self):
+        """No site hook and no request — getObject returns None."""
+        brain = PGCatalogBrain(_make_row())
+        with self._mock_root(None):
+            assert brain.getObject() is None
+
+    def test_get_object_with_traversal_root(self):
         """getObject traverses the parent unrestricted and the leaf restricted.
 
         Matches upstream ``AbstractCatalogBrain.getObject``: the catalog
         filter already authorized access to the target, so intermediate
         containers are bypassed — only the final object is permission-
-        checked.
+        checked.  The traversal root is resolved at call time via
+        ``_traversal_root()`` (``getSite().getPhysicalRoot()`` +
+        ``getRequest()`` fallback) — brains do NOT hold a reference
+        to the catalog tool (cache-friendly).
         """
         from unittest import mock
 
         obj = mock.Mock()
         parent = mock.Mock()
         parent.restrictedTraverse.return_value = obj
-        catalog = mock.Mock()
-        catalog.unrestrictedTraverse.return_value = parent
-        brain = PGCatalogBrain(
-            _make_row(path="/plone/kalender/event-xyz"), catalog=catalog
-        )
+        root = mock.Mock()
+        root.unrestrictedTraverse.return_value = parent
+        brain = PGCatalogBrain(_make_row(path="/plone/kalender/event-xyz"))
 
-        assert brain.getObject() is obj
-        catalog.unrestrictedTraverse.assert_called_once_with(["", "plone", "kalender"])
+        with self._mock_root(root):
+            assert brain.getObject() is obj
+        root.unrestrictedTraverse.assert_called_once_with(["", "plone", "kalender"])
         parent.restrictedTraverse.assert_called_once_with("event-xyz")
 
     def test_get_object_restricted_only_on_leaf(self):
-        """Regression for #141 — parent folder with stricter permissions.
-
-        Production symptom:
-            AccessControl.unauthorized.Unauthorized: You are not allowed
-            to access 'kalender' in this context
-
-        A common Plone pattern is to have a restricted parent container
-        (e.g. ``kalender/``) that publishes individual public items.
-        The catalog filter already authorized the leaf, so traversal
-        must not re-check the parent.
-        """
+        """Regression for #141 — parent folder with stricter permissions."""
         from AccessControl.unauthorized import Unauthorized
         from unittest import mock
 
         obj = mock.Mock()
         parent = mock.Mock()
         parent.restrictedTraverse.return_value = obj
-        catalog = mock.Mock()
+        root = mock.Mock()
         # restrictedTraverse on the parent path would raise Unauthorized
         # — the buggy implementation called restrictedTraverse on the
         # full path, which bubbles through ``kalender``.
-        catalog.restrictedTraverse.side_effect = Unauthorized(
+        root.restrictedTraverse.side_effect = Unauthorized(
             "You are not allowed to access 'kalender'"
         )
-        catalog.unrestrictedTraverse.return_value = parent
-        brain = PGCatalogBrain(
-            _make_row(path="/plone/kalender/event-xyz"), catalog=catalog
-        )
+        root.unrestrictedTraverse.return_value = parent
+        brain = PGCatalogBrain(_make_row(path="/plone/kalender/event-xyz"))
 
-        # Must succeed — parent traversal is unrestricted.
-        assert brain.getObject() is obj
+        with self._mock_root(root):
+            assert brain.getObject() is obj
 
     def test_get_object_traversal_error(self):
         from unittest import mock
 
-        catalog = mock.Mock()
-        catalog.unrestrictedTraverse.side_effect = KeyError("not found")
-        brain = PGCatalogBrain(_make_row(path="/plone/doc"), catalog=catalog)
-        assert brain.getObject() is None
+        root = mock.Mock()
+        root.unrestrictedTraverse.side_effect = KeyError("not found")
+        brain = PGCatalogBrain(_make_row(path="/plone/doc"))
+        with self._mock_root(root):
+            assert brain.getObject() is None
 
     def test_get_object_site_root_path(self):
-        """Path ``/plone`` splits to ``['', 'plone']`` — site root is the
+        """Path ``/plone`` splits to ``['', 'plone']`` — root is the
         "parent" (traversed unrestricted to ``['']``), leaf is ``plone``
         (restricted).  Matches upstream ZCatalog semantics.
         """
         from unittest import mock
 
         obj = mock.Mock()
+        root_via = mock.Mock()
+        root_via.restrictedTraverse.return_value = obj
         root = mock.Mock()
-        root.restrictedTraverse.return_value = obj
-        catalog = mock.Mock()
-        catalog.unrestrictedTraverse.return_value = root
-        brain = PGCatalogBrain(_make_row(path="/plone"), catalog=catalog)
+        root.unrestrictedTraverse.return_value = root_via
+        brain = PGCatalogBrain(_make_row(path="/plone"))
 
-        assert brain.getObject() is obj
-        catalog.unrestrictedTraverse.assert_called_once_with([""])
-        root.restrictedTraverse.assert_called_once_with("plone")
+        with self._mock_root(root):
+            assert brain.getObject() is obj
+        root.unrestrictedTraverse.assert_called_once_with([""])
+        root_via.restrictedTraverse.assert_called_once_with("plone")
 
-    def test_unrestricted_get_object_without_catalog(self):
+    def test_unrestricted_get_object_without_traversal_root(self):
         brain = PGCatalogBrain(_make_row())
-        assert brain._unrestrictedGetObject() is None
+        with self._mock_root(None):
+            assert brain._unrestrictedGetObject() is None
 
-    def test_unrestricted_get_object_with_catalog(self):
+    def test_unrestricted_get_object_with_traversal_root(self):
         from unittest import mock
 
         obj = mock.Mock()
-        catalog = mock.Mock()
-        catalog.unrestrictedTraverse.return_value = obj
-        brain = PGCatalogBrain(_make_row(path="/plone/doc"), catalog=catalog)
-        assert brain._unrestrictedGetObject() is obj
+        root = mock.Mock()
+        root.unrestrictedTraverse.return_value = obj
+        brain = PGCatalogBrain(_make_row(path="/plone/doc"))
+        with self._mock_root(root):
+            assert brain._unrestrictedGetObject() is obj
 
     def test_unrestricted_get_object_traversal_error(self):
         from unittest import mock
 
-        catalog = mock.Mock()
-        catalog.unrestrictedTraverse.side_effect = AttributeError("nope")
-        brain = PGCatalogBrain(_make_row(path="/plone/doc"), catalog=catalog)
-        assert brain._unrestrictedGetObject() is None
+        root = mock.Mock()
+        root.unrestrictedTraverse.side_effect = AttributeError("nope")
+        brain = PGCatalogBrain(_make_row(path="/plone/doc"))
+        with self._mock_root(root):
+            assert brain._unrestrictedGetObject() is None
 
 
 class TestBrainAttributeAccess:

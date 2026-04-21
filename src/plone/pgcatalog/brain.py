@@ -12,6 +12,8 @@ from plone.pgcatalog.columns import get_registry
 from plone.pgcatalog.extraction import decode_meta
 from Products.ZCatalog.interfaces import ICatalogBrain
 from ZODB.utils import p64
+from zope.component.hooks import getSite
+from zope.globalrequest import getRequest
 from zope.interface import implementer
 from zope.interface.common.sequence import IFiniteSequence
 from ZTUtils.Lazy import Lazy
@@ -25,12 +27,40 @@ log = logging.getLogger(__name__)
 _PREFETCH_BATCH = int(os.environ.get("PGCATALOG_PREFETCH_BATCH", "100"))
 
 
+def _traversal_root():
+    """Return a traversable Zope root (Application), or None.
+
+    Brains avoid holding a reference to the catalog tool so they can
+    be cached / pickled / re-queued without dragging the Acquisition
+    chain along.  The root is resolved at call time via
+    ``zope.component.hooks.getSite`` first (works in request and
+    thread contexts that have a local-site hook), then falls back to
+    the Zope traversal root from ``zope.globalrequest.getRequest``.
+
+    Returns ``None`` when neither is available — the caller (``getObject``
+    / ``_unrestrictedGetObject``) then reports "object not found"
+    rather than raising, matching the long-standing ZCatalog contract.
+    """
+    site = getSite()
+    if site is not None:
+        return site.getPhysicalRoot()
+    request = getRequest()
+    if request is not None:
+        parents = getattr(request, "PARENTS", None)
+        if parents:
+            return parents[-1]
+    return None
+
+
 @implementer(ICatalogBrain)
 class PGCatalogBrain:
     """Lightweight catalog brain backed by a PostgreSQL row.
 
     Implements the essential ICatalogBrain interface without requiring
-    Zope Acquisition or Record infrastructure.
+    Zope Acquisition or Record infrastructure.  Deliberately does NOT
+    store a reference to the catalog tool — traversal resolves the
+    portal root lazily via ``_traversal_root()``, so a brain remains
+    safe to cache / pickle across request boundaries.
 
     Supports two modes:
     - **Eager** (default): row contains ``idx`` dict, metadata access is direct.
@@ -40,14 +70,18 @@ class PGCatalogBrain:
 
     Args:
         row: dict with keys zoid, path (and optionally idx)
-        catalog: reference to the catalog tool (for getObject traversal)
+        catalog: accepted for backward compatibility with callers still
+            passing the catalog tool — ignored.  Kept until the next
+            major version for signature compatibility.
     """
 
-    __slots__ = ("_catalog", "_result_set", "_row")
+    __slots__ = ("_result_set", "_row")
 
     def __init__(self, row, catalog=None):
+        # ``catalog`` is accepted for backward compat with callers
+        # still passing the tool — intentionally unused.
+        del catalog
         self._row = row
-        self._catalog = catalog
         self._result_set = None
 
     # -- ICatalogBrain methods -----------------------------------------------
@@ -59,13 +93,15 @@ class PGCatalogBrain:
     def getURL(self, relative=0):
         """Generate a URL for this record.
 
-        In standalone mode (no request), returns the path.
-        When integrated with Zope (Phase 6), uses request.physicalPathToURL.
+        Uses ``zope.globalrequest.getRequest()`` — no reference to the
+        catalog tool.  Keeping brains catalog-independent lets callers
+        cache / pickle / re-queue them without dragging the acquisition
+        chain along.  Returns the plain path in standalone / script
+        mode when no request is active.
         """
-        if self._catalog is not None:
-            request = getattr(self._catalog, "REQUEST", None)
-            if request is not None:
-                return request.physicalPathToURL(self.getPath(), relative)
+        request = getRequest()
+        if request is not None:
+            return request.physicalPathToURL(self.getPath(), relative)
         return self.getPath()
 
     def _maybe_prefetch(self):
@@ -83,10 +119,7 @@ class PGCatalogBrain:
         result_set._maybe_prefetch_objects(self)
 
     def getObject(self):
-        """Return the object for this record.
-
-        Requires a catalog with traversal support (Phase 6 integration).
-        Returns None if the object cannot be found.
+        """Return the object for this record, or None if not found.
 
         Mirrors upstream ``Products.ZCatalog.CatalogBrains.AbstractCatalogBrain``
         semantics: the catalog filter already authorized access to the
@@ -96,30 +129,31 @@ class PGCatalogBrain:
         e.g. an internal calendar container publishing public events)
         raise ``Unauthorized`` on the parent even though the user is
         allowed to see the target.
+
+        Resolves the traversal root lazily via ``_traversal_root()`` so
+        brains stay catalog-independent (cache-friendly).
         """
-        if self._catalog is None:
+        root = _traversal_root()
+        if root is None:
             return None
         self._maybe_prefetch()
         path = self.getPath().split("/")
         if not path:
             return None
         try:
-            parent = (
-                self._catalog.unrestrictedTraverse(path[:-1])
-                if len(path) > 1
-                else self._catalog
-            )
+            parent = root.unrestrictedTraverse(path[:-1]) if len(path) > 1 else root
             return parent.restrictedTraverse(path[-1])
         except (KeyError, AttributeError):
             return None
 
     def _unrestrictedGetObject(self):
-        """Return the object without security checks."""
-        if self._catalog is None:
+        """Return the object without security checks, or None if not found."""
+        root = _traversal_root()
+        if root is None:
             return None
         self._maybe_prefetch()
         try:
-            return self._catalog.unrestrictedTraverse(self.getPath())
+            return root.unrestrictedTraverse(self.getPath())
         except (KeyError, AttributeError):
             return None
 
@@ -274,7 +308,7 @@ class CatalogSearchResults(Lazy):
     using the same connection (and thus the same REPEATABLE READ snapshot).
     """
 
-    def __init__(self, brains, actual_result_count=None, conn=None):
+    def __init__(self, brains, actual_result_count=None, conn=None, catalog=None):
         self._brains = list(brains)
         self.actual_result_count = (
             actual_result_count
@@ -282,6 +316,7 @@ class CatalogSearchResults(Lazy):
             else len(self._brains)
         )
         self._conn = conn
+        self._catalog = catalog  # used only for ZODB prefetch (needs _p_jar)
         self._idx_loaded = conn is None  # eager if no conn
         self._prefetched_ranges = set()  # set of (start, end) tuples
         # Build index for O(1) brain → position lookup (used by prefetch)
@@ -360,11 +395,12 @@ class CatalogSearchResults(Lazy):
         if not batch:
             return
 
-        # Get storage from the catalog reference on the first brain.
-        catalog = batch[0]._catalog
-        if catalog is None:
+        # Get storage from the result-set's catalog reference (brains
+        # are catalog-independent — the tool lives only on the
+        # transient result set).
+        if self._catalog is None:
             return
-        jar = getattr(catalog, "_p_jar", None)
+        jar = getattr(self._catalog, "_p_jar", None)
         if jar is None:
             return
         storage = getattr(jar, "_storage", None)
@@ -390,6 +426,7 @@ class CatalogSearchResults(Lazy):
                 result,
                 self.actual_result_count,
                 conn=self._conn,
+                catalog=self._catalog,
             )
             # Re-wire brains to new result set if idx not yet loaded
             if not self._idx_loaded:

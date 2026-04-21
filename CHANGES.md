@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.0.0b63
+
+### Changed
+
+- ``PGCatalogBrain`` no longer stores a reference to the catalog tool
+  and no longer consults ``self._catalog.REQUEST`` for URL rendering.
+  ``getURL`` uses ``zope.globalrequest.getRequest()``; ``getObject``
+  and ``_unrestrictedGetObject`` resolve a traversal root lazily via
+  a new ``_traversal_root()`` helper (``getSite().getPhysicalRoot()``
+  first, ``getRequest().PARENTS[-1]`` as fallback).  This keeps brains
+  catalog-independent so callers can cache / pickle / re-queue them
+  without dragging the Acquisition chain along.  The catalog
+  reference that the ZODB-prefetch batch needs has moved onto the
+  transient ``CatalogSearchResults`` container, where it belongs.
+
+  The ``catalog=`` keyword on ``PGCatalogBrain.__init__`` is accepted
+  but ignored — kept until the next major version for signature
+  compatibility with direct callers.
+
 ## 1.0.0b62
 
 ### Fixed
