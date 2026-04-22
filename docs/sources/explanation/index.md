@@ -14,6 +14,7 @@ architecture
 why-postgresql
 fulltext-search
 tika-extraction
+caching
 performance
 security
 bm25-design
