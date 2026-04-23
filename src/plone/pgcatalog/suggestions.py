@@ -98,8 +98,13 @@ _PARTIAL_SCOPING_ELIGIBLE_TYPES = frozenset(
 #
 # The cache is module-level — catalog.py resets it via
 # _reset_probe_cache() at the start of each manage_get_slow_query_stats
-# call, so the scope is effectively "one ZMI tab load".  Single-thread
-# WSGI request model makes this safe.
+# call, so the scope is effectively "one ZMI tab load".  This assumes
+# the single-thread-per-worker WSGI model (the Zope default).  Under a
+# multi-threaded worker, concurrent ZMI tabs could clear the cache
+# mid-flight of another request; the worst case is redundant probe
+# work, not incorrect output (probes are deterministic per DB state).
+# A ContextVar-based per-request dict is the cleaner fix if multi-
+# threaded workers become common; deferred as YAGNI for now.
 
 _probe_cache: dict = {}
 _pg_stats_cache: dict = {}
