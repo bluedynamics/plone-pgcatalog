@@ -781,25 +781,78 @@ def _build_btree_bundle(filter_fields, sort_field, existing_indexes):
 def _check_covered(ddl, existing_indexes):
     """Check if the suggested index already exists.
 
-    Two checks:
-    1. Exact name match (catches re-apply of same suggestion).
-       Name is lowercased because PostgreSQL folds unquoted
+    Three checks:
+    1. Exact name match (case-insensitive).  PG folds unquoted
        identifiers to lowercase in pg_indexes.indexname.
-    2. Normalized expression match (catches existing idx_os_cat_*
-       indexes that cover the same columns with different naming).
+    2. Normalized expression match AND WHERE-clause covers suggested.
+       A broader existing WHERE covers a narrower suggested one; a
+       stricter existing WHERE does NOT cover a broader one — and
+       more importantly, a narrower *suggested* WHERE is a distinct
+       partial index (different plan-usability), so we do NOT mark
+       it covered.
     """
-    # Check 1: case-insensitive index name match
     m = re.search(r"(?:CREATE INDEX\s+(?:CONCURRENTLY\s+)?)(\S+)", ddl, re.I)
     if m and m.group(1).lower() in existing_indexes:
         return "already_covered"
 
-    # Check 2: normalize and compare column expressions
     norm = _normalize_idx_expr(ddl)
+    suggested_where = _extract_where_clause(ddl)
     if norm:
         for _name, idx_def in existing_indexes.items():
-            if norm in _normalize_idx_expr(idx_def):
+            existing_norm = _normalize_idx_expr(idx_def)
+            if norm not in existing_norm:
+                continue
+            existing_where = _extract_where_clause(idx_def)
+            if _where_covers(existing_where, suggested_where):
                 return "already_covered"
     return "new"
+
+
+def _extract_where_clause(ddl):
+    """Extract the normalized WHERE-clause predicate set from an index DDL.
+
+    Returns a frozenset of predicate strings (AND-separated), each
+    stripped of surrounding parens and whitespace.
+    """
+    m = re.search(r"\bWHERE\b\s+(.+)$", ddl, re.I | re.S)
+    if not m:
+        return frozenset()
+    raw = m.group(1).strip().rstrip(")")
+    raw = re.sub(r"^\s*\(\s*", "", raw)
+    raw = re.sub(r"\s*\)\s*$", "", raw)
+    parts = re.split(r"\s+and\s+", raw, flags=re.I)
+    return frozenset(_normalize_predicate(p) for p in parts if p.strip())
+
+
+def _normalize_predicate(p):
+    """Canonicalize a single WHERE predicate for equality comparison."""
+    p = re.sub(r"::text\b", "", p)
+    p = re.sub(r"\s*(->>?|#>>?|#>)\s*", r"\1", p)
+    p = re.sub(r"\s+", " ", p).strip()
+    p = re.sub(r"^\((.+)\)$", r"\1", p)
+    return p.strip()
+
+
+def _where_covers(existing_where, suggested_where):
+    """An existing WHERE predicate set 'covers' a suggested one iff
+    the existing predicates are a superset of the suggested predicates
+    (existing is at least as strict as suggested — every row the
+    existing index covers also satisfies the suggested WHERE).
+
+    Equivalently: suggested ⊆ existing.
+
+    Plain GIN (WHERE idx IS NOT NULL AND idx ? 'Subject') does NOT
+    cover a partial GIN with an extra predicate like
+    idx->>'portal_type' = 'Event', because the existing index spans
+    more rows and the planner cannot substitute it for the narrower
+    partial index.  The partial GIN is genuinely distinct (new).
+
+    Conversely, an existing partial GIN with the same or stricter
+    WHERE DOES cover a suggested plain GIN — the exact-match (Check 1
+    in _check_covered) handles that case via name lookup, but the
+    expression-match path also handles it here.
+    """
+    return suggested_where.issubset(existing_where)
 
 
 def _normalize_idx_expr(ddl):

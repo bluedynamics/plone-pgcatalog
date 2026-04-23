@@ -1317,3 +1317,53 @@ class TestIssue122AT26Regression:
         gin = next(m for m in mixed[0].members if m.role.endswith("gin"))
         assert gin.role == "plain_gin"
         assert "idx->>'portal_type'" not in gin.ddl
+
+
+class TestGinCoveredDetection:
+    """GIN expression indexes get detected as 'already_covered'."""
+
+    def test_existing_plain_gin_detected(self):
+        """A plain GIN on (idx->'Subject') makes a new plain GIN 'already_covered'."""
+        from plone.pgcatalog.suggestions import _build_keyword_gin_bundle
+
+        filter_fields = [("Subject", IndexType.KEYWORD, "equality", "x")]
+        existing = {
+            "idx_os_cat_subject_gin": (
+                "CREATE INDEX idx_os_cat_subject_gin ON public.object_state "
+                "USING gin ((idx -> 'Subject'::text)) "
+                "WHERE (idx IS NOT NULL AND idx ? 'Subject')"
+            )
+        }
+        bundle = _build_keyword_gin_bundle(filter_fields, [], existing)
+        assert bundle.members[0].status == "already_covered"
+
+    def test_whitespace_normalization(self):
+        from plone.pgcatalog.suggestions import _build_keyword_gin_bundle
+
+        filter_fields = [("tags", IndexType.KEYWORD, "equality", "x")]
+        existing = {
+            "idx_os_sug_tags": (
+                "CREATE INDEX idx_os_sug_tags ON public.object_state "
+                "USING gin ((idx -> 'tags'::text)) "
+                "WHERE (idx IS NOT NULL AND idx ? 'tags')"
+            )
+        }
+        bundle = _build_keyword_gin_bundle(filter_fields, [], existing)
+        assert bundle.members[0].status == "already_covered"
+
+    def test_partial_gin_narrower_where_is_new(self):
+        """Suggested partial GIN has STRICTER WHERE than existing plain
+        GIN — treat as NEW (different index)."""
+        from plone.pgcatalog.suggestions import _build_keyword_gin_bundle
+
+        filter_fields = [("Subject", IndexType.KEYWORD, "equality", "x")]
+        where_terms = ["idx->>'portal_type' = 'Event'"]
+        existing = {
+            "idx_os_cat_subject_gin": (
+                "CREATE INDEX idx_os_cat_subject_gin ON public.object_state "
+                "USING gin ((idx -> 'Subject'::text)) "
+                "WHERE (idx IS NOT NULL AND idx ? 'Subject')"
+            )
+        }
+        bundle = _build_keyword_gin_bundle(filter_fields, where_terms, existing)
+        assert bundle.members[0].status == "new"
