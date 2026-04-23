@@ -864,3 +864,56 @@ class TestBuildBtreeBundle:
         from plone.pgcatalog.suggestions import _build_btree_bundle
 
         assert _build_btree_bundle([], None, {}) is None
+
+
+class TestBuildKeywordGinBundle:
+    """_build_keyword_gin_bundle produces a plain GIN bundle (T3)."""
+
+    def test_single_keyword_plain_gin(self):
+        """Without a partial predicate, emits T3 plain GIN."""
+        from plone.pgcatalog.suggestions import _build_keyword_gin_bundle
+
+        filter_fields = [("custom_tags", IndexType.KEYWORD, "equality", "alpha")]
+        bundle = _build_keyword_gin_bundle(filter_fields, [], {})
+        assert bundle is not None
+        assert bundle.shape_classification == "KEYWORD_ONLY"
+        assert len(bundle.members) == 1
+        m = bundle.members[0]
+        assert m.role == "plain_gin"
+        assert "USING gin ((idx->'custom_tags'))" in m.ddl
+        assert "WHERE" in m.ddl
+        assert "idx->>'" not in m.ddl
+        assert m.fields == ["custom_tags"]
+        assert m.field_types == ["KEYWORD"]
+
+    def test_partial_predicate_emits_t4(self):
+        """With partial_where_terms provided, emits T4 partial GIN."""
+        from plone.pgcatalog.suggestions import _build_keyword_gin_bundle
+
+        filter_fields = [("Subject", IndexType.KEYWORD, "equality", "AT26")]
+        where_terms = ["idx->>'portal_type' = 'Event'"]
+        bundle = _build_keyword_gin_bundle(filter_fields, where_terms, {})
+        m = bundle.members[0]
+        assert m.role == "partial_gin"
+        assert "USING gin ((idx->'Subject'))" in m.ddl
+        assert "idx->>'portal_type' = 'Event'" in m.ddl
+
+    def test_multiple_keywords_yield_separate_members(self):
+        """Two KEYWORD filters → one bundle with two members (each GIN)."""
+        from plone.pgcatalog.suggestions import _build_keyword_gin_bundle
+
+        filter_fields = [
+            ("Subject", IndexType.KEYWORD, "equality", "AT26"),
+            ("tags", IndexType.KEYWORD, "equality_multi", None),
+        ]
+        bundle = _build_keyword_gin_bundle(filter_fields, [], {})
+        assert len(bundle.members) == 2
+        roles = {m.role for m in bundle.members}
+        assert roles == {"plain_gin"}
+        fields_covered = {tuple(m.fields) for m in bundle.members}
+        assert fields_covered == {("Subject",), ("tags",)}
+
+    def test_empty_filter_returns_none(self):
+        from plone.pgcatalog.suggestions import _build_keyword_gin_bundle
+
+        assert _build_keyword_gin_bundle([], [], {}) is None

@@ -377,6 +377,97 @@ def _extract_sort_field(params, registry):
     return None
 
 
+def _build_keyword_gin_bundle(filter_fields, partial_where_terms, existing_indexes):
+    """Build a KEYWORD_ONLY Bundle — one plain or partial GIN per KEYWORD.
+
+    Args:
+        filter_fields: list of ``(name, IndexType, operator, value)`` — all
+            expected to be IndexType.KEYWORD entries (caller guarantees).
+        partial_where_terms: list of SQL predicate strings to AND into
+            the index WHERE clause for T4 partial GIN.  Empty list → T3.
+        existing_indexes: dict for coverage detection.
+
+    Returns:
+        Bundle with one BundleMember per KEYWORD filter, or None when
+        filter_fields is empty.
+    """
+    if not filter_fields:
+        return None
+
+    keyword_fields = [
+        (name, idx_type)
+        for (name, idx_type, _op, _val) in filter_fields
+        if idx_type == IndexType.KEYWORD
+    ]
+    if not keyword_fields:
+        return None
+
+    members = []
+    for name, _idx_type in keyword_fields:
+        expr = _gin_expr(name)
+        base_where = f"idx IS NOT NULL AND idx ? '{name}'"
+        if partial_where_terms:
+            where_clause = base_where + " AND " + " AND ".join(partial_where_terms)
+            role = "partial_gin"
+            scope_suffix = "_" + "_".join(
+                _extract_where_key(t) for t in partial_where_terms
+            )
+            idx_name = f"idx_os_sug_{name}_partial{scope_suffix}"
+        else:
+            where_clause = base_where
+            role = "plain_gin"
+            idx_name = f"idx_os_sug_{name}"
+
+        ddl = (
+            f"CREATE INDEX CONCURRENTLY {idx_name} "
+            f"ON object_state USING gin ({expr}) "
+            f"WHERE {where_clause}"
+        )
+        reason_detail = (
+            f"partial GIN scoped by {len(partial_where_terms)} predicate(s)"
+            if partial_where_terms
+            else "plain GIN"
+        )
+        reason = f"{reason_detail.capitalize()} for KEYWORD field '{name}'"
+        status = _check_covered(ddl, existing_indexes)
+        members.append(
+            BundleMember(
+                ddl=ddl,
+                fields=[name],
+                field_types=[IndexType.KEYWORD.name],
+                status=status,
+                role=role,
+                reason=reason if status == "new" else f"Already covered: {reason}",
+            )
+        )
+
+    bundle_name = "kwgin-" + "-".join(f for f, _ in keyword_fields)
+    rationale = (
+        f"GIN indexes for KEYWORD filter shape on "
+        f"{', '.join(f for f, _ in keyword_fields)}"
+    )
+    if partial_where_terms:
+        rationale += f" (partial: scoped by {len(partial_where_terms)} predicate(s))"
+    return Bundle(
+        name=bundle_name,
+        rationale=rationale,
+        shape_classification="KEYWORD_ONLY",
+        members=members,
+    )
+
+
+def _extract_where_key(term):
+    """Pull the JSONB key name out of a WHERE predicate.
+
+    Input: ``idx->>'portal_type' = 'Event'``
+    Output: ``portal_type``  (used only for deterministic index names)
+    Returns 'x' on parse failure — the index name still needs to
+    satisfy ``_SAFE_NAME_RE`` so we keep it alphanumeric-only.
+    """
+    m = re.search(r"idx->>'([A-Za-z_][A-Za-z0-9_]*)'", term)
+    return m.group(1) if m else "x"
+
+
 def _add_standalone_suggestion(field, idx_type, existing_indexes, suggestions):
     """Add a standalone GIN/tsvector suggestion for KEYWORD or TEXT field."""
     if idx_type == IndexType.KEYWORD:
