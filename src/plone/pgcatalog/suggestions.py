@@ -410,6 +410,84 @@ def _add_standalone_suggestion(field, idx_type, existing_indexes, suggestions):
     )
 
 
+def _build_btree_bundle(filter_fields, sort_field, existing_indexes):
+    """Build a single-member Bundle holding one btree composite index.
+
+    Wraps the PR 2 btree-composite logic (selectivity ordering, 3-column
+    cap including sort covering, dedupe when sort field is already a
+    filter column) into the Bundle output shape.
+
+    Returns None when filter_fields is empty.
+    """
+    if not filter_fields:
+        return None
+
+    btree_pairs = [(name, idx_type) for (name, idx_type, _op, _val) in filter_fields]
+
+    btree_pairs = sorted(btree_pairs, key=lambda ft: _SELECTIVITY_ORDER.get(ft[1], 99))
+
+    filter_cap = (
+        _MAX_COMPOSITE_COLUMNS - 1 if sort_field is not None else _MAX_COMPOSITE_COLUMNS
+    )
+    fields_limited = btree_pairs[:filter_cap]
+
+    ordered = list(fields_limited)
+    sort_covering = False
+    if sort_field is not None:
+        existing_names = {f for f, _t in ordered}
+        if sort_field[0] not in existing_names:
+            ordered.append(sort_field)
+            sort_covering = True
+
+    if not ordered:
+        return None
+
+    field_names = [f for f, _t in ordered]
+    if len(ordered) == 1:
+        field, idx_type = ordered[0]
+        expr = _btree_expr(field, idx_type)
+        name = f"idx_os_sug_{field}"
+        ddl = (
+            f"CREATE INDEX CONCURRENTLY {name} "
+            f"ON object_state ({expr}) WHERE idx IS NOT NULL"
+        )
+        reason = f"Btree index for {idx_type.name} field '{field}'"
+    else:
+        exprs = [_btree_expr(f, t) for f, t in ordered]
+        name = "idx_os_sug_" + "_".join(field_names)
+        cols = ", ".join(exprs)
+        ddl = (
+            f"CREATE INDEX CONCURRENTLY {name} "
+            f"ON object_state ({cols}) WHERE idx IS NOT NULL"
+        )
+        types_str = " + ".join(t.name for _f, t in ordered)
+        reason = f"Composite btree ({types_str}) for {len(ordered)} fields"
+
+    if sort_covering:
+        reason += f"; last column covers ORDER BY {sort_field[0]}"
+
+    status = _check_covered(ddl, existing_indexes)
+    member = BundleMember(
+        ddl=ddl,
+        fields=field_names,
+        field_types=[t.name for _f, t in ordered],
+        status=status,
+        role="btree_composite",
+        reason=reason if status == "new" else f"Already covered: {reason}",
+    )
+
+    bundle_name = "btree-" + "-".join(field_names)
+    rationale = (
+        f"Btree composite for filter shape BTREE_ONLY on {', '.join(field_names)}"
+    )
+    return Bundle(
+        name=bundle_name,
+        rationale=rationale,
+        shape_classification="BTREE_ONLY",
+        members=[member],
+    )
+
+
 def _add_btree_suggestions(btree_fields, sort_field, existing_indexes, suggestions):
     """Add a btree suggestion — single column or composite.
 

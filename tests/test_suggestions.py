@@ -816,3 +816,51 @@ class TestClassifyFilterShape:
             self._ff(("Title", IndexType.TEXT), ("portal_type", IndexType.FIELD))
         )
         assert out == "TEXT_ONLY"
+
+
+class TestBuildBtreeBundle:
+    """_build_btree_bundle produces a single-member BTREE_ONLY Bundle."""
+
+    def test_single_field_bundle(self):
+        from plone.pgcatalog.suggestions import _build_btree_bundle
+
+        filter_fields = [("portal_type", IndexType.FIELD, "equality", "Event")]
+        bundle = _build_btree_bundle(filter_fields, None, {})
+        assert bundle is not None
+        assert bundle.shape_classification == "BTREE_ONLY"
+        assert len(bundle.members) == 1
+        m = bundle.members[0]
+        assert m.role == "btree_composite"
+        assert "(idx->>'portal_type')" in m.ddl
+        assert m.fields == ["portal_type"]
+        assert m.field_types == ["FIELD"]
+        assert m.status == "new"
+
+    def test_composite_with_sort_covering(self):
+        from plone.pgcatalog.suggestions import _build_btree_bundle
+
+        filter_fields = [("portal_type", IndexType.FIELD, "equality", "Event")]
+        sort_field = ("effective", IndexType.DATE)
+        bundle = _build_btree_bundle(filter_fields, sort_field, {})
+        m = bundle.members[0]
+        assert m.fields == ["portal_type", "effective"]
+        assert "pgcatalog_to_timestamptz(idx->>'effective')" in m.ddl
+        assert "ORDER BY effective" in m.reason
+
+    def test_already_covered_propagates(self):
+        from plone.pgcatalog.suggestions import _build_btree_bundle
+
+        filter_fields = [("portal_type", IndexType.FIELD, "equality", "Event")]
+        existing = {
+            "idx_os_cat_portal_type": (
+                "CREATE INDEX idx_os_cat_portal_type ON object_state "
+                "((idx->>'portal_type')) WHERE idx IS NOT NULL"
+            )
+        }
+        bundle = _build_btree_bundle(filter_fields, None, existing)
+        assert bundle.members[0].status == "already_covered"
+
+    def test_empty_filter_returns_none(self):
+        from plone.pgcatalog.suggestions import _build_btree_bundle
+
+        assert _build_btree_bundle([], None, {}) is None
