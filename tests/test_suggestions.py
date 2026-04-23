@@ -1053,3 +1053,89 @@ class TestProbeSelectivity:
 
         _reset_probe_cache()
         assert _probe_selectivity(None, "portal_type", "Event") == 1.0
+
+
+class TestPartialWhereTerms:
+    """_partial_where_terms applies threshold, escapes values, filters ops."""
+
+    def test_below_threshold_baked(self):
+        from plone.pgcatalog.suggestions import _partial_where_terms
+
+        filter_fields = [("portal_type", IndexType.FIELD, "equality", "Event")]
+        probes = {("portal_type", "Event"): 0.05}
+        terms = _partial_where_terms(filter_fields, probes)
+        assert terms == ["idx->>'portal_type' = 'Event'"]
+
+    def test_above_threshold_excluded(self):
+        from plone.pgcatalog.suggestions import _partial_where_terms
+
+        filter_fields = [("portal_type", IndexType.FIELD, "equality", "Page")]
+        probes = {("portal_type", "Page"): 0.50}
+        terms = _partial_where_terms(filter_fields, probes)
+        assert terms == []
+
+    def test_multiple_filters_anded(self):
+        from plone.pgcatalog.suggestions import _partial_where_terms
+
+        filter_fields = [
+            ("portal_type", IndexType.FIELD, "equality", "Event"),
+            ("review_state", IndexType.FIELD, "equality", "published"),
+        ]
+        probes = {
+            ("portal_type", "Event"): 0.05,
+            ("review_state", "published"): 0.03,
+        }
+        terms = _partial_where_terms(filter_fields, probes)
+        assert set(terms) == {
+            "idx->>'portal_type' = 'Event'",
+            "idx->>'review_state' = 'published'",
+        }
+
+    def test_partial_selection_mixed_thresholds(self):
+        from plone.pgcatalog.suggestions import _partial_where_terms
+
+        filter_fields = [
+            ("portal_type", IndexType.FIELD, "equality", "Event"),
+            ("review_state", IndexType.FIELD, "equality", "published"),
+        ]
+        probes = {
+            ("portal_type", "Event"): 0.05,
+            ("review_state", "published"): 0.25,
+        }
+        terms = _partial_where_terms(filter_fields, probes)
+        assert terms == ["idx->>'portal_type' = 'Event'"]
+
+    def test_single_quote_escaping(self):
+        """Values containing single quotes are SQL-escaped (doubled)."""
+        from plone.pgcatalog.suggestions import _partial_where_terms
+
+        filter_fields = [("Creator", IndexType.FIELD, "equality", "o'hara")]
+        probes = {("Creator", "o'hara"): 0.01}
+        terms = _partial_where_terms(filter_fields, probes)
+        assert terms == ["idx->>'Creator' = 'o''hara'"]
+
+    def test_range_operator_excluded(self):
+        from plone.pgcatalog.suggestions import _partial_where_terms
+
+        filter_fields = [("effective", IndexType.DATE, "range", None)]
+        probes = {}
+        terms = _partial_where_terms(filter_fields, probes)
+        assert terms == []
+
+    def test_multi_value_equality_excluded(self):
+        from plone.pgcatalog.suggestions import _partial_where_terms
+
+        filter_fields = [("portal_type", IndexType.FIELD, "equality_multi", None)]
+        probes = {}
+        terms = _partial_where_terms(filter_fields, probes)
+        assert terms == []
+
+    def test_date_type_excluded_even_if_equality(self):
+        """DATE values are timestamps — rarely in MCV, partial scoping
+        is usually an anti-pattern.  Not baked."""
+        from plone.pgcatalog.suggestions import _partial_where_terms
+
+        filter_fields = [("effective", IndexType.DATE, "equality", "2026-04-15")]
+        probes = {("effective", "2026-04-15"): 0.001}
+        terms = _partial_where_terms(filter_fields, probes)
+        assert terms == []

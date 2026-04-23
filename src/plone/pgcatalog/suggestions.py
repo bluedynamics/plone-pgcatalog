@@ -600,6 +600,39 @@ def _extract_where_key(term):
     return m.group(1) if m else "x"
 
 
+def _partial_where_terms(filter_fields, probes):
+    """Build the list of WHERE predicates for a partial index.
+
+    For each filter field with operator='equality' and a scalar value,
+    check the probed selectivity against the threshold; if below,
+    include the predicate.  Values are SQL-escaped (single quote
+    doubled).  DATE / KEYWORD / range / multi-value filters are
+    excluded — only btree-eligible text-ish types qualify.
+
+    Args:
+        filter_fields: list of ``(name, IndexType, operator, value)``.
+        probes: dict ``{(name, value): selectivity_float}``.  Missing
+            entries are treated as 1.0 (never qualify).
+
+    Returns:
+        list[str] of SQL predicate fragments ready for AND-joining.
+    """
+    terms = []
+    for name, idx_type, op, value in filter_fields:
+        if op != "equality":
+            continue
+        if idx_type not in _PARTIAL_SCOPING_ELIGIBLE_TYPES:
+            continue
+        if value is None:
+            continue
+        sel = probes.get((name, value), 1.0)
+        if sel >= _PARTIAL_PREDICATE_SELECTIVITY_THRESHOLD:
+            continue
+        safe_value = str(value).replace("'", "''")
+        terms.append(f"idx->>'{name}' = '{safe_value}'")
+    return terms
+
+
 def _build_btree_bundle(filter_fields, sort_field, existing_indexes):
     """Build a single-member Bundle holding one btree composite index.
 
