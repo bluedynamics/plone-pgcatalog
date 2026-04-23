@@ -135,91 +135,129 @@ def _gin_expr(field):
 # ── Core suggestion engine ───────────────────────────────────────────────
 
 
-def suggest_indexes(query_keys, params, registry, existing_indexes):
-    """Generate index suggestions for a set of slow-query field keys.
+def _dispatch_templates(
+    filter_fields,
+    sort_field,
+    existing_indexes,
+    conn=None,
+):
+    """Route a classified filter-field list to a list of Bundles.
 
-    Pure function — no DB access.
+    This is the core PR α dispatcher.  Shape classification determines
+    which builder runs; the builders decide partial-scoping, sort
+    covering, etc.
+
+    conn is None-safe: when absent, partial-scoping probes skip (all
+    selectivities treated as 1.0 — nothing qualifies for partial
+    WHERE), and the dispatcher degrades to plain T1/T3 output.
+    """
+    shape = _classify_filter_shape(filter_fields)
+
+    # Probes + partial-predicate terms are computed lazily only when
+    # the dispatch branch needs them — saves DB round-trips.
+    partial_where_terms = []  # populated by later tasks
+
+    if shape == "BTREE_ONLY":
+        bundle = _build_btree_bundle(filter_fields, sort_field, existing_indexes)
+        return [bundle] if bundle is not None else []
+
+    if shape == "KEYWORD_ONLY":
+        bundle = _build_keyword_gin_bundle(
+            filter_fields, partial_where_terms, existing_indexes
+        )
+        return [bundle] if bundle is not None else []
+
+    if shape == "MIXED":
+        # Task 9 wires _build_hybrid_bundle; for now emit no bundle so
+        # the suite stays green.  The MIXED shape is rare in PR 2's test
+        # cases — all existing MIXED-ish tests have KEYWORD sitting
+        # alongside one FIELD and expect the KEYWORD path plus a btree
+        # for the FIELDs.  We synthesize both bundles here to preserve
+        # that output for this commit.
+        btree_part = [
+            (n, t, op, v)
+            for (n, t, op, v) in filter_fields
+            if t != IndexType.KEYWORD and t != IndexType.TEXT
+        ]
+        keyword_part = [
+            (n, t, op, v) for (n, t, op, v) in filter_fields if t == IndexType.KEYWORD
+        ]
+        bundles = []
+        btree_bundle = _build_btree_bundle(btree_part, sort_field, existing_indexes)
+        if btree_bundle is not None:
+            bundles.append(btree_bundle)
+        gin_bundle = _build_keyword_gin_bundle(keyword_part, [], existing_indexes)
+        if gin_bundle is not None:
+            bundles.append(gin_bundle)
+        return bundles
+
+    # TEXT_ONLY → dedicated tsvector already serves.  UNKNOWN → silent skip.
+    return []
+
+
+def _dedicated_bundles(query_keys, reg_lookup):
+    """Emit one-member 'already_covered' Bundle per dedicated-column key
+    the query references.  Makes the UI aware the engine saw the
+    coverage — important context alongside the main bundles.
+    """
+    bundles = []
+    for key in query_keys:
+        if key not in _DEDICATED_FIELDS:
+            continue
+        field_type = reg_lookup[key].name if key in reg_lookup else "KEYWORD"
+        member = BundleMember(
+            ddl="",
+            fields=[key],
+            field_types=[field_type],
+            status="already_covered",
+            role="dedicated",
+            reason=f"Dedicated column: {_DEDICATED_FIELDS[key]}",
+        )
+        bundles.append(
+            Bundle(
+                name=f"dedicated-{key}",
+                rationale=f"{key} has a dedicated column / index",
+                shape_classification="DEDICATED",
+                members=[member],
+            )
+        )
+    return bundles
+
+
+def suggest_indexes(query_keys, params, registry, existing_indexes, conn=None):
+    """Generate index-suggestion bundles for a slow-query shape.
 
     Args:
-        query_keys: list of catalog query field names
-        params: dict of representative query params (value of the
-            slowest observed invocation of this query-key group), or
-            None when no representative is available.  Used to extract
-            a sort_on value for covering-composite suggestions.
-        registry: IndexRegistry instance (has .items() returning
-            name -> (IndexType, idx_key, source_attrs))
-        existing_indexes: dict {index_name: index_def_sql} from
-            get_existing_indexes()
+        query_keys: list of catalog query field names from the slow log.
+        params: dict of representative query params, or None.
+        registry: IndexRegistry (name -> (IndexType, idx_key, source_attrs)).
+        existing_indexes: dict {index_name: index_def_sql} from get_existing_indexes.
+        conn: optional psycopg connection for selectivity probes.
+            When None, no partial-predicate scoping occurs; bundles
+            degrade to plain T1/T3 shapes — identical to pre-α output.
 
     Returns:
-        list of suggestion dicts with keys: fields, field_types, ddl,
-        status ("new" | "already_covered"), reason.
+        list[Bundle].  Each Bundle groups one or more BundleMembers
+        (indexes) that together address the slow-query shape.  Empty
+        list when no suggestion is meaningful (TEXT_ONLY, UNKNOWN,
+        etc.).
     """
-    # Build lookup from registry
-    reg_lookup = {}
-    for name, (idx_type, _idx_key, _source_attrs) in registry.items():
-        reg_lookup[name] = idx_type
+    reg_lookup = {name: idx_type for name, (idx_type, _k, _a) in registry.items()}
 
-    # Filter and classify fields
-    suggestions = []
-    btree_fields = []  # (field, idx_type) tuples for composite candidate
+    # Emit dedicated-field 'already_covered' notices first (context
+    # for the main bundles).
+    bundles = _dedicated_bundles(query_keys, reg_lookup)
 
-    for key in query_keys:
-        # Pagination/sort meta keys are never filter columns.
-        if key in _PAGINATION_META or key in _SORT_META:
-            continue
-
-        # Virtual filter fields (e.g. effectiveRange) expand to their
-        # real date/text contributors.  The expansion participates in the
-        # btree composite the same way a direct key would.
-        if key in _FILTER_VIRTUAL:
-            for real_field, real_type in _FILTER_VIRTUAL[key]:
-                btree_fields.append((real_field, real_type))
-            continue
-
-        # Dedicated column check comes BEFORE the skip set so SearchableText
-        # emits its "dedicated column" reason rather than silently vanishing.
-        if key in _DEDICATED_FIELDS:
-            suggestions.append(
-                {
-                    "fields": [key],
-                    "field_types": [
-                        reg_lookup[key].name if key in reg_lookup else "KEYWORD"
-                    ],
-                    "ddl": "",
-                    "status": "already_covered",
-                    "reason": f"Dedicated column: {_DEDICATED_FIELDS[key]}",
-                }
-            )
-            continue
-
-        # Explicitly skipped fields (path — deferred to PR 3).
-        if key in _SKIP_FIELDS:
-            continue
-
-        idx_type = reg_lookup.get(key)
-        if idx_type is None:
-            continue  # unknown field — skip
-
-        if idx_type in _SKIP_TYPES:
-            continue
-
-        if idx_type in _NON_COMPOSITE_TYPES:
-            # KEYWORD / TEXT get their own suggestion
-            _add_standalone_suggestion(key, idx_type, existing_indexes, suggestions)
-        else:
-            btree_fields.append((key, idx_type))
-
-    # Extract sort field for covering trailing column (if any).
+    # Build the structured filter-field list and extract sort field.
+    filter_fields = _extract_filter_fields(query_keys, params, registry)
     sort_field = _extract_sort_field(params, registry)
 
-    # Build composite from btree-eligible fields plus optional sort cover.
-    # No sort-only suggestion — a btree on sort alone does not
-    # accelerate a filter-less query in a meaningful way.
-    if btree_fields:
-        _add_btree_suggestions(btree_fields, sort_field, existing_indexes, suggestions)
+    # Route to the shape-appropriate builder(s).
+    bundles.extend(
+        _dispatch_templates(filter_fields, sort_field, existing_indexes, conn=conn)
+    )
 
-    return suggestions
+    return bundles
 
 
 def _classify_operator(value):
@@ -468,39 +506,6 @@ def _extract_where_key(term):
     return m.group(1) if m else "x"
 
 
-def _add_standalone_suggestion(field, idx_type, existing_indexes, suggestions):
-    """Add a standalone GIN/tsvector suggestion for KEYWORD or TEXT field."""
-    if idx_type == IndexType.KEYWORD:
-        expr = _gin_expr(field)
-        ddl = (
-            f"CREATE INDEX CONCURRENTLY idx_os_sug_{field} "
-            f"ON object_state USING gin ({expr}) "
-            f"WHERE idx IS NOT NULL AND idx ? '{field}'"
-        )
-        reason = f"GIN index for KEYWORD field '{field}'"
-    elif idx_type == IndexType.TEXT:
-        ddl = (
-            f"CREATE INDEX CONCURRENTLY idx_os_sug_{field}_tsv "
-            f"ON object_state USING gin ("
-            f"to_tsvector('simple'::regconfig, COALESCE(idx->>'{field}', ''))"
-            f") WHERE idx IS NOT NULL"
-        )
-        reason = f"GIN tsvector index for TEXT field '{field}'"
-    else:
-        return
-
-    status = _check_covered(ddl, existing_indexes)
-    suggestions.append(
-        {
-            "fields": [field],
-            "field_types": [idx_type.name],
-            "ddl": ddl,
-            "status": status,
-            "reason": reason if status == "new" else f"Already covered: {reason}",
-        }
-    )
-
-
 def _build_btree_bundle(filter_fields, sort_field, existing_indexes):
     """Build a single-member Bundle holding one btree composite index.
 
@@ -576,83 +581,6 @@ def _build_btree_bundle(filter_fields, sort_field, existing_indexes):
         rationale=rationale,
         shape_classification="BTREE_ONLY",
         members=[member],
-    )
-
-
-def _add_btree_suggestions(btree_fields, sort_field, existing_indexes, suggestions):
-    """Add a btree suggestion — single column or composite.
-
-    Args:
-        btree_fields: list of ``(field_name, IndexType)`` tuples for
-            filter columns discovered in the query.  Order is the
-            traversal order of query_keys — this function sorts by
-            selectivity.
-        sort_field: ``(field_name, IndexType)`` for a trailing covering
-            column, or None.  Makes the planner skip the ORDER BY sort
-            step when the leading filter columns have equality predicates.
-        existing_indexes: dict {name: indexdef} from get_existing_indexes.
-        suggestions: output list to append the resulting dict to.
-    """
-    # Sort filters by selectivity (most selective first).
-    btree_fields = sorted(
-        btree_fields, key=lambda ft: _SELECTIVITY_ORDER.get(ft[1], 99)
-    )
-
-    # Reserve one slot for sort_field if present.  Cap stays 3 total.
-    filter_cap = (
-        _MAX_COMPOSITE_COLUMNS - 1 if sort_field is not None else _MAX_COMPOSITE_COLUMNS
-    )
-    fields_limited = btree_fields[:filter_cap]
-
-    # Build the ordered column list: filters first, sort trailing.
-    # Dedupe: if sort_field's name is already a filter column, don't
-    # repeat it — the leading position already satisfies ORDER BY when
-    # the remaining columns have equality predicates.
-    ordered = list(fields_limited)
-    sort_covering = False
-    if sort_field is not None:
-        existing_names = {f for f, _t in ordered}
-        if sort_field[0] not in existing_names:
-            ordered.append(sort_field)
-            sort_covering = True
-
-    # Empty after dedupe (shouldn't happen — caller gates on truthy
-    # btree_fields — but guard anyway).
-    if not ordered:
-        return
-
-    field_names = [f for f, _t in ordered]
-    if len(ordered) == 1:
-        field, idx_type = ordered[0]
-        expr = _btree_expr(field, idx_type)
-        name = f"idx_os_sug_{field}"
-        ddl = (
-            f"CREATE INDEX CONCURRENTLY {name} "
-            f"ON object_state ({expr}) WHERE idx IS NOT NULL"
-        )
-        reason = f"Btree index for {idx_type.name} field '{field}'"
-    else:
-        exprs = [_btree_expr(f, t) for f, t in ordered]
-        name = "idx_os_sug_" + "_".join(field_names)
-        cols = ", ".join(exprs)
-        ddl = (
-            f"CREATE INDEX CONCURRENTLY {name} "
-            f"ON object_state ({cols}) WHERE idx IS NOT NULL"
-        )
-        types_str = " + ".join(t.name for _f, t in ordered)
-        reason = f"Composite btree ({types_str}) for {len(ordered)} fields"
-    if sort_covering:
-        reason += f"; last column covers ORDER BY {sort_field[0]}"
-
-    status = _check_covered(ddl, existing_indexes)
-    suggestions.append(
-        {
-            "fields": field_names,
-            "field_types": [t.name for _f, t in ordered],
-            "ddl": ddl,
-            "status": status,
-            "reason": reason if status == "new" else f"Already covered: {reason}",
-        }
     )
 
 
