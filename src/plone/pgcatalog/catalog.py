@@ -1174,9 +1174,11 @@ class PlonePGCatalogTool(UniqueObject, Folder):
 
     def manage_get_slow_query_stats(self):
         """Return aggregated slow query stats for the Slow Queries tab."""
+        from plone.pgcatalog.suggestions import _reset_probe_cache
         from plone.pgcatalog.suggestions import get_existing_indexes
         from plone.pgcatalog.suggestions import suggest_indexes
 
+        _reset_probe_cache()
         try:
             pool = get_pool(self)
             pg_conn = pool.getconn()

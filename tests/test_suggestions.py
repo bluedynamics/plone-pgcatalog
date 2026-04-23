@@ -1139,3 +1139,181 @@ class TestPartialWhereTerms:
         probes = {("effective", "2026-04-15"): 0.001}
         terms = _partial_where_terms(filter_fields, probes)
         assert terms == []
+
+
+class TestBuildHybridBundle:
+    """_build_hybrid_bundle for MIXED shapes yields btree + N GIN members."""
+
+    def test_single_btree_plus_single_keyword(self):
+        from plone.pgcatalog.suggestions import _build_hybrid_bundle
+
+        filter_fields = [
+            ("portal_type", IndexType.FIELD, "equality", "Event"),
+            ("Subject", IndexType.KEYWORD, "equality", "AT26"),
+        ]
+        bundle = _build_hybrid_bundle(filter_fields, None, [], {})
+        assert bundle is not None
+        assert bundle.shape_classification == "MIXED"
+        assert len(bundle.members) == 2
+        roles = {m.role for m in bundle.members}
+        assert roles == {"btree_composite", "plain_gin"}
+
+    def test_partial_scoping_wraps_gin_not_btree(self):
+        """Partial WHERE baked into GIN member, NOT into btree member."""
+        from plone.pgcatalog.suggestions import _build_hybrid_bundle
+
+        filter_fields = [
+            ("portal_type", IndexType.FIELD, "equality", "Event"),
+            ("Subject", IndexType.KEYWORD, "equality", "AT26"),
+        ]
+        where_terms = ["idx->>'portal_type' = 'Event'"]
+        bundle = _build_hybrid_bundle(filter_fields, None, where_terms, {})
+        btree_member = next(m for m in bundle.members if m.role == "btree_composite")
+        gin_member = next(m for m in bundle.members if m.role == "partial_gin")
+        assert "idx->>'portal_type' = 'Event'" not in btree_member.ddl
+        assert "idx->>'portal_type' = 'Event'" in gin_member.ddl
+
+    def test_multiple_keywords_produce_multiple_members(self):
+        from plone.pgcatalog.suggestions import _build_hybrid_bundle
+
+        filter_fields = [
+            ("portal_type", IndexType.FIELD, "equality", "Event"),
+            ("Subject", IndexType.KEYWORD, "equality", "A"),
+            ("tags", IndexType.KEYWORD, "equality", "B"),
+        ]
+        bundle = _build_hybrid_bundle(filter_fields, None, [], {})
+        assert len(bundle.members) == 3
+        gin_fields = [m.fields[0] for m in bundle.members if m.role.endswith("gin")]
+        assert set(gin_fields) == {"Subject", "tags"}
+
+    def test_sort_covering_on_btree_member(self):
+        from plone.pgcatalog.suggestions import _build_hybrid_bundle
+
+        filter_fields = [
+            ("portal_type", IndexType.FIELD, "equality", "Event"),
+            ("Subject", IndexType.KEYWORD, "equality", "AT26"),
+        ]
+        sort_field = ("effective", IndexType.DATE)
+        bundle = _build_hybrid_bundle(filter_fields, sort_field, [], {})
+        btree_member = next(m for m in bundle.members if m.role == "btree_composite")
+        assert "effective" in btree_member.fields
+        assert "ORDER BY effective" in btree_member.reason
+
+
+class TestIssue122AT26Regression:
+    """Canonical slow query from #122 gap-analysis comment:
+        portal_type=Event + review_state=published + Subject=AT26
+        + effective<=now + expires>=now + sort_on=effective
+    Expected: ONE MIXED bundle with btree composite + partial GIN.
+    """
+
+    def _reg_at26(self):
+        return _reg(
+            portal_type=IndexType.FIELD,
+            review_state=IndexType.FIELD,
+            Subject=IndexType.KEYWORD,
+            effective=IndexType.DATE,
+            expires=IndexType.DATE,
+        )
+
+    def test_at26_both_filters_low_selectivity(self):
+        from plone.pgcatalog.suggestions import _probe_cache
+        from plone.pgcatalog.suggestions import _reset_probe_cache
+        from plone.pgcatalog.suggestions import suggest_indexes
+
+        _reset_probe_cache()
+        _probe_cache[("portal_type", "Event")] = 0.05
+        _probe_cache[("review_state", "published")] = 0.03
+
+        registry = self._reg_at26()
+        bundles = suggest_indexes(
+            [
+                "portal_type",
+                "review_state",
+                "Subject",
+                "effective",
+                "expires",
+            ],
+            {
+                "portal_type": "Event",
+                "review_state": "published",
+                "Subject": "AT26",
+                "effective": {"query": "now", "range": "max"},
+                "expires": {"query": "now", "range": "min"},
+                "sort_on": "effective",
+            },
+            registry,
+            {},
+            conn=object(),
+        )
+        mixed = [b for b in bundles if b.shape_classification == "MIXED"]
+        assert len(mixed) == 1
+        b = mixed[0]
+        roles = {m.role for m in b.members}
+        assert roles == {"btree_composite", "partial_gin"}
+        gin = next(m for m in b.members if m.role == "partial_gin")
+        assert "idx->'Subject'" in gin.ddl
+        assert "idx->>'portal_type' = 'Event'" in gin.ddl
+        assert "idx->>'review_state' = 'published'" in gin.ddl
+
+    def test_at26_only_portal_type_below_threshold(self):
+        from plone.pgcatalog.suggestions import _probe_cache
+        from plone.pgcatalog.suggestions import _reset_probe_cache
+        from plone.pgcatalog.suggestions import suggest_indexes
+
+        _reset_probe_cache()
+        _probe_cache[("portal_type", "Event")] = 0.05
+        _probe_cache[("review_state", "published")] = 0.25
+
+        registry = self._reg_at26()
+        bundles = suggest_indexes(
+            [
+                "portal_type",
+                "review_state",
+                "Subject",
+                "effective",
+                "expires",
+            ],
+            {
+                "portal_type": "Event",
+                "review_state": "published",
+                "Subject": "AT26",
+                "effective": {"query": "now", "range": "max"},
+                "expires": {"query": "now", "range": "min"},
+                "sort_on": "effective",
+            },
+            registry,
+            {},
+            conn=object(),
+        )
+        mixed = [b for b in bundles if b.shape_classification == "MIXED"]
+        assert len(mixed) == 1
+        gin = next(m for m in mixed[0].members if m.role == "partial_gin")
+        assert "idx->>'portal_type' = 'Event'" in gin.ddl
+        assert "review_state" not in gin.ddl
+
+    def test_at26_no_probes_degrades_to_plain_gin(self):
+        """conn=None -> probes return 1.0 -> no partial scoping -> plain GIN."""
+        from plone.pgcatalog.suggestions import _reset_probe_cache
+        from plone.pgcatalog.suggestions import suggest_indexes
+
+        _reset_probe_cache()
+        registry = self._reg_at26()
+        bundles = suggest_indexes(
+            [
+                "portal_type",
+                "review_state",
+                "Subject",
+                "effective",
+                "expires",
+            ],
+            {"portal_type": "Event", "review_state": "published", "Subject": "AT26"},
+            registry,
+            {},
+            conn=None,
+        )
+        mixed = [b for b in bundles if b.shape_classification == "MIXED"]
+        assert len(mixed) == 1
+        gin = next(m for m in mixed[0].members if m.role.endswith("gin"))
+        assert gin.role == "plain_gin"
+        assert "idx->>'portal_type'" not in gin.ddl

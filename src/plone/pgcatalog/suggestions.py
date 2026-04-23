@@ -247,45 +247,43 @@ def _dispatch_templates(
     """
     shape = _classify_filter_shape(filter_fields)
 
-    # Probes + partial-predicate terms are computed lazily only when
-    # the dispatch branch needs them — saves DB round-trips.
-    partial_where_terms = []  # populated by later tasks
+    # Resolve probes for every scalar-equality filter up front —
+    # cheap (all cached / deduped) and avoids branching probe logic
+    # between the builders.
+    probes = {}
+    for name, idx_type, op, value in filter_fields:
+        if op != "equality" or value is None:
+            continue
+        if idx_type not in _PARTIAL_SCOPING_ELIGIBLE_TYPES:
+            continue
+        probes[(name, value)] = _probe_selectivity(conn, name, value)
+
+    partial_where_terms = _partial_where_terms(filter_fields, probes)
 
     if shape == "BTREE_ONLY":
         bundle = _build_btree_bundle(filter_fields, sort_field, existing_indexes)
         return [bundle] if bundle is not None else []
 
     if shape == "KEYWORD_ONLY":
+        # Dedicated KEYWORD fields (e.g. Subject) already have a plain GIN
+        # index — the dedicated bundle emits an "already_covered" notice.
+        # Strip them from the filter list before building the GIN bundle to
+        # avoid duplicate suggestions.
+        non_dedicated_fields = [
+            ff for ff in filter_fields if ff[0] not in _DEDICATED_FIELDS
+        ]
         bundle = _build_keyword_gin_bundle(
-            filter_fields, partial_where_terms, existing_indexes
+            non_dedicated_fields, partial_where_terms, existing_indexes
         )
         return [bundle] if bundle is not None else []
 
     if shape == "MIXED":
-        # Task 9 wires _build_hybrid_bundle; for now emit no bundle so
-        # the suite stays green.  The MIXED shape is rare in PR 2's test
-        # cases — all existing MIXED-ish tests have KEYWORD sitting
-        # alongside one FIELD and expect the KEYWORD path plus a btree
-        # for the FIELDs.  We synthesize both bundles here to preserve
-        # that output for this commit.
-        btree_part = [
-            (n, t, op, v)
-            for (n, t, op, v) in filter_fields
-            if t != IndexType.KEYWORD and t != IndexType.TEXT
-        ]
-        keyword_part = [
-            (n, t, op, v) for (n, t, op, v) in filter_fields if t == IndexType.KEYWORD
-        ]
-        bundles = []
-        btree_bundle = _build_btree_bundle(btree_part, sort_field, existing_indexes)
-        if btree_bundle is not None:
-            bundles.append(btree_bundle)
-        gin_bundle = _build_keyword_gin_bundle(keyword_part, [], existing_indexes)
-        if gin_bundle is not None:
-            bundles.append(gin_bundle)
-        return bundles
+        bundle = _build_hybrid_bundle(
+            filter_fields, sort_field, partial_where_terms, existing_indexes
+        )
+        return [bundle] if bundle is not None else []
 
-    # TEXT_ONLY → dedicated tsvector already serves.  UNKNOWN → silent skip.
+    # TEXT_ONLY / UNKNOWN → silent skip.
     return []
 
 
@@ -405,11 +403,20 @@ def _extract_filter_fields(query_keys, params, registry):
                 out.append((real_field, real_type, "range", None))
             continue
 
-        # Dedicated columns are handled elsewhere (they emit a
-        # already_covered reason but do NOT participate in the filter
-        # shape).  Drop here.
+        # Dedicated columns are handled elsewhere (they emit an
+        # already_covered reason).  Non-KEYWORD dedicated fields do NOT
+        # participate in the filter shape — drop here.  KEYWORD dedicated
+        # fields (e.g. Subject) are kept so that a MIXED shape can be
+        # detected when they appear alongside btree-eligible fields;
+        # _build_keyword_gin_bundle suppresses a plain-GIN suggestion for
+        # them (the dedicated index already covers that case) but DOES
+        # emit a partial-GIN suggestion when partial_where_terms are present.
+        _is_dedicated_keyword = False
         if key in _DEDICATED_FIELDS:
-            continue
+            _dedicated_type = reg_lookup.get(key)
+            if _dedicated_type != IndexType.KEYWORD:
+                continue
+            _is_dedicated_keyword = True
 
         # Explicitly skipped fields.
         if key in _SKIP_FIELDS:
@@ -573,6 +580,9 @@ def _build_keyword_gin_bundle(filter_fields, partial_where_terms, existing_index
             )
         )
 
+    if not members:
+        return None
+
     bundle_name = "kwgin-" + "-".join(f for f, _ in keyword_fields)
     rationale = (
         f"GIN indexes for KEYWORD filter shape on "
@@ -584,6 +594,66 @@ def _build_keyword_gin_bundle(filter_fields, partial_where_terms, existing_index
         name=bundle_name,
         rationale=rationale,
         shape_classification="KEYWORD_ONLY",
+        members=members,
+    )
+
+
+def _build_hybrid_bundle(
+    filter_fields, sort_field, partial_where_terms, existing_indexes
+):
+    """Build a MIXED-shape Bundle — one btree composite + N partial GINs.
+
+    The btree member handles the btree-eligible filter axes plus any
+    sort covering (reuses T1 logic).  The GIN members handle the
+    KEYWORD filters, each scoped by the same ``partial_where_terms``
+    so the planner can BitmapAnd them.
+
+    The btree member does NOT gain a partial WHERE — PR α skips
+    T2 (partial btree) as YAGNI.
+
+    Returns None when filter_fields contains neither a btree-eligible
+    nor a KEYWORD entry.
+    """
+    btree_candidates = [
+        (n, t, op, v)
+        for (n, t, op, v) in filter_fields
+        if t != IndexType.KEYWORD and t != IndexType.TEXT
+    ]
+    keyword_candidates = [
+        (n, t, op, v) for (n, t, op, v) in filter_fields if t == IndexType.KEYWORD
+    ]
+
+    if not btree_candidates and not keyword_candidates:
+        return None
+
+    members = []
+
+    btree_bundle = _build_btree_bundle(btree_candidates, sort_field, existing_indexes)
+    if btree_bundle is not None:
+        members.extend(btree_bundle.members)
+
+    gin_bundle = _build_keyword_gin_bundle(
+        keyword_candidates, partial_where_terms, existing_indexes
+    )
+    if gin_bundle is not None:
+        members.extend(gin_bundle.members)
+
+    if not members:
+        return None
+
+    all_field_names = [m.fields[0] for m in members]
+    bundle_name = "hybrid-" + "-".join(all_field_names)
+    rationale = (
+        f"Hybrid bundle for MIXED filter shape: "
+        f"btree covers {', '.join(f for (f, _, _, _) in btree_candidates)} "
+        f"+ GIN covers {', '.join(f for (f, _, _, _) in keyword_candidates)}"
+    )
+    if partial_where_terms:
+        rationale += f"; partial predicate scopes GIN by {len(partial_where_terms)} equality filter(s)"
+    return Bundle(
+        name=bundle_name,
+        rationale=rationale,
+        shape_classification="MIXED",
         members=members,
     )
 
