@@ -958,3 +958,98 @@ class TestBuildKeywordGinBundle:
         from plone.pgcatalog.suggestions import _build_keyword_gin_bundle
 
         assert _build_keyword_gin_bundle([], [], {}) is None
+
+
+class TestProbeSelectivity:
+    """_probe_selectivity uses pg_stats MCV first, falls back to COUNT."""
+
+    def _mock_conn(self, mcv_row=None, count_row=None, total_row=None):
+        """Build a mock psycopg connection whose cursor returns the
+        given rows in sequence.  mcv_row / count_row / total_row are
+        dicts (or None).
+        """
+        from unittest import mock
+
+        conn = mock.MagicMock()
+        cur = mock.MagicMock()
+        ctx = mock.MagicMock()
+        ctx.__enter__.return_value = cur
+        ctx.__exit__.return_value = None
+        conn.cursor.return_value = ctx
+
+        # Always include a slot for the pg_stats fetchone — None when
+        # no MCV data is expected (simulates "no row in pg_stats").
+        responses = [mcv_row]  # may be None → pg_stats returns no row
+        if count_row is not None:
+            responses.append(count_row)
+        if total_row is not None:
+            responses.append(total_row)
+        cur.fetchone.side_effect = responses
+        return conn, cur
+
+    def test_mcv_hit_returns_frequency(self):
+        from plone.pgcatalog.suggestions import _probe_selectivity
+        from plone.pgcatalog.suggestions import _reset_probe_cache
+
+        _reset_probe_cache()
+        mcv_row = {
+            "most_common_vals": ["Event", "News", "Page"],
+            "most_common_freqs": [0.05, 0.20, 0.50],
+        }
+        conn, cur = self._mock_conn(mcv_row=mcv_row)
+        sel = _probe_selectivity(conn, "portal_type", "Event")
+        assert sel == 0.05
+
+    def test_mcv_miss_falls_through_to_count(self):
+        from plone.pgcatalog.suggestions import _probe_selectivity
+        from plone.pgcatalog.suggestions import _reset_probe_cache
+
+        _reset_probe_cache()
+        mcv_row = {
+            "most_common_vals": ["Event", "News"],
+            "most_common_freqs": [0.05, 0.20],
+        }
+        count_row = {"c": 115}
+        total_row = {"t": 3900000}
+        conn, cur = self._mock_conn(
+            mcv_row=mcv_row, count_row=count_row, total_row=total_row
+        )
+        sel = _probe_selectivity(conn, "portal_type", "RareValue")
+        assert sel == 115 / 3900000
+
+    def test_no_mcv_row_falls_through_to_count(self):
+        """pg_stats returns None (e.g. attname unknown) → pure COUNT path."""
+        from plone.pgcatalog.suggestions import _probe_selectivity
+        from plone.pgcatalog.suggestions import _reset_probe_cache
+
+        _reset_probe_cache()
+        count_row = {"c": 42}
+        total_row = {"t": 10000}
+        conn, cur = self._mock_conn(
+            mcv_row=None, count_row=count_row, total_row=total_row
+        )
+        sel = _probe_selectivity(conn, "custom_field", "value")
+        assert sel == 42 / 10000
+
+    def test_request_cache_avoids_duplicate_probe(self):
+        from plone.pgcatalog.suggestions import _probe_selectivity
+        from plone.pgcatalog.suggestions import _reset_probe_cache
+
+        _reset_probe_cache()
+        mcv_row = {
+            "most_common_vals": ["Event"],
+            "most_common_freqs": [0.05],
+        }
+        conn, cur = self._mock_conn(mcv_row=mcv_row)
+        _probe_selectivity(conn, "portal_type", "Event")
+        call_count_before = cur.execute.call_count
+        _probe_selectivity(conn, "portal_type", "Event")
+        assert cur.execute.call_count == call_count_before
+
+    def test_conn_none_returns_one(self):
+        """When conn is None (no probe possible), return 1.0 — safe default."""
+        from plone.pgcatalog.suggestions import _probe_selectivity
+        from plone.pgcatalog.suggestions import _reset_probe_cache
+
+        _reset_probe_cache()
+        assert _probe_selectivity(None, "portal_type", "Event") == 1.0

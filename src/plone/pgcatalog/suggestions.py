@@ -11,6 +11,7 @@ from plone.pgcatalog.columns import IndexType
 
 import contextlib
 import logging
+import os
 import re
 import time
 
@@ -78,6 +79,99 @@ _SELECTIVITY_ORDER = {
 # the write-amplification cost outweighs read savings in real Plone
 # catalogs.  Sort covering column counts against this cap.
 _MAX_COMPOSITE_COLUMNS = 3
+
+# Selectivity threshold below which an equality filter gets baked into
+# a partial index's WHERE clause.  Configurable via env var for
+# production tuning without a code change.
+_PARTIAL_PREDICATE_SELECTIVITY_THRESHOLD = float(
+    os.environ.get("PGCATALOG_PARTIAL_SELECTIVITY_THRESHOLD", "0.1")
+)
+
+# IndexTypes whose equality values are eligible for partial-predicate
+# scoping.  DATE excluded — values are timestamps, rarely appear in
+# MCV, partial-DATE scoping is typically an anti-pattern.
+_PARTIAL_SCOPING_ELIGIBLE_TYPES = frozenset(
+    {IndexType.FIELD, IndexType.BOOLEAN, IndexType.PATH, IndexType.UUID}
+)
+
+# ── Selectivity probing (request-scoped cache) ─────────────────────────
+#
+# The cache is module-level — catalog.py resets it via
+# _reset_probe_cache() at the start of each manage_get_slow_query_stats
+# call, so the scope is effectively "one ZMI tab load".  Single-thread
+# WSGI request model makes this safe.
+
+_probe_cache: dict = {}
+_pg_stats_cache: dict = {}
+
+
+def _reset_probe_cache():
+    """Clear probe caches at the start of a ZMI page load."""
+    _probe_cache.clear()
+    _pg_stats_cache.clear()
+
+
+def _probe_selectivity(conn, key, value):
+    """Return the selectivity of ``idx->>'key' = 'value'`` in object_state.
+
+    Range: [0.0, 1.0].  Lower values mean more selective (fewer rows).
+
+    Probing strategy:
+    1. Check request-scoped cache.
+    2. If conn is None, return 1.0 (no probe possible — safe default
+       that disables partial-scoping for tests / cold-start callers).
+    3. Look up ``pg_stats.most_common_vals`` for the key's expression
+       attname.  MCV hit → return the corresponding frequency.
+    4. MCV miss → live ``SELECT COUNT(*)`` divided by ``reltuples``.
+
+    Caches both the pg_stats row (per attname) and the final
+    selectivity (per (key, value)) to bound DB round-trips.
+    """
+    cache_key = (key, value)
+    if cache_key in _probe_cache:
+        return _probe_cache[cache_key]
+
+    if conn is None:
+        return 1.0
+
+    # Step 1: pg_stats MCV.
+    attname = f"(idx ->> '{key}'::text)"
+    if attname not in _pg_stats_cache:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT most_common_vals, most_common_freqs FROM pg_stats "
+                "WHERE schemaname = 'public' AND tablename = 'object_state' "
+                "AND attname = %s",
+                (attname,),
+            )
+            _pg_stats_cache[attname] = cur.fetchone()
+
+    stats = _pg_stats_cache[attname]
+    if stats and stats.get("most_common_vals"):
+        vals = stats["most_common_vals"]
+        freqs = stats["most_common_freqs"] or []
+        if value in vals:
+            idx = vals.index(value)
+            sel = float(freqs[idx])
+            _probe_cache[cache_key] = sel
+            return sel
+
+    # Step 2: live COUNT fallback.
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT COUNT(*) AS c FROM object_state "
+            "WHERE idx IS NOT NULL AND idx->>%s = %s",
+            (key, value),
+        )
+        count = cur.fetchone()["c"]
+        cur.execute(
+            "SELECT reltuples::bigint AS t FROM pg_class WHERE relname = 'object_state'"
+        )
+        total = max(cur.fetchone()["t"], 1)
+    sel = count / total
+    _probe_cache[cache_key] = sel
+    return sel
+
 
 # Safe index name pattern
 _SAFE_NAME_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
