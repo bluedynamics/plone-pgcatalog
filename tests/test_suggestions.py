@@ -684,3 +684,89 @@ class TestBundleTypes:
         assert d["name"] == "n"
         assert d["members"][0]["ddl"] == "d"
         assert d["members"][0]["role"] == "btree_composite"
+
+
+class TestExtractFilterFields:
+    """_extract_filter_fields turns query_keys + params into structured
+    (name, IndexType, operator, value) tuples."""
+
+    def test_scalar_equality(self):
+        from plone.pgcatalog.suggestions import _extract_filter_fields
+
+        registry = _reg(portal_type=IndexType.FIELD)
+        out = _extract_filter_fields(
+            ["portal_type"], {"portal_type": "Event"}, registry
+        )
+        assert out == [("portal_type", IndexType.FIELD, "equality", "Event")]
+
+    def test_range_operator(self):
+        from plone.pgcatalog.suggestions import _extract_filter_fields
+
+        registry = _reg(effective=IndexType.DATE)
+        out = _extract_filter_fields(
+            ["effective"],
+            {"effective": {"query": [1, 2], "range": "min:max"}},
+            registry,
+        )
+        assert out == [("effective", IndexType.DATE, "range", None)]
+
+    def test_multi_value_equality(self):
+        from plone.pgcatalog.suggestions import _extract_filter_fields
+
+        registry = _reg(portal_type=IndexType.FIELD)
+        out = _extract_filter_fields(
+            ["portal_type"], {"portal_type": ["Event", "News"]}, registry
+        )
+        assert out == [("portal_type", IndexType.FIELD, "equality_multi", None)]
+
+    def test_virtual_field_expands(self):
+        """effectiveRange expands to ('effective', DATE) via _FILTER_VIRTUAL."""
+        from plone.pgcatalog.suggestions import _extract_filter_fields
+
+        registry = _reg()
+        out = _extract_filter_fields(["effectiveRange"], {}, registry)
+        # Virtual expansion carries no value or operator; mark as range
+        # since effectiveRange inherently denotes a date window.
+        assert out == [("effective", IndexType.DATE, "range", None)]
+
+    def test_pagination_and_sort_dropped(self):
+        from plone.pgcatalog.suggestions import _extract_filter_fields
+
+        registry = _reg(portal_type=IndexType.FIELD)
+        out = _extract_filter_fields(
+            ["portal_type", "b_size", "sort_on"],
+            {"portal_type": "Event", "b_size": 20, "sort_on": "effective"},
+            registry,
+        )
+        names = [o[0] for o in out]
+        assert "b_size" not in names
+        assert "sort_on" not in names
+
+    def test_unknown_field_skipped(self):
+        from plone.pgcatalog.suggestions import _extract_filter_fields
+
+        registry = _reg(portal_type=IndexType.FIELD)
+        out = _extract_filter_fields(
+            ["portal_type", "custom_field_not_in_registry"],
+            {},
+            registry,
+        )
+        names = [o[0] for o in out]
+        assert "custom_field_not_in_registry" not in names
+
+    def test_skip_fields_dropped(self):
+        """path / SearchableText deferred — drop from filter list here too."""
+        from plone.pgcatalog.suggestions import _extract_filter_fields
+
+        registry = _reg(portal_type=IndexType.FIELD)
+        out = _extract_filter_fields(["portal_type", "path"], {}, registry)
+        names = [o[0] for o in out]
+        assert "path" not in names
+
+    def test_no_params_yields_unknown_operator(self):
+        """When params is None, operator is 'unknown' (still usable for shape)."""
+        from plone.pgcatalog.suggestions import _extract_filter_fields
+
+        registry = _reg(portal_type=IndexType.FIELD)
+        out = _extract_filter_fields(["portal_type"], None, registry)
+        assert out == [("portal_type", IndexType.FIELD, "unknown", None)]

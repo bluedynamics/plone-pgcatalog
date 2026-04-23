@@ -222,6 +222,86 @@ def suggest_indexes(query_keys, params, registry, existing_indexes):
     return suggestions
 
 
+def _classify_operator(value):
+    """Infer filter operator from a representative params value.
+
+    Returns one of: 'equality' (scalar), 'equality_multi' (list),
+    'range' (dict with 'range'), 'unknown' (anything else / None).
+    """
+    if isinstance(value, dict) and "range" in value:
+        return "range"
+    if isinstance(value, list):
+        if len(value) == 1:
+            # Single-element list is effectively equality.
+            return "equality"
+        return "equality_multi"
+    if isinstance(value, (str, int, float, bool)) and value is not None:
+        return "equality"
+    return "unknown"
+
+
+def _extract_filter_fields(query_keys, params, registry):
+    """Build a structured filter-field list for shape classification.
+
+    Returns a list of tuples ``(name, IndexType, operator, value)``.
+    - ``name`` is the real index field (virtual fields like
+      ``effectiveRange`` are expanded via ``_FILTER_VIRTUAL``).
+    - ``operator`` is one of 'equality' | 'equality_multi' | 'range'
+      | 'unknown' (when params is None or missing the key).
+    - ``value`` is the scalar equality value when operator='equality',
+      else ``None``.
+
+    Pagination meta, sort meta, dedicated fields, explicitly skipped
+    fields, unknown fields, and SKIP_TYPES fields are filtered out.
+    Virtual field expansions carry operator='range' and value=None
+    (since effectiveRange inherently denotes a date window, never an
+    equality on the virtual key itself).
+    """
+    reg_lookup = {}
+    for name, (idx_type, _idx_key, _source_attrs) in registry.items():
+        reg_lookup[name] = idx_type
+
+    out = []
+    for key in query_keys:
+        # Pagination / sort meta keys are never filter columns.
+        if key in _PAGINATION_META or key in _SORT_META:
+            continue
+
+        # Virtual filter fields expand to their real contributors.
+        if key in _FILTER_VIRTUAL:
+            for real_field, real_type in _FILTER_VIRTUAL[key]:
+                out.append((real_field, real_type, "range", None))
+            continue
+
+        # Dedicated columns are handled elsewhere (they emit a
+        # already_covered reason but do NOT participate in the filter
+        # shape).  Drop here.
+        if key in _DEDICATED_FIELDS:
+            continue
+
+        # Explicitly skipped fields.
+        if key in _SKIP_FIELDS:
+            continue
+
+        idx_type = reg_lookup.get(key)
+        if idx_type is None:
+            continue  # unknown field
+        if idx_type in _SKIP_TYPES:
+            continue
+
+        value = None if params is None else params.get(key)
+        op = _classify_operator(value)
+        equality_value = value if op == "equality" else None
+        # Unpack single-element list so AT26-like patterns with
+        # ``Subject: ['AT26']`` behave like scalar equality.
+        if isinstance(value, list) and len(value) == 1 and op == "equality":
+            equality_value = value[0]
+
+        out.append((key, idx_type, op, equality_value))
+
+    return out
+
+
 def _extract_sort_field(params, registry):
     """Return ``(field_name, IndexType)`` for a composite-eligible sort
     column, or ``None``.
