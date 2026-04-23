@@ -1,5 +1,45 @@
 # Changelog
 
+## 1.0.0b65 (unreleased)
+
+### Added
+
+- Suggestions engine now emits **bundles** of indexes. The new `Bundle`
+  data shape groups one or more related indexes together so the UI can
+  present "apply these together" semantics for hybrid patterns. Single
+  btree-composite suggestions render unchanged in the existing ZMI via a
+  back-compat flatten in `manage_get_slow_query_stats`; the full bundle
+  structure is additionally exposed under `suggestions_bundles` for the
+  upcoming PR β JSON/JS UI.
+
+- New templates: **partial GIN** (T4 — GIN with an AND-joined equality
+  predicate baked into WHERE) and **hybrid bundles** (T5 — one btree
+  composite plus one or more partial GINs working together). Triggered
+  by the MIXED shape classification when a slow query has both
+  btree-eligible and KEYWORD filters.
+
+- Partial-predicate scoping is data-driven. A selectivity probe uses
+  `pg_stats.most_common_vals` for common values (zero DB round-trip)
+  and falls back to live `SELECT COUNT(*)` for long-tail values.
+  Equality filters whose live selectivity is below 10 % (configurable
+  via `PGCATALOG_PARTIAL_SELECTIVITY_THRESHOLD` env var) are baked
+  into the partial index's WHERE clause.
+
+- Closes the canonical Plone slow-query gap from
+  [#122](https://github.com/bluedynamics/plone-pgcatalog/issues/122):
+  `portal_type + review_state + Subject + effective range + sort_on`
+  now produces a hybrid bundle — btree composite `(portal_type,
+  review_state, effective)` + partial GIN on Subject scoped by
+  `portal_type='Event' AND review_state='published'`.
+
+### Changed
+
+- `suggest_indexes()` now returns `list[Bundle]` (was `list[dict]`).
+  Signature gains an optional `conn` argument for selectivity probes;
+  `conn=None` disables partial scoping and keeps bundle output identical
+  to pre-α behavior. No call-site changes required in existing code
+  that imports this function from outside the package.
+
 ## 1.0.0b64
 
 ### Fixed
