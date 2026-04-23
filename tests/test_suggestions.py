@@ -770,3 +770,49 @@ class TestExtractFilterFields:
         registry = _reg(portal_type=IndexType.FIELD)
         out = _extract_filter_fields(["portal_type"], None, registry)
         assert out == [("portal_type", IndexType.FIELD, "unknown", None)]
+
+
+class TestClassifyFilterShape:
+    """_classify_filter_shape routes filter lists to one of five shapes."""
+
+    def _ff(self, *pairs):
+        """Build a filter_fields list from (name, type) pairs."""
+        return [(n, t, "equality", "v") for (n, t) in pairs]
+
+    def test_empty_is_unknown(self):
+        from plone.pgcatalog.suggestions import _classify_filter_shape
+
+        assert _classify_filter_shape([]) == "UNKNOWN"
+
+    def test_btree_only(self):
+        from plone.pgcatalog.suggestions import _classify_filter_shape
+
+        out = _classify_filter_shape(
+            self._ff(("portal_type", IndexType.FIELD), ("effective", IndexType.DATE))
+        )
+        assert out == "BTREE_ONLY"
+
+    def test_keyword_only(self):
+        from plone.pgcatalog.suggestions import _classify_filter_shape
+
+        out = _classify_filter_shape(
+            self._ff(("Subject", IndexType.KEYWORD), ("tags", IndexType.KEYWORD))
+        )
+        assert out == "KEYWORD_ONLY"
+
+    def test_mixed(self):
+        from plone.pgcatalog.suggestions import _classify_filter_shape
+
+        out = _classify_filter_shape(
+            self._ff(("portal_type", IndexType.FIELD), ("Subject", IndexType.KEYWORD))
+        )
+        assert out == "MIXED"
+
+    def test_text_dominates(self):
+        """Any TEXT filter → TEXT_ONLY, even if others are present."""
+        from plone.pgcatalog.suggestions import _classify_filter_shape
+
+        out = _classify_filter_shape(
+            self._ff(("Title", IndexType.TEXT), ("portal_type", IndexType.FIELD))
+        )
+        assert out == "TEXT_ONLY"

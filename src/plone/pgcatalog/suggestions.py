@@ -302,6 +302,47 @@ def _extract_filter_fields(query_keys, params, registry):
     return out
 
 
+def _classify_filter_shape(filter_fields):
+    """Route a filter-field list to one of five shape classifications.
+
+    - BTREE_ONLY: all types ∈ {FIELD, DATE, BOOL, UUID, PATH}
+    - KEYWORD_ONLY: all types == KEYWORD
+    - MIXED: at least one btree-eligible + at least one KEYWORD
+    - TEXT_ONLY: any TEXT filter (dominates — TEXT means tsvector)
+    - UNKNOWN: empty list, or any type outside the five plus TEXT
+    """
+    if not filter_fields:
+        return "UNKNOWN"
+
+    types = {ft[1] for ft in filter_fields}
+    if IndexType.TEXT in types:
+        return "TEXT_ONLY"
+
+    btree_eligible = {
+        IndexType.FIELD,
+        IndexType.DATE,
+        IndexType.BOOLEAN,
+        IndexType.UUID,
+        IndexType.PATH,
+    }
+    has_btree = bool(types & btree_eligible)
+    has_keyword = IndexType.KEYWORD in types
+
+    if has_btree and has_keyword:
+        return "MIXED"
+    if has_btree and not has_keyword:
+        remainder = types - btree_eligible
+        if remainder:
+            return "UNKNOWN"
+        return "BTREE_ONLY"
+    if has_keyword and not has_btree:
+        remainder = types - {IndexType.KEYWORD}
+        if remainder:
+            return "UNKNOWN"
+        return "KEYWORD_ONLY"
+    return "UNKNOWN"
+
+
 def _extract_sort_field(params, registry):
     """Return ``(field_name, IndexType)`` for a composite-eligible sort
     column, or ``None``.
