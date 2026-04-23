@@ -408,15 +408,12 @@ def _extract_filter_fields(query_keys, params, registry):
         # participate in the filter shape — drop here.  KEYWORD dedicated
         # fields (e.g. Subject) are kept so that a MIXED shape can be
         # detected when they appear alongside btree-eligible fields;
-        # _build_keyword_gin_bundle suppresses a plain-GIN suggestion for
-        # them (the dedicated index already covers that case) but DOES
-        # emit a partial-GIN suggestion when partial_where_terms are present.
-        _is_dedicated_keyword = False
-        if key in _DEDICATED_FIELDS:
-            _dedicated_type = reg_lookup.get(key)
-            if _dedicated_type != IndexType.KEYWORD:
-                continue
-            _is_dedicated_keyword = True
+        # the KEYWORD_ONLY dispatch path strips them before building the
+        # GIN bundle, while the MIXED path passes them through so a
+        # partial GIN scoped by co-occurring equality filters — genuinely
+        # more selective than the dedicated plain GIN — is suggested.
+        if key in _DEDICATED_FIELDS and reg_lookup.get(key) != IndexType.KEYWORD:
+            continue
 
         # Explicitly skipped fields.
         if key in _SKIP_FIELDS:
