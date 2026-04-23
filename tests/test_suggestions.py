@@ -619,3 +619,68 @@ class TestExtractSortField:
         assert (
             _extract_sort_field({"sort_on": "getObjPositionInParent"}, registry) is None
         )
+
+
+class TestBundleTypes:
+    """Bundle / BundleMember dataclass construction and semantics."""
+
+    def test_bundle_member_is_frozen(self):
+        from dataclasses import FrozenInstanceError
+        from plone.pgcatalog.suggestions import BundleMember
+
+        m = BundleMember(
+            ddl="CREATE INDEX i ON t (x) WHERE idx IS NOT NULL",
+            fields=["x"],
+            field_types=["FIELD"],
+            status="new",
+            role="btree_composite",
+            reason="test",
+        )
+        with pytest.raises(FrozenInstanceError):
+            m.status = "already_covered"
+
+    def test_bundle_is_frozen(self):
+        from dataclasses import FrozenInstanceError
+        from plone.pgcatalog.suggestions import Bundle
+        from plone.pgcatalog.suggestions import BundleMember
+
+        m = BundleMember(
+            ddl="d",
+            fields=["x"],
+            field_types=["FIELD"],
+            status="new",
+            role="btree_composite",
+            reason="r",
+        )
+        b = Bundle(
+            name="test-bundle",
+            rationale="unit test",
+            shape_classification="BTREE_ONLY",
+            members=[m],
+        )
+        with pytest.raises(FrozenInstanceError):
+            b.name = "other"
+
+    def test_asdict_roundtrip(self):
+        from dataclasses import asdict
+        from plone.pgcatalog.suggestions import Bundle
+        from plone.pgcatalog.suggestions import BundleMember
+
+        m = BundleMember(
+            ddl="d",
+            fields=["x"],
+            field_types=["FIELD"],
+            status="new",
+            role="btree_composite",
+            reason="r",
+        )
+        b = Bundle(
+            name="n",
+            rationale="why",
+            shape_classification="BTREE_ONLY",
+            members=[m],
+        )
+        d = asdict(b)
+        assert d["name"] == "n"
+        assert d["members"][0]["ddl"] == "d"
+        assert d["members"][0]["role"] == "btree_composite"

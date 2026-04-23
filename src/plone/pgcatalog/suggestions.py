@@ -5,6 +5,8 @@ The suggestion engine (``suggest_indexes``) has no DB access — it takes
 the IndexRegistry and existing indexes as input and returns suggestions.
 """
 
+from dataclasses import dataclass
+from dataclasses import field
 from plone.pgcatalog.columns import IndexType
 
 import contextlib
@@ -14,6 +16,8 @@ import time
 
 
 __all__ = [
+    "Bundle",
+    "BundleMember",
     "apply_index",
     "drop_index",
     "explain_query",
@@ -77,6 +81,35 @@ _MAX_COMPOSITE_COLUMNS = 3
 
 # Safe index name pattern
 _SAFE_NAME_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+
+
+# ── Bundle output types ─────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class BundleMember:
+    """One index in a bundle — carries its own DDL and coverage status."""
+
+    ddl: str
+    fields: list
+    field_types: list
+    status: str  # "new" | "already_covered"
+    role: str  # "btree_composite" | "plain_gin" | "partial_gin"
+    reason: str
+
+
+@dataclass(frozen=True)
+class Bundle:
+    """One or more indexes that together address a slow-query shape.
+
+    Single-member bundles (status-quo btree composites) back-compat
+    with the existing UI via a per-row flatten step in catalog.py.
+    """
+
+    name: str
+    rationale: str
+    shape_classification: str  # BTREE_ONLY | KEYWORD_ONLY | MIXED | TEXT_ONLY | UNKNOWN
+    members: list = field(default_factory=list)
 
 
 # ── DDL expression builders ─────────────────────────────────────────────
