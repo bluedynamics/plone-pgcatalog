@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.0b65
+
+### Fixed
+
+- Fix automatic language detection for BM25 ranking #164
+
 ## 1.0.0b64
 
 ### Fixed
