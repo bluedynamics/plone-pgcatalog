@@ -75,17 +75,16 @@ def _detect_languages_from_db(db):  # pragma: no cover
             root = conn.root()
             app = root.get("Application", root)
             for obj in app.values():
-                if getattr(obj, "portal_type", "") == "Plone Site":
-                    portal_registry = getattr(obj, "portal_registry", None)
-                    if portal_registry is not None:
-                        langs = portal_registry.get("plone.available_languages", [])
-                        if langs:
-                            log.info(
-                                "Auto-detected BM25 languages from %s: %s",
-                                getattr(obj, "getId", lambda: "?")(),
-                                langs,
-                            )
-                            return langs
+                portal_registry = getattr(obj, "portal_registry", None)
+                if portal_registry is not None:
+                    langs = portal_registry.get("plone.available_languages", [])
+                    if langs:
+                        log.info(
+                            "Auto-detected BM25 languages from %s: %s",
+                            getattr(obj, "getId", lambda: "?")(),
+                            langs,
+                        )
+                        return langs
         finally:
             # Abort the implicit transaction before closing -- traversal
             # may have joined the connection to a transaction, and ZODB
