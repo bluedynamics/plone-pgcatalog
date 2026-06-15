@@ -40,6 +40,19 @@
   to pre-α behavior. No call-site changes required in existing code
   that imports this function from outside the package.
 
+### Fixed
+
+- PG-backed test layer: reset zodb_pgjsonb's process-wide
+  ``SharedLoadCache`` between tests.  The per-test ``restore()`` rolls
+  the database backwards to a snapshot, but ``cacheMinimize()`` /
+  ``pool.clear()`` only reset the ZODB connection caches — not the
+  shared L2 cache that outlives the pool.  That cache then served object
+  state at TIDs newer than the rolled-back database, causing spurious
+  ``ConflictError`` (on ``PLexicon`` during ``clearFindAndRebuild``) in
+  whichever rebuild test ran second.  ``testSetUp`` now calls
+  ``storage.clear_caches()`` after ``restore()``; this requires
+  ``zodb-pgjsonb >= 1.13.0`` (the dependency floor is bumped accordingly).
+
 ## 1.0.0b64
 
 ### Fixed
