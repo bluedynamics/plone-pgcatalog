@@ -12,8 +12,8 @@
   state at TIDs newer than the rolled-back database, causing spurious
   ``ConflictError`` (on ``PLexicon`` during ``clearFindAndRebuild``) in
   whichever rebuild test ran second.  ``testSetUp`` now calls
-  ``storage.clear_caches()`` (zodb_pgjsonb ≥ 1.13.0) after ``restore()``,
-  with a fallback for older releases.
+  ``storage.clear_caches()`` after ``restore()``; this requires
+  ``zodb-pgjsonb >= 1.13.0`` (the dependency floor is bumped accordingly).
 
 ## 1.0.0b64
 
