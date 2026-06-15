@@ -25,6 +25,7 @@ import psycopg
 import threading
 import transaction
 
+
 __all__ = ["register_catalog_processor"]
 
 
