@@ -58,6 +58,9 @@ jobs:
         with:
           enable-cache: true
           cache-dependency-glob: "pyproject.toml"
+          # Per-version cache key — the matrix jobs otherwise race to
+          # reserve one shared key ("Unable to reserve cache …").
+          cache-suffix: ${{ matrix.python-version }}
 
       - name: Install system dependencies
         run: sudo apt-get install -y libxml2-dev libxslt-dev
@@ -77,7 +80,7 @@ jobs:
         run: mv .coverage .coverage.${{ matrix.python-version }}
 
       - name: Upload coverage data
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: coverage-data-${{ matrix.python-version }}
           path: .coverage.${{ matrix.python-version }}
@@ -103,7 +106,7 @@ jobs:
           uv venv
           uv pip install -c https://dist.plone.org/release/6.2-latest/constraints.txt -e ".[test]"
 
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v7
         with:
           pattern: coverage-data-*
           merge-multiple: true
@@ -116,7 +119,7 @@ jobs:
           uv run coverage report
 
       - name: Upload HTML report if check failed
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: html-report
           path: htmlcov
