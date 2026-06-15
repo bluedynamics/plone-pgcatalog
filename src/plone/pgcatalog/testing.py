@@ -266,6 +266,23 @@ class PGCatalogPGFixture(Layer):
         # Clear the pool to force fresh connections + REPEATABLE READ.
         self._db.cacheMinimize()
         self._db.pool.clear()
+        # zodb_pgjsonb's process-wide SharedLoadCache (L2) outlives the
+        # connection pool, so the steps above do not reset it.  After the
+        # backwards restore() it would still serve object state at TIDs
+        # newer than the rolled-back DB, causing spurious ConflictError on
+        # the next commit (e.g. PLexicon during clearFindAndRebuild).
+        # Prefer the public reset; fall back to the internal one on
+        # zodb_pgjsonb releases that predate clear_caches().
+        _clear_caches = getattr(self._storage, "clear_caches", None)
+        if _clear_caches is not None:
+            _clear_caches()
+        else:  # pragma: no cover — zodb_pgjsonb < 1.13.0
+            _shared = getattr(self._storage, "_shared_cache", None)
+            if _shared is not None:
+                with _shared._lock:
+                    _shared._cache.clear()
+                    _shared._consensus_tid = None
+                    _shared._current_bytes = 0
 
         # Open app + portal like IntegrationTesting does
         self["app"] = app = zope_testing.addRequestContainer(
