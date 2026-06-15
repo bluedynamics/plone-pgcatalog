@@ -76,9 +76,9 @@ def _detect_languages_from_db(db):  # pragma: no cover
             root = conn.root()
             app = root.get("Application", root)
             for obj in app.values():
-                lang_tool = getattr(obj, "portal_languages", None)
-                if lang_tool is not None:
-                    langs = list(lang_tool.getSupportedLanguages())
+                portal_registry = getattr(obj, "portal_registry", None)
+                if portal_registry is not None:
+                    langs = portal_registry.get("plone.available_languages", [])
                     if langs:
                         log.info(
                             "Auto-detected BM25 languages from %s: %s",

@@ -42,6 +42,8 @@
 
 ### Fixed
 
+- Fix automatic language detection for BM25 ranking #164
+
 - PG-backed test layer: reset zodb_pgjsonb's process-wide
   ``SharedLoadCache`` between tests.  The per-test ``restore()`` rolls
   the database backwards to a snapshot, but ``cacheMinimize()`` /
