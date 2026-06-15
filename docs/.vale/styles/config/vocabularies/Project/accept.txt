@@ -246,3 +246,7 @@ datetime
 [Pp]refetch(ed|er|es|ing)?
 [Pp]luggable
 roundtrips
+[Mm]emoiz(e|ed|es|ing|ation)
+[Uu]npickl(e|ed|es|ing)
+truthy
+unsortable
