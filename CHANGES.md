@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.0.0b65 (unreleased)
+## 1.0.0b65
 
 ### Added
 
