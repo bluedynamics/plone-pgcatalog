@@ -1174,9 +1174,11 @@ class PlonePGCatalogTool(UniqueObject, Folder):
 
     def manage_get_slow_query_stats(self):
         """Return aggregated slow query stats for the Slow Queries tab."""
+        from plone.pgcatalog.suggestions import _reset_probe_cache
         from plone.pgcatalog.suggestions import get_existing_indexes
         from plone.pgcatalog.suggestions import suggest_indexes
 
+        _reset_probe_cache()
         try:
             pool = get_pool(self)
             pg_conn = pool.getconn()
@@ -1213,25 +1215,60 @@ class PlonePGCatalogTool(UniqueObject, Folder):
                         "ORDER BY grp.max_ms DESC"
                     )
                     rows = cur.fetchall()
+
+                result = []
+                for row in rows:
+                    keys = row["query_keys"]
+                    params = row["representative_params"]
+                    bundles = suggest_indexes(
+                        keys, params, registry, existing, conn=pg_conn
+                    )
+                    flat_suggestions = []
+                    for bundle in bundles:
+                        for member in bundle.members:
+                            flat_suggestions.append(
+                                {
+                                    "fields": member.fields,
+                                    "field_types": member.field_types,
+                                    "ddl": member.ddl,
+                                    "status": member.status,
+                                    "reason": member.reason,
+                                }
+                            )
+                    result.append(
+                        {
+                            "query_keys": ", ".join(keys),
+                            "count": row["cnt"],
+                            "avg_ms": float(row["avg_ms"]),
+                            "max_ms": float(row["max_ms"]),
+                            "last_seen": str(row["last_seen"])[:19],
+                            "suggestions": flat_suggestions,
+                            "suggestions_bundles": [
+                                {
+                                    "name": b.name,
+                                    "rationale": b.rationale,
+                                    "shape_classification": b.shape_classification,
+                                    "members": [
+                                        {
+                                            "ddl": m.ddl,
+                                            "fields": m.fields,
+                                            "field_types": m.field_types,
+                                            "status": m.status,
+                                            "role": m.role,
+                                            "reason": m.reason,
+                                        }
+                                        for m in b.members
+                                    ],
+                                }
+                                for b in bundles
+                            ],
+                        }
+                    )
             finally:
                 pool.putconn(pg_conn)
         except Exception:
             return []
 
-        result = []
-        for row in rows:
-            keys = row["query_keys"]
-            params = row["representative_params"]
-            result.append(
-                {
-                    "query_keys": ", ".join(keys),
-                    "count": row["cnt"],
-                    "avg_ms": float(row["avg_ms"]),
-                    "max_ms": float(row["max_ms"]),
-                    "last_seen": str(row["last_seen"])[:19],
-                    "suggestions": suggest_indexes(keys, params, registry, existing),
-                }
-            )
         return result
 
     def manage_get_managed_indexes(self):  # pragma: no cover

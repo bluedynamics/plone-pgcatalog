@@ -5,15 +5,20 @@ The suggestion engine (``suggest_indexes``) has no DB access — it takes
 the IndexRegistry and existing indexes as input and returns suggestions.
 """
 
+from dataclasses import dataclass
+from dataclasses import field
 from plone.pgcatalog.columns import IndexType
 
 import contextlib
 import logging
+import os
 import re
 import time
 
 
 __all__ = [
+    "Bundle",
+    "BundleMember",
     "apply_index",
     "drop_index",
     "explain_query",
@@ -75,8 +80,135 @@ _SELECTIVITY_ORDER = {
 # catalogs.  Sort covering column counts against this cap.
 _MAX_COMPOSITE_COLUMNS = 3
 
+# Selectivity threshold below which an equality filter gets baked into
+# a partial index's WHERE clause.  Configurable via env var for
+# production tuning without a code change.
+_PARTIAL_PREDICATE_SELECTIVITY_THRESHOLD = float(
+    os.environ.get("PGCATALOG_PARTIAL_SELECTIVITY_THRESHOLD", "0.1")
+)
+
+# IndexTypes whose equality values are eligible for partial-predicate
+# scoping.  DATE excluded — values are timestamps, rarely appear in
+# MCV, partial-DATE scoping is typically an anti-pattern.
+_PARTIAL_SCOPING_ELIGIBLE_TYPES = frozenset(
+    {IndexType.FIELD, IndexType.BOOLEAN, IndexType.PATH, IndexType.UUID}
+)
+
+# ── Selectivity probing (request-scoped cache) ─────────────────────────
+#
+# The cache is module-level — catalog.py resets it via
+# _reset_probe_cache() at the start of each manage_get_slow_query_stats
+# call, so the scope is effectively "one ZMI tab load".  This assumes
+# the single-thread-per-worker WSGI model (the Zope default).  Under a
+# multi-threaded worker, concurrent ZMI tabs could clear the cache
+# mid-flight of another request; the worst case is redundant probe
+# work, not incorrect output (probes are deterministic per DB state).
+# A ContextVar-based per-request dict is the cleaner fix if multi-
+# threaded workers become common; deferred as YAGNI for now.
+
+_probe_cache: dict = {}
+_pg_stats_cache: dict = {}
+
+
+def _reset_probe_cache():
+    """Clear probe caches at the start of a ZMI page load."""
+    _probe_cache.clear()
+    _pg_stats_cache.clear()
+
+
+def _probe_selectivity(conn, key, value):
+    """Return the selectivity of ``idx->>'key' = 'value'`` in object_state.
+
+    Range: [0.0, 1.0].  Lower values mean more selective (fewer rows).
+
+    Probing strategy:
+    1. Check request-scoped cache.
+    2. If conn is None, return 1.0 (no probe possible — safe default
+       that disables partial-scoping for tests / cold-start callers).
+    3. Look up ``pg_stats.most_common_vals`` for the key's expression
+       attname.  MCV hit → return the corresponding frequency.
+    4. MCV miss → live ``SELECT COUNT(*)`` divided by ``reltuples``.
+
+    Caches both the pg_stats row (per attname) and the final
+    selectivity (per (key, value)) to bound DB round-trips.
+    """
+    cache_key = (key, value)
+    if cache_key in _probe_cache:
+        return _probe_cache[cache_key]
+
+    if conn is None:
+        return 1.0
+
+    # Step 1: pg_stats MCV.
+    attname = f"(idx ->> '{key}'::text)"
+    if attname not in _pg_stats_cache:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT most_common_vals, most_common_freqs FROM pg_stats "
+                "WHERE schemaname = 'public' AND tablename = 'object_state' "
+                "AND attname = %s",
+                (attname,),
+            )
+            _pg_stats_cache[attname] = cur.fetchone()
+
+    stats = _pg_stats_cache[attname]
+    if stats and stats.get("most_common_vals"):
+        vals = stats["most_common_vals"]
+        freqs = stats["most_common_freqs"] or []
+        if value in vals:
+            idx = vals.index(value)
+            sel = float(freqs[idx])
+            _probe_cache[cache_key] = sel
+            return sel
+
+    # Step 2: live COUNT fallback.
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT COUNT(*) AS c FROM object_state "
+            "WHERE idx IS NOT NULL AND idx->>%s = %s",
+            (key, value),
+        )
+        count = cur.fetchone()["c"]
+        cur.execute(
+            "SELECT reltuples::bigint AS t FROM pg_class WHERE relname = 'object_state'"
+        )
+        total = max(cur.fetchone()["t"], 1)
+    sel = count / total
+    _probe_cache[cache_key] = sel
+    return sel
+
+
 # Safe index name pattern
 _SAFE_NAME_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+
+
+# ── Bundle output types ─────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class BundleMember:
+    """One index in a bundle — carries its own DDL and coverage status."""
+
+    ddl: str
+    fields: list
+    field_types: list
+    status: str  # "new" | "already_covered"
+    role: str  # "btree_composite" | "plain_gin" | "partial_gin"
+    reason: str
+
+
+@dataclass(frozen=True)
+class Bundle:
+    """One or more indexes that together address a slow-query shape.
+
+    Single-member bundles (status-quo btree composites) back-compat
+    with the existing UI via a per-row flatten step in catalog.py.
+    """
+
+    name: str
+    rationale: str
+    shape_classification: str  # BTREE_ONLY | KEYWORD_ONLY | MIXED | TEXT_ONLY | UNKNOWN
+    members: list = field(default_factory=list)
 
 
 # ── DDL expression builders ─────────────────────────────────────────────
@@ -102,91 +234,254 @@ def _gin_expr(field):
 # ── Core suggestion engine ───────────────────────────────────────────────
 
 
-def suggest_indexes(query_keys, params, registry, existing_indexes):
-    """Generate index suggestions for a set of slow-query field keys.
+def _dispatch_templates(
+    filter_fields,
+    sort_field,
+    existing_indexes,
+    conn=None,
+):
+    """Route a classified filter-field list to a list of Bundles.
 
-    Pure function — no DB access.
+    This is the core PR α dispatcher.  Shape classification determines
+    which builder runs; the builders decide partial-scoping, sort
+    covering, etc.
+
+    conn is None-safe: when absent, partial-scoping probes skip (all
+    selectivities treated as 1.0 — nothing qualifies for partial
+    WHERE), and the dispatcher degrades to plain T1/T3 output.
+    """
+    shape = _classify_filter_shape(filter_fields)
+
+    # Resolve probes for every scalar-equality filter up front —
+    # cheap (all cached / deduped) and avoids branching probe logic
+    # between the builders.
+    probes = {}
+    for name, idx_type, op, value in filter_fields:
+        if op != "equality" or value is None:
+            continue
+        if idx_type not in _PARTIAL_SCOPING_ELIGIBLE_TYPES:
+            continue
+        probes[(name, value)] = _probe_selectivity(conn, name, value)
+
+    partial_where_terms = _partial_where_terms(filter_fields, probes)
+
+    if shape == "BTREE_ONLY":
+        bundle = _build_btree_bundle(filter_fields, sort_field, existing_indexes)
+        return [bundle] if bundle is not None else []
+
+    if shape == "KEYWORD_ONLY":
+        # Dedicated KEYWORD fields (e.g. Subject) already have a plain GIN
+        # index — the dedicated bundle emits an "already_covered" notice.
+        # Strip them from the filter list before building the GIN bundle to
+        # avoid duplicate suggestions.
+        non_dedicated_fields = [
+            ff for ff in filter_fields if ff[0] not in _DEDICATED_FIELDS
+        ]
+        bundle = _build_keyword_gin_bundle(
+            non_dedicated_fields, partial_where_terms, existing_indexes
+        )
+        return [bundle] if bundle is not None else []
+
+    if shape == "MIXED":
+        bundle = _build_hybrid_bundle(
+            filter_fields, sort_field, partial_where_terms, existing_indexes
+        )
+        return [bundle] if bundle is not None else []
+
+    # TEXT_ONLY / UNKNOWN → silent skip.
+    return []
+
+
+def _dedicated_bundles(query_keys, reg_lookup):
+    """Emit one-member 'already_covered' Bundle per dedicated-column key
+    the query references.  Makes the UI aware the engine saw the
+    coverage — important context alongside the main bundles.
+    """
+    bundles = []
+    for key in query_keys:
+        if key not in _DEDICATED_FIELDS:
+            continue
+        field_type = reg_lookup[key].name if key in reg_lookup else "KEYWORD"
+        member = BundleMember(
+            ddl="",
+            fields=[key],
+            field_types=[field_type],
+            status="already_covered",
+            role="dedicated",
+            reason=f"Dedicated column: {_DEDICATED_FIELDS[key]}",
+        )
+        bundles.append(
+            Bundle(
+                name=f"dedicated-{key}",
+                rationale=f"{key} has a dedicated column / index",
+                shape_classification="DEDICATED",
+                members=[member],
+            )
+        )
+    return bundles
+
+
+def suggest_indexes(query_keys, params, registry, existing_indexes, conn=None):
+    """Generate index-suggestion bundles for a slow-query shape.
 
     Args:
-        query_keys: list of catalog query field names
-        params: dict of representative query params (value of the
-            slowest observed invocation of this query-key group), or
-            None when no representative is available.  Used to extract
-            a sort_on value for covering-composite suggestions.
-        registry: IndexRegistry instance (has .items() returning
-            name -> (IndexType, idx_key, source_attrs))
-        existing_indexes: dict {index_name: index_def_sql} from
-            get_existing_indexes()
+        query_keys: list of catalog query field names from the slow log.
+        params: dict of representative query params, or None.
+        registry: IndexRegistry (name -> (IndexType, idx_key, source_attrs)).
+        existing_indexes: dict {index_name: index_def_sql} from get_existing_indexes.
+        conn: optional psycopg connection for selectivity probes.
+            When None, no partial-predicate scoping occurs; bundles
+            degrade to plain T1/T3 shapes — identical to pre-α output.
 
     Returns:
-        list of suggestion dicts with keys: fields, field_types, ddl,
-        status ("new" | "already_covered"), reason.
+        list[Bundle].  Each Bundle groups one or more BundleMembers
+        (indexes) that together address the slow-query shape.  Empty
+        list when no suggestion is meaningful (TEXT_ONLY, UNKNOWN,
+        etc.).
     """
-    # Build lookup from registry
+    reg_lookup = {name: idx_type for name, (idx_type, _k, _a) in registry.items()}
+
+    # Emit dedicated-field 'already_covered' notices first (context
+    # for the main bundles).
+    bundles = _dedicated_bundles(query_keys, reg_lookup)
+
+    # Build the structured filter-field list and extract sort field.
+    filter_fields = _extract_filter_fields(query_keys, params, registry)
+    sort_field = _extract_sort_field(params, registry)
+
+    # Route to the shape-appropriate builder(s).
+    bundles.extend(
+        _dispatch_templates(filter_fields, sort_field, existing_indexes, conn=conn)
+    )
+
+    return bundles
+
+
+def _classify_operator(value):
+    """Infer filter operator from a representative params value.
+
+    Returns one of: 'equality' (scalar), 'equality_multi' (list),
+    'range' (dict with 'range'), 'unknown' (anything else / None).
+    """
+    if isinstance(value, dict) and "range" in value:
+        return "range"
+    if isinstance(value, list):
+        if len(value) == 1:
+            # Single-element list is effectively equality.
+            return "equality"
+        return "equality_multi"
+    if isinstance(value, (str, int, float, bool)) and value is not None:
+        return "equality"
+    return "unknown"
+
+
+def _extract_filter_fields(query_keys, params, registry):
+    """Build a structured filter-field list for shape classification.
+
+    Returns a list of tuples ``(name, IndexType, operator, value)``.
+    - ``name`` is the real index field (virtual fields like
+      ``effectiveRange`` are expanded via ``_FILTER_VIRTUAL``).
+    - ``operator`` is one of 'equality' | 'equality_multi' | 'range'
+      | 'unknown' (when params is None or missing the key).
+    - ``value`` is the scalar equality value when operator='equality',
+      else ``None``.
+
+    Pagination meta, sort meta, dedicated fields, explicitly skipped
+    fields, unknown fields, and SKIP_TYPES fields are filtered out.
+    Virtual field expansions carry operator='range' and value=None
+    (since effectiveRange inherently denotes a date window, never an
+    equality on the virtual key itself).
+    """
     reg_lookup = {}
     for name, (idx_type, _idx_key, _source_attrs) in registry.items():
         reg_lookup[name] = idx_type
 
-    # Filter and classify fields
-    suggestions = []
-    btree_fields = []  # (field, idx_type) tuples for composite candidate
-
+    out = []
     for key in query_keys:
-        # Pagination/sort meta keys are never filter columns.
+        # Pagination / sort meta keys are never filter columns.
         if key in _PAGINATION_META or key in _SORT_META:
             continue
 
-        # Virtual filter fields (e.g. effectiveRange) expand to their
-        # real date/text contributors.  The expansion participates in the
-        # btree composite the same way a direct key would.
+        # Virtual filter fields expand to their real contributors.
         if key in _FILTER_VIRTUAL:
             for real_field, real_type in _FILTER_VIRTUAL[key]:
-                btree_fields.append((real_field, real_type))
+                out.append((real_field, real_type, "range", None))
             continue
 
-        # Dedicated column check comes BEFORE the skip set so SearchableText
-        # emits its "dedicated column" reason rather than silently vanishing.
-        if key in _DEDICATED_FIELDS:
-            suggestions.append(
-                {
-                    "fields": [key],
-                    "field_types": [
-                        reg_lookup[key].name if key in reg_lookup else "KEYWORD"
-                    ],
-                    "ddl": "",
-                    "status": "already_covered",
-                    "reason": f"Dedicated column: {_DEDICATED_FIELDS[key]}",
-                }
-            )
+        # Dedicated columns are handled elsewhere (they emit an
+        # already_covered reason).  Non-KEYWORD dedicated fields do NOT
+        # participate in the filter shape — drop here.  KEYWORD dedicated
+        # fields (e.g. Subject) are kept so that a MIXED shape can be
+        # detected when they appear alongside btree-eligible fields;
+        # the KEYWORD_ONLY dispatch path strips them before building the
+        # GIN bundle, while the MIXED path passes them through so a
+        # partial GIN scoped by co-occurring equality filters — genuinely
+        # more selective than the dedicated plain GIN — is suggested.
+        if key in _DEDICATED_FIELDS and reg_lookup.get(key) != IndexType.KEYWORD:
             continue
 
-        # Explicitly skipped fields (path — deferred to PR 3).
+        # Explicitly skipped fields.
         if key in _SKIP_FIELDS:
             continue
 
         idx_type = reg_lookup.get(key)
         if idx_type is None:
-            continue  # unknown field — skip
-
+            continue  # unknown field
         if idx_type in _SKIP_TYPES:
             continue
 
-        if idx_type in _NON_COMPOSITE_TYPES:
-            # KEYWORD / TEXT get their own suggestion
-            _add_standalone_suggestion(key, idx_type, existing_indexes, suggestions)
-        else:
-            btree_fields.append((key, idx_type))
+        value = None if params is None else params.get(key)
+        op = _classify_operator(value)
+        equality_value = value if op == "equality" else None
+        # Unpack single-element list so AT26-like patterns with
+        # ``Subject: ['AT26']`` behave like scalar equality.
+        if isinstance(value, list) and len(value) == 1 and op == "equality":
+            equality_value = value[0]
 
-    # Extract sort field for covering trailing column (if any).
-    sort_field = _extract_sort_field(params, registry)
+        out.append((key, idx_type, op, equality_value))
 
-    # Build composite from btree-eligible fields plus optional sort cover.
-    # No sort-only suggestion — a btree on sort alone does not
-    # accelerate a filter-less query in a meaningful way.
-    if btree_fields:
-        _add_btree_suggestions(btree_fields, sort_field, existing_indexes, suggestions)
+    return out
 
-    return suggestions
+
+def _classify_filter_shape(filter_fields):
+    """Route a filter-field list to one of five shape classifications.
+
+    - BTREE_ONLY: all types ∈ {FIELD, DATE, BOOL, UUID, PATH}
+    - KEYWORD_ONLY: all types == KEYWORD
+    - MIXED: at least one btree-eligible + at least one KEYWORD
+    - TEXT_ONLY: any TEXT filter (dominates — TEXT means tsvector)
+    - UNKNOWN: empty list, or any type outside the five plus TEXT
+    """
+    if not filter_fields:
+        return "UNKNOWN"
+
+    types = {ft[1] for ft in filter_fields}
+    if IndexType.TEXT in types:
+        return "TEXT_ONLY"
+
+    btree_eligible = {
+        IndexType.FIELD,
+        IndexType.DATE,
+        IndexType.BOOLEAN,
+        IndexType.UUID,
+        IndexType.PATH,
+    }
+    has_btree = bool(types & btree_eligible)
+    has_keyword = IndexType.KEYWORD in types
+
+    if has_btree and has_keyword:
+        return "MIXED"
+    if has_btree and not has_keyword:
+        remainder = types - btree_eligible
+        if remainder:
+            return "UNKNOWN"
+        return "BTREE_ONLY"
+    if has_keyword and not has_btree:
+        remainder = types - {IndexType.KEYWORD}
+        if remainder:
+            return "UNKNOWN"
+        return "KEYWORD_ONLY"
+    return "UNKNOWN"
 
 
 def _extract_sort_field(params, registry):
@@ -223,68 +518,214 @@ def _extract_sort_field(params, registry):
     return None
 
 
-def _add_standalone_suggestion(field, idx_type, existing_indexes, suggestions):
-    """Add a standalone GIN/tsvector suggestion for KEYWORD or TEXT field."""
-    if idx_type == IndexType.KEYWORD:
-        expr = _gin_expr(field)
-        ddl = (
-            f"CREATE INDEX CONCURRENTLY idx_os_sug_{field} "
-            f"ON object_state USING gin ({expr}) "
-            f"WHERE idx IS NOT NULL AND idx ? '{field}'"
-        )
-        reason = f"GIN index for KEYWORD field '{field}'"
-    elif idx_type == IndexType.TEXT:
-        ddl = (
-            f"CREATE INDEX CONCURRENTLY idx_os_sug_{field}_tsv "
-            f"ON object_state USING gin ("
-            f"to_tsvector('simple'::regconfig, COALESCE(idx->>'{field}', ''))"
-            f") WHERE idx IS NOT NULL"
-        )
-        reason = f"GIN tsvector index for TEXT field '{field}'"
-    else:
-        return
-
-    status = _check_covered(ddl, existing_indexes)
-    suggestions.append(
-        {
-            "fields": [field],
-            "field_types": [idx_type.name],
-            "ddl": ddl,
-            "status": status,
-            "reason": reason if status == "new" else f"Already covered: {reason}",
-        }
-    )
-
-
-def _add_btree_suggestions(btree_fields, sort_field, existing_indexes, suggestions):
-    """Add a btree suggestion — single column or composite.
+def _build_keyword_gin_bundle(filter_fields, partial_where_terms, existing_indexes):
+    """Build a KEYWORD_ONLY Bundle — one plain or partial GIN per KEYWORD.
 
     Args:
-        btree_fields: list of ``(field_name, IndexType)`` tuples for
-            filter columns discovered in the query.  Order is the
-            traversal order of query_keys — this function sorts by
-            selectivity.
-        sort_field: ``(field_name, IndexType)`` for a trailing covering
-            column, or None.  Makes the planner skip the ORDER BY sort
-            step when the leading filter columns have equality predicates.
-        existing_indexes: dict {name: indexdef} from get_existing_indexes.
-        suggestions: output list to append the resulting dict to.
+        filter_fields: list of ``(name, IndexType, operator, value)`` — all
+            expected to be IndexType.KEYWORD entries (caller guarantees).
+        partial_where_terms: list of SQL predicate strings to AND into
+            the index WHERE clause for T4 partial GIN.  Empty list → T3.
+        existing_indexes: dict for coverage detection.
+
+    Returns:
+        Bundle with one BundleMember per KEYWORD filter, or None when
+        filter_fields is empty.
     """
-    # Sort filters by selectivity (most selective first).
-    btree_fields = sorted(
-        btree_fields, key=lambda ft: _SELECTIVITY_ORDER.get(ft[1], 99)
+    if not filter_fields:
+        return None
+
+    keyword_fields = [
+        (name, idx_type)
+        for (name, idx_type, _op, _val) in filter_fields
+        if idx_type == IndexType.KEYWORD
+    ]
+    if not keyword_fields:
+        return None
+
+    members = []
+    for name, _idx_type in keyword_fields:
+        expr = _gin_expr(name)
+        base_where = f"idx IS NOT NULL AND idx ? '{name}'"
+        if partial_where_terms:
+            where_clause = base_where + " AND " + " AND ".join(partial_where_terms)
+            role = "partial_gin"
+            scope_suffix = "_" + "_".join(
+                _extract_where_key(t) for t in partial_where_terms
+            )
+            idx_name = f"idx_os_sug_{name}_partial{scope_suffix}"
+        else:
+            where_clause = base_where
+            role = "plain_gin"
+            idx_name = f"idx_os_sug_{name}"
+
+        ddl = (
+            f"CREATE INDEX CONCURRENTLY {idx_name} "
+            f"ON object_state USING gin ({expr}) "
+            f"WHERE {where_clause}"
+        )
+        reason_detail = (
+            f"partial GIN scoped by {len(partial_where_terms)} predicate(s)"
+            if partial_where_terms
+            else "plain GIN"
+        )
+        reason = f"{reason_detail.capitalize()} for KEYWORD field '{name}'"
+        status = _check_covered(ddl, existing_indexes)
+        members.append(
+            BundleMember(
+                ddl=ddl,
+                fields=[name],
+                field_types=[IndexType.KEYWORD.name],
+                status=status,
+                role=role,
+                reason=reason if status == "new" else f"Already covered: {reason}",
+            )
+        )
+
+    if not members:
+        return None
+
+    bundle_name = "kwgin-" + "-".join(f for f, _ in keyword_fields)
+    rationale = (
+        f"GIN indexes for KEYWORD filter shape on "
+        f"{', '.join(f for f, _ in keyword_fields)}"
+    )
+    if partial_where_terms:
+        rationale += f" (partial: scoped by {len(partial_where_terms)} predicate(s))"
+    return Bundle(
+        name=bundle_name,
+        rationale=rationale,
+        shape_classification="KEYWORD_ONLY",
+        members=members,
     )
 
-    # Reserve one slot for sort_field if present.  Cap stays 3 total.
+
+def _build_hybrid_bundle(
+    filter_fields, sort_field, partial_where_terms, existing_indexes
+):
+    """Build a MIXED-shape Bundle — one btree composite + N partial GINs.
+
+    The btree member handles the btree-eligible filter axes plus any
+    sort covering (reuses T1 logic).  The GIN members handle the
+    KEYWORD filters, each scoped by the same ``partial_where_terms``
+    so the planner can BitmapAnd them.
+
+    The btree member does NOT gain a partial WHERE — PR α skips
+    T2 (partial btree) as YAGNI.
+
+    Returns None when filter_fields contains neither a btree-eligible
+    nor a KEYWORD entry.
+    """
+    btree_candidates = [
+        (n, t, op, v)
+        for (n, t, op, v) in filter_fields
+        if t != IndexType.KEYWORD and t != IndexType.TEXT
+    ]
+    keyword_candidates = [
+        (n, t, op, v) for (n, t, op, v) in filter_fields if t == IndexType.KEYWORD
+    ]
+
+    if not btree_candidates and not keyword_candidates:
+        return None
+
+    members = []
+
+    btree_bundle = _build_btree_bundle(btree_candidates, sort_field, existing_indexes)
+    if btree_bundle is not None:
+        members.extend(btree_bundle.members)
+
+    gin_bundle = _build_keyword_gin_bundle(
+        keyword_candidates, partial_where_terms, existing_indexes
+    )
+    if gin_bundle is not None:
+        members.extend(gin_bundle.members)
+
+    if not members:
+        return None
+
+    all_field_names = [m.fields[0] for m in members]
+    bundle_name = "hybrid-" + "-".join(all_field_names)
+    rationale = (
+        f"Hybrid bundle for MIXED filter shape: "
+        f"btree covers {', '.join(f for (f, _, _, _) in btree_candidates)} "
+        f"+ GIN covers {', '.join(f for (f, _, _, _) in keyword_candidates)}"
+    )
+    if partial_where_terms:
+        rationale += f"; partial predicate scopes GIN by {len(partial_where_terms)} equality filter(s)"
+    return Bundle(
+        name=bundle_name,
+        rationale=rationale,
+        shape_classification="MIXED",
+        members=members,
+    )
+
+
+def _extract_where_key(term):
+    """Pull the JSONB key name out of a WHERE predicate.
+
+    Input: ``idx->>'portal_type' = 'Event'``
+    Output: ``portal_type``  (used only for deterministic index names)
+    Returns 'x' on parse failure — the index name still needs to
+    satisfy ``_SAFE_NAME_RE`` so we keep it alphanumeric-only.
+    """
+    m = re.search(r"idx->>'([A-Za-z_][A-Za-z0-9_]*)'", term)
+    return m.group(1) if m else "x"
+
+
+def _partial_where_terms(filter_fields, probes):
+    """Build the list of WHERE predicates for a partial index.
+
+    For each filter field with operator='equality' and a scalar value,
+    check the probed selectivity against the threshold; if below,
+    include the predicate.  Values are SQL-escaped (single quote
+    doubled).  DATE / KEYWORD / range / multi-value filters are
+    excluded — only btree-eligible text-ish types qualify.
+
+    Args:
+        filter_fields: list of ``(name, IndexType, operator, value)``.
+        probes: dict ``{(name, value): selectivity_float}``.  Missing
+            entries are treated as 1.0 (never qualify).
+
+    Returns:
+        list[str] of SQL predicate fragments ready for AND-joining.
+    """
+    terms = []
+    for name, idx_type, op, value in filter_fields:
+        if op != "equality":
+            continue
+        if idx_type not in _PARTIAL_SCOPING_ELIGIBLE_TYPES:
+            continue
+        if value is None:
+            continue
+        sel = probes.get((name, value), 1.0)
+        if sel >= _PARTIAL_PREDICATE_SELECTIVITY_THRESHOLD:
+            continue
+        safe_value = str(value).replace("'", "''")
+        terms.append(f"idx->>'{name}' = '{safe_value}'")
+    return terms
+
+
+def _build_btree_bundle(filter_fields, sort_field, existing_indexes):
+    """Build a single-member Bundle holding one btree composite index.
+
+    Wraps the PR 2 btree-composite logic (selectivity ordering, 3-column
+    cap including sort covering, dedupe when sort field is already a
+    filter column) into the Bundle output shape.
+
+    Returns None when filter_fields is empty.
+    """
+    if not filter_fields:
+        return None
+
+    btree_pairs = [(name, idx_type) for (name, idx_type, _op, _val) in filter_fields]
+
+    btree_pairs = sorted(btree_pairs, key=lambda ft: _SELECTIVITY_ORDER.get(ft[1], 99))
+
     filter_cap = (
         _MAX_COMPOSITE_COLUMNS - 1 if sort_field is not None else _MAX_COMPOSITE_COLUMNS
     )
-    fields_limited = btree_fields[:filter_cap]
+    fields_limited = btree_pairs[:filter_cap]
 
-    # Build the ordered column list: filters first, sort trailing.
-    # Dedupe: if sort_field's name is already a filter column, don't
-    # repeat it — the leading position already satisfies ORDER BY when
-    # the remaining columns have equality predicates.
     ordered = list(fields_limited)
     sort_covering = False
     if sort_field is not None:
@@ -293,10 +734,8 @@ def _add_btree_suggestions(btree_fields, sort_field, existing_indexes, suggestio
             ordered.append(sort_field)
             sort_covering = True
 
-    # Empty after dedupe (shouldn't happen — caller gates on truthy
-    # btree_fields — but guard anyway).
     if not ordered:
-        return
+        return None
 
     field_names = [f for f, _t in ordered]
     if len(ordered) == 1:
@@ -318,43 +757,107 @@ def _add_btree_suggestions(btree_fields, sort_field, existing_indexes, suggestio
         )
         types_str = " + ".join(t.name for _f, t in ordered)
         reason = f"Composite btree ({types_str}) for {len(ordered)} fields"
+
     if sort_covering:
         reason += f"; last column covers ORDER BY {sort_field[0]}"
 
     status = _check_covered(ddl, existing_indexes)
-    suggestions.append(
-        {
-            "fields": field_names,
-            "field_types": [t.name for _f, t in ordered],
-            "ddl": ddl,
-            "status": status,
-            "reason": reason if status == "new" else f"Already covered: {reason}",
-        }
+    member = BundleMember(
+        ddl=ddl,
+        fields=field_names,
+        field_types=[t.name for _f, t in ordered],
+        status=status,
+        role="btree_composite",
+        reason=reason if status == "new" else f"Already covered: {reason}",
+    )
+
+    bundle_name = "btree-" + "-".join(field_names)
+    rationale = (
+        f"Btree composite for filter shape BTREE_ONLY on {', '.join(field_names)}"
+    )
+    return Bundle(
+        name=bundle_name,
+        rationale=rationale,
+        shape_classification="BTREE_ONLY",
+        members=[member],
     )
 
 
 def _check_covered(ddl, existing_indexes):
     """Check if the suggested index already exists.
 
-    Two checks:
-    1. Exact name match (catches re-apply of same suggestion).
-       Name is lowercased because PostgreSQL folds unquoted
+    Three checks:
+    1. Exact name match (case-insensitive).  PG folds unquoted
        identifiers to lowercase in pg_indexes.indexname.
-    2. Normalized expression match (catches existing idx_os_cat_*
-       indexes that cover the same columns with different naming).
+    2. Normalized expression match AND WHERE-clause covers suggested.
+       A broader existing WHERE covers a narrower suggested one; a
+       stricter existing WHERE does NOT cover a broader one — and
+       more importantly, a narrower *suggested* WHERE is a distinct
+       partial index (different plan-usability), so we do NOT mark
+       it covered.
     """
-    # Check 1: case-insensitive index name match
     m = re.search(r"(?:CREATE INDEX\s+(?:CONCURRENTLY\s+)?)(\S+)", ddl, re.I)
     if m and m.group(1).lower() in existing_indexes:
         return "already_covered"
 
-    # Check 2: normalize and compare column expressions
     norm = _normalize_idx_expr(ddl)
+    suggested_where = _extract_where_clause(ddl)
     if norm:
         for _name, idx_def in existing_indexes.items():
-            if norm in _normalize_idx_expr(idx_def):
+            existing_norm = _normalize_idx_expr(idx_def)
+            if norm not in existing_norm:
+                continue
+            existing_where = _extract_where_clause(idx_def)
+            if _where_covers(existing_where, suggested_where):
                 return "already_covered"
     return "new"
+
+
+def _extract_where_clause(ddl):
+    """Extract the normalized WHERE-clause predicate set from an index DDL.
+
+    Returns a frozenset of predicate strings (AND-separated), each
+    stripped of surrounding parens and whitespace.
+    """
+    m = re.search(r"\bWHERE\b\s+(.+)$", ddl, re.I | re.S)
+    if not m:
+        return frozenset()
+    raw = m.group(1).strip().rstrip(")")
+    raw = re.sub(r"^\s*\(\s*", "", raw)
+    raw = re.sub(r"\s*\)\s*$", "", raw)
+    parts = re.split(r"\s+and\s+", raw, flags=re.I)
+    return frozenset(_normalize_predicate(p) for p in parts if p.strip())
+
+
+def _normalize_predicate(p):
+    """Canonicalize a single WHERE predicate for equality comparison."""
+    p = re.sub(r"::text\b", "", p)
+    p = re.sub(r"\s*(->>?|#>>?|#>)\s*", r"\1", p)
+    p = re.sub(r"\s+", " ", p).strip()
+    p = re.sub(r"^\((.+)\)$", r"\1", p)
+    return p.strip()
+
+
+def _where_covers(existing_where, suggested_where):
+    """An existing WHERE predicate set 'covers' a suggested one iff
+    the existing predicates are a superset of the suggested predicates
+    (existing is at least as strict as suggested — every row the
+    existing index covers also satisfies the suggested WHERE).
+
+    Equivalently: suggested ⊆ existing.
+
+    Plain GIN (WHERE idx IS NOT NULL AND idx ? 'Subject') does NOT
+    cover a partial GIN with an extra predicate like
+    idx->>'portal_type' = 'Event', because the existing index spans
+    more rows and the planner cannot substitute it for the narrower
+    partial index.  The partial GIN is genuinely distinct (new).
+
+    Conversely, an existing partial GIN with the same or stricter
+    WHERE DOES cover a suggested plain GIN — the exact-match (Check 1
+    in _check_covered) handles that case via name lookup, but the
+    expression-match path also handles it here.
+    """
+    return suggested_where.issubset(existing_where)
 
 
 def _normalize_idx_expr(ddl):
