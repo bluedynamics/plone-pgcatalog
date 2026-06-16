@@ -2,9 +2,9 @@
 # having plone.api as a dependency
 
 from Acquisition import aq_inner
-from zope.globalrequest import getRequest
-from zope.component import getUtility
 from plone.registry.interfaces import IRegistry
+from zope.component import getUtility
+from zope.globalrequest import getRequest
 
 
 def get_default_language():

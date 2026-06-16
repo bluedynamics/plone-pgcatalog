@@ -20,6 +20,7 @@ from typing import ClassVar
 import logging
 import re
 
+
 log = logging.getLogger(__name__)
 
 # Keys in the query dict that are NOT index names
