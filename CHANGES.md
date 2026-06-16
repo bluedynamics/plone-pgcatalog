@@ -1,5 +1,12 @@
 # Changelog
 
+## UNRELEASED
+
+### Fixed
+
+- Use site language to mark the search language if `Language` parameter is not used #166
+
+
 ## 1.0.0b65
 
 ### Added
@@ -41,8 +48,6 @@
   that imports this function from outside the package.
 
 ### Fixed
-
-- Use site language to mark the search language if `Language` parameter is not used #166
 
 - Fix automatic language detection for BM25 ranking #164
 
