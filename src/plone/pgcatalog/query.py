@@ -20,7 +20,6 @@ from typing import ClassVar
 import logging
 import re
 
-
 log = logging.getLogger(__name__)
 
 # Keys in the query dict that are NOT index names
@@ -570,7 +569,9 @@ class _QueryBuilder:
                 lang_val = lang_val.get("query", "")
             if not lang_val:
                 # Try getting the current language from the environment
-                lang_val = get_current_language()
+                current_language = get_current_language()
+                if current_language is not None:
+                    lang_val = current_language
 
             lang_val = _bool_to_lower_str(lang_val) if lang_val else ""
 

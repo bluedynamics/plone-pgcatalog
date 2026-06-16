@@ -31,8 +31,11 @@ def get_current_language(context=None):
     :Example: :ref:`portal-get-current-language-example`
     """
     request = getRequest()
-    return (
-        request.get("LANGUAGE", None)
-        or (context and aq_inner(context).Language())
-        or get_default_language()
-    )
+    if request is not None:
+        return (
+            request.get("LANGUAGE", None)
+            or (context and aq_inner(context).Language())
+            or get_default_language()
+        )
+
+    return None
