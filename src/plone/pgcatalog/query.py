@@ -13,7 +13,7 @@ from plone.pgcatalog.columns import ensure_date_param as _ensure_date_param
 from plone.pgcatalog.columns import get_registry
 from plone.pgcatalog.columns import IndexType
 from plone.pgcatalog.columns import validate_identifier
-from plone import api
+from plone.pgcatalog.utils import get_current_language
 from psycopg.types.json import Json
 from typing import ClassVar
 
@@ -569,7 +569,7 @@ class _QueryBuilder:
                 lang_val = lang_val.get("query", "")
             if not lang_val:
                 # Try getting the current language from the environment
-                lang_val = api.portal.get_current_language()
+                lang_val = get_current_language()
 
             lang_val = _bool_to_lower_str(lang_val) if lang_val else ""
 
