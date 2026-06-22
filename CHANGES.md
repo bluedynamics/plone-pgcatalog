@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.0.0b66 (unreleased)
+
+### Fixed
+
+- `pgcatalog-tika-worker` no longer crashes with a bare
+  `ModuleNotFoundError` when installed without the `tika` / `tika-s3`
+  extra. The console script is registered unconditionally, but `httpx`
+  (and `boto3` for the S3 blob path) ship only via those extras. The
+  worker module now imports `httpx` defensively and the script fails
+  fast with a clear hint pointing at the required extra; the S3 path
+  raises an actionable error too. #171
+
 ## 1.0.0b65
 
 ### Added

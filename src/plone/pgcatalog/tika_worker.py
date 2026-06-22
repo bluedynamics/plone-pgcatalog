@@ -25,7 +25,6 @@ Environment variables:
 
 from psycopg.rows import dict_row
 
-import httpx
 import logging
 import os
 import psycopg
@@ -35,10 +34,30 @@ import threading
 import time
 
 
+# ``httpx`` (and ``boto3``, imported lazily in ``_get_s3_client``) ship only
+# via the optional ``tika`` / ``tika-s3`` extras, but the
+# ``pgcatalog-tika-worker`` console script is registered unconditionally.
+# Import httpx defensively so the module stays importable without the extra;
+# the worker fails fast with a clear hint instead of a bare
+# ModuleNotFoundError.  See https://github.com/bluedynamics/plone-pgcatalog/issues/171
+try:
+    import httpx
+except ModuleNotFoundError:  # pragma: no cover - exercised in a subprocess
+    httpx = None
+
+
 __all__ = ["TikaWorker", "main"]
 
 
 log = logging.getLogger(__name__)
+
+
+MISSING_EXTRA_HINT = (
+    "pgcatalog-tika-worker requires extra dependencies that are not "
+    "installed. Install the worker extra:\n"
+    "    pip install plone-pgcatalog[tika]      # PG bytea blobs\n"
+    "    pip install plone-pgcatalog[tika-s3]   # + S3-tiered blobs"
+)
 
 
 class TikaWorker:
@@ -164,6 +183,8 @@ class TikaWorker:
     def _extract(self, conn, zoid, tid, content_type):
         """Fetch blob and send to Tika, return extracted text."""
         blob_data = self._fetch_blob(conn, zoid, tid)
+        if httpx is None:
+            raise RuntimeError(MISSING_EXTRA_HINT)
         headers = {"Accept": "text/plain"}
         if content_type:
             headers["Content-Type"] = content_type
@@ -206,7 +227,13 @@ class TikaWorker:
         if self._s3_client is None:
             if not self.s3_config:
                 raise ValueError("S3 blob requested but no S3 config provided")
-            import boto3
+            try:
+                import boto3
+            except ModuleNotFoundError:
+                raise RuntimeError(
+                    "S3-tiered blobs require the 'tika-s3' extra:\n"
+                    "    pip install plone-pgcatalog[tika-s3]"
+                ) from None
 
             self._s3_client = boto3.client(
                 "s3",
@@ -235,6 +262,10 @@ def main():
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+
+    if httpx is None:
+        logging.error(MISSING_EXTRA_HINT)
+        sys.exit(1)
 
     dsn = os.environ.get("TIKA_WORKER_DSN")
     tika_url = os.environ.get("TIKA_WORKER_URL")
