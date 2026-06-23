@@ -2,6 +2,10 @@
 
 ## 1.0.0b66 (unreleased)
 
+### Documentation
+
+- Add `cdk8s-plone` to the ecosystem navigation dropdown.
+
 ### Fixed
 
 - `pgcatalog-tika-worker` no longer crashes with a bare
