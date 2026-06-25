@@ -1,6 +1,7 @@
 <configure
     xmlns="http://namespaces.zope.org/zope"
     xmlns:genericsetup="http://namespaces.zope.org/genericsetup"
+    xmlns:zcml="http://namespaces.zope.org/zcml"
     >
 
   <!-- GenericSetup extension profile -->
@@ -51,5 +52,16 @@
 
   <!-- GenericSetup profile upgrade steps -->
   <include package=".upgrades" />
+
+  <!-- plone.observability content-count metric provider (soft dependency).
+       Registered only when plone.observability is installed; the provider
+       itself emits only for IPGCatalogTool-backed sites. -->
+  <adapter
+      factory=".observability.PGContentMetricProvider"
+      provides="plone.observability.interfaces.IMetricProvider"
+      for="OFS.interfaces.IApplication"
+      name="pgcontent"
+      zcml:condition="installed plone.observability"
+      />
 
 </configure>

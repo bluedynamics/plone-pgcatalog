@@ -58,6 +58,7 @@ test = [
     "plone.app.testing",
     "zope.pytestlayer",
     "horse-with-no-namespace",
+    "plone.observability",
 ]
 
 [tool.hatch.build.targets.sdist]
