@@ -198,3 +198,17 @@ class TestCollect:
         monkeypatch.setattr(observability, "get_pool", boom)
         provider = observability.PGContentMetricProvider(object())
         assert list(provider.collect()) == []
+
+
+class TestRegistration:
+    def test_pgcontent_adapter_registered(self, pgcatalog_layer):
+        from plone.observability.interfaces import IMetricProvider
+        from zope.component import getGlobalSiteManager
+
+        gsm = getGlobalSiteManager()
+        names = {
+            reg.name
+            for reg in gsm.registeredAdapters()
+            if reg.provided is IMetricProvider
+        }
+        assert "pgcontent" in names

@@ -2,6 +2,14 @@
 
 ## 1.0.0b66 (unreleased)
 
+### Added
+
+- Ship a `plone.observability` `IMetricProvider` (`pgcontent`) that produces
+  `plone_content_total` / `plone_content_by_state` content-count metrics via SQL
+  for pg-catalog sites. Registered only when `plone.observability` is installed
+  (`zcml:condition`) and emits only for sites backed by `IPGCatalogTool`
+  (migration safe). #174
+
 ### Documentation
 
 - Add `cdk8s-plone` to the ecosystem navigation dropdown.
