@@ -84,3 +84,117 @@ class TestAggregate:
         conn.commit()
 
         assert _aggregate(conn, ["sitea"]) == []
+
+
+class _FakeCatalog:
+    pass
+
+
+class _FakeSite:
+    def __init__(self, site_id, catalog):
+        self._id = site_id
+        self._catalog = catalog
+
+    def getId(self):
+        return self._id
+
+    def unrestrictedTraverse(self, name, default=None):
+        if name == "portal_catalog":
+            return self._catalog
+        return default
+
+
+class _FakeApp:
+    def __init__(self, sites):
+        self._sites = sites
+
+    def objectValues(self):
+        return self._sites
+
+
+class TestSiteSelection:
+    def test_only_ipgcatalogtool_sites(self):
+        from plone.base.interfaces import IPloneSiteRoot
+        from plone.pgcatalog.interfaces import IPGCatalogTool
+        from plone.pgcatalog.observability import _pg_site_ids
+        from zope.interface import alsoProvides
+
+        pg_catalog = _FakeCatalog()
+        alsoProvides(pg_catalog, IPGCatalogTool)
+        zcatalog = _FakeCatalog()  # not IPGCatalogTool
+
+        pg_site = _FakeSite("sitea", pg_catalog)
+        alsoProvides(pg_site, IPloneSiteRoot)
+        z_site = _FakeSite("siteb", zcatalog)
+        alsoProvides(z_site, IPloneSiteRoot)
+
+        assert _pg_site_ids(_FakeApp([pg_site, z_site])) == ["sitea"]
+
+
+class _SpyPool:
+    def __init__(self, conn):
+        self._conn = conn
+
+    def connection(self):
+        import contextlib
+
+        @contextlib.contextmanager
+        def _cm():
+            yield self._conn
+
+        return _cm()
+
+
+class TestCollect:
+    def test_yields_nothing_without_pg_sites(self, monkeypatch):
+        from plone.pgcatalog import observability
+
+        monkeypatch.setattr(observability, "_pg_site_ids", lambda ctx: [])
+        provider = observability.PGContentMetricProvider(object())
+        assert list(provider.collect()) == []
+
+    def test_caches_within_ttl(self, monkeypatch):
+        from plone.observability.metric import Metric
+        from plone.pgcatalog import observability
+
+        calls = {"n": 0}
+        sample = [
+            Metric(
+                name="plone_content_total",
+                value=1,
+                type="gauge",
+                scope="global",
+                help="h",
+                labels={"portal_type": "Document", "site": "sitea"},
+            )
+        ]
+
+        def fake_aggregate(conn, site_ids):
+            calls["n"] += 1
+            return sample
+
+        monkeypatch.setattr(observability, "_pg_site_ids", lambda ctx: ["sitea"])
+        monkeypatch.setattr(
+            observability, "get_pool", lambda ctx: _SpyPool(conn=object())
+        )
+        monkeypatch.setattr(observability, "_aggregate", fake_aggregate)
+        monkeypatch.setenv("PLONE_OBSERVABILITY_METRICS_CACHE_TTL", "300")
+
+        provider = observability.PGContentMetricProvider(object())
+        first = list(provider.collect())
+        second = list(observability.PGContentMetricProvider(object()).collect())
+
+        assert first == second == sample
+        assert calls["n"] == 1  # second call served from the process-global cache
+
+    def test_degrades_silently_without_pool(self, monkeypatch):
+        from plone.pgcatalog import observability
+
+        monkeypatch.setattr(observability, "_pg_site_ids", lambda ctx: ["sitea"])
+
+        def boom(ctx):
+            raise RuntimeError("no pool")
+
+        monkeypatch.setattr(observability, "get_pool", boom)
+        provider = observability.PGContentMetricProvider(object())
+        assert list(provider.collect()) == []
