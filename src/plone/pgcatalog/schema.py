@@ -184,6 +184,33 @@ CREATE INDEX IF NOT EXISTS idx_os_cat_events_upcoming
       AND (idx->>'portal_type') = 'Event'
       AND (idx->>'show_in_sidecalendar')::boolean = true;
 
+-- Partial index for the navigation-tree / navigation-portlet listing pattern
+-- (#130).  Plone navigation queries combine
+--   Language = ? AND portal_type = ? AND <path filter>
+--   AND effectiveRange AND allowed_roles
+-- and only ever want nav-visible objects.  The two boolean nav flags are
+-- highly selective (nav-visible content is a small fraction of the catalog),
+-- so baking them into the partial predicate shrinks the candidate set to a
+-- few thousand rows before any heap filter for the JSONB-only predicates
+-- (effective/expires, path prefix).  INCLUDE carries the columns the result
+-- and security filter need so the scan stays index-only for the hot path.
+--
+-- NOTE: path_depth is a typed column (idx JSONB no longer carries it, see
+-- the path-strip migration / #132), so it is referenced directly rather than
+-- via (idx->>'path_depth').  parent_path is INCLUDEd so the navtree=True
+-- shape (parent_path = ANY(...)) is also served from this index.
+CREATE INDEX IF NOT EXISTS idx_os_navtree
+    ON object_state (
+        (idx->>'Language'),
+        (idx->>'portal_type'),
+        path_depth,
+        ((idx->>'getObjPositionInParent')::integer)
+    )
+    INCLUDE (zoid, path, parent_path, allowed_roles)
+    WHERE idx IS NOT NULL
+      AND (idx->>'is_default_page')::boolean = false
+      AND (idx->>'exclude_from_nav')::boolean = false;
+
 -- Dedicated GIN indexes for high-cardinality keyword fields.
 -- The full-idx GIN index (idx_os_catalog) is too broad for these — PG
 -- must scan all JSONB keys across all objects.  Dedicated indexes on
@@ -325,6 +352,7 @@ EXPECTED_INDEXES = [
     "idx_os_cat_uid",
     "idx_os_cat_nav_visible",
     "idx_os_cat_events_upcoming",
+    "idx_os_navtree",
     "idx_os_searchable_text",
     "idx_os_cat_title_tsv",
     "idx_os_cat_description_tsv",

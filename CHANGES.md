@@ -4,6 +4,16 @@
 
 ### Added
 
+- Ship a partial `idx_os_navtree` index for the navigation-tree / navigation-
+  portlet listing pattern (`Language` + `portal_type` + path filter +
+  effectiveRange + nav-visibility flags). The index bakes the two highly
+  selective boolean nav flags (`is_default_page`, `exclude_from_nav`) into its
+  partial predicate and `INCLUDE`s the result/security columns, shrinking the
+  candidate set to the nav-visible subtree before any JSONB heap filter. On a
+  ~4M-row production catalog this navigation shape was the single biggest
+  contributor to the slow-query log. Adapted to the current schema: references
+  the typed `path_depth` column (no longer in `idx` JSONB). #130
+
 - Ship a `plone.observability` `IMetricProvider` (`pgcontent`) that produces
   `plone_content_total` / `plone_content_by_state` content-count metrics via SQL
   for pg-catalog sites. Registered only when `plone.observability` is installed
