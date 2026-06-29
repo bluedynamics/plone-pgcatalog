@@ -87,3 +87,98 @@ class TestSearchableTextFileOverride:
         ):
             result = SearchableText_file_override(obj)
         assert result is not None
+
+
+# ---------------------------------------------------------------------------
+# #114: Tika-aware NamedfileFieldConverter — skips portal_transforms for
+# searchable NamedBlobFile fields when Tika is active (textindexer behavior).
+# ---------------------------------------------------------------------------
+
+
+class _FakeBlob:
+    def __init__(
+        self, filename="report.pdf", size=1234, content_type="application/pdf"
+    ):
+        self.filename = filename
+        self.contentType = content_type
+        self._size = size
+        self.data = b"%PDF-1.4 fake"
+
+    def getSize(self):
+        return self._size
+
+
+class _FakeField:
+    """Minimal stand-in for a zope schema field used by the converter."""
+
+    def __init__(self, value):
+        self._value = value
+
+    def interface(self, context):
+        return context  # storage == context for the test
+
+    def get(self, storage):
+        return self._value
+
+
+class TestTikaAwareNamedfileFieldConverter:
+    def _converter(self, value):
+        from plone.pgcatalog.indexers import TikaAwareNamedfileFieldConverter
+
+        return TikaAwareNamedfileFieldConverter(
+            mock.Mock(), _FakeField(value), mock.Mock()
+        )
+
+    def test_with_tika_returns_filename(self):
+        conv = self._converter(_FakeBlob(filename="quarterly.pdf"))
+        with mock.patch.dict(os.environ, {"PGCATALOG_TIKA_URL": "http://tika:9998"}):
+            result = conv.convert()
+        assert result == "quarterly.pdf"
+
+    def test_with_tika_does_not_call_transforms(self):
+        conv = self._converter(_FakeBlob())
+        with (
+            mock.patch.dict(os.environ, {"PGCATALOG_TIKA_URL": "http://tika:9998"}),
+            mock.patch(
+                "plone.app.dexterity.textindexer.converters.getToolByName"
+            ) as gtbn,
+        ):
+            conv.convert()
+        gtbn.assert_not_called()
+
+    def test_with_tika_empty_blob_returns_empty(self):
+        conv = self._converter(_FakeBlob(filename="x.pdf", size=0))
+        with mock.patch.dict(os.environ, {"PGCATALOG_TIKA_URL": "http://tika:9998"}):
+            assert conv.convert() == ""
+
+    def test_with_tika_missing_filename_returns_empty_string(self):
+        conv = self._converter(_FakeBlob(filename=None))
+        with mock.patch.dict(os.environ, {"PGCATALOG_TIKA_URL": "http://tika:9998"}):
+            assert conv.convert() == ""
+
+    def test_without_tika_delegates_to_parent(self):
+        conv = self._converter(_FakeBlob())
+        with (
+            mock.patch.dict(os.environ, {}, clear=False),
+            mock.patch(
+                "plone.app.dexterity.textindexer.converters."
+                "NamedfileFieldConverter.convert",
+                return_value="ORIGINAL",
+            ) as parent,
+        ):
+            os.environ.pop("PGCATALOG_TIKA_URL", None)
+            result = conv.convert()
+        parent.assert_called_once()
+        assert result == "ORIGINAL"
+
+    def test_empty_tika_url_delegates_to_parent(self):
+        conv = self._converter(_FakeBlob())
+        with (
+            mock.patch.dict(os.environ, {"PGCATALOG_TIKA_URL": "  "}),
+            mock.patch(
+                "plone.app.dexterity.textindexer.converters."
+                "NamedfileFieldConverter.convert",
+                return_value="ORIGINAL",
+            ),
+        ):
+            assert conv.convert() == "ORIGINAL"

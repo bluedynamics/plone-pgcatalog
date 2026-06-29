@@ -28,4 +28,15 @@
       name="SearchableText"
       />
 
+  <!-- Skip portal_transforms for searchable NamedBlobFile fields when Tika
+       is active (#114).  plone.app.dexterity.textindexer's dynamic
+       SearchableText indexer runs NamedfileFieldConverter on every field
+       marked 'searchable'; the override returns the filename and lets the
+       async Tika worker extract the body text.  Delegates to the stock
+       converter when PGCATALOG_TIKA_URL is unset. -->
+  <adapter
+      zcml:condition="installed plone.app.dexterity"
+      factory=".indexers.TikaAwareNamedfileFieldConverter"
+      />
+
 </configure>
