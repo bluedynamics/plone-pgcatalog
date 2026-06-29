@@ -24,7 +24,21 @@
   plans; it is populated by the deferred `ANALYZE` (whose version tracks the
   catalog DDL, so it re-runs on the next deploy). #133
 
+### Documentation
+
+- Correct the Tika OCR documentation: the minimal `apache/tika` image bundles
+  no OCR engine, so plain images and scanned (image-only) PDFs index as empty
+  text (the queue row still completes). OCR needs the `-full` image plus
+  server-side `tika-config.xml` (OCR strategy + languages). The how-to now pins
+  an explicit image version, adds an "OCR for images and scanned PDFs" section,
+  and the misleading "includes Tesseract OCR" claims are removed. #183
+
 ### Fixed
+
+- The Tika worker HTTP timeout is now configurable via
+  `TIKA_WORKER_HTTP_TIMEOUT` (default 120 s, was hard-coded). OCR of large
+  multi-page scanned PDFs can exceed 120 s; the request then timed out and the
+  queue row was marked `failed`. #183
 
 - Full-text search now picks up the current site/negotiated language when the
   query has no explicit `Language` parameter, instead of falling back to the

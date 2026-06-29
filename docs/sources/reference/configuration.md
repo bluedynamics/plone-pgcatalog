@@ -75,6 +75,7 @@ as a standalone process (outside Zope):
 | `TIKA_WORKER_DSN` | (required) | PostgreSQL connection string. |
 | `TIKA_WORKER_URL` | (required) | Tika server URL. |
 | `TIKA_WORKER_POLL_INTERVAL` | `5` | Seconds between polls when idle (LISTEN/NOTIFY provides instant wakeup). |
+| `TIKA_WORKER_HTTP_TIMEOUT` | `120` | Seconds to wait for a Tika HTTP response. Raise it for OCR of large scanned PDFs, which can exceed the default. |
 | `TIKA_WORKER_S3_BUCKET` | (none) | S3 bucket name for S3-tiered blobs. |
 | `TIKA_WORKER_S3_ENDPOINT_URL` | (none) | S3 endpoint URL (for MinIO or compatible). |
 | `TIKA_WORKER_S3_REGION` | (none) | S3 region name. |

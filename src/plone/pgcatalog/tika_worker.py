@@ -24,6 +24,9 @@ Environment variables:
                               default credential chain when unset)
     TIKA_WORKER_S3_SECRET_KEY S3 secret access key (optional; see above)
     TIKA_WORKER_POLL_INTERVAL Seconds between polls when idle (default: 5)
+    TIKA_WORKER_HTTP_TIMEOUT  Seconds to wait for a Tika HTTP response
+                              (default: 120; raise it for OCR of large scanned
+                              PDFs, which can exceed the default)
 """
 
 from psycopg.rows import dict_row
@@ -66,11 +69,14 @@ MISSING_EXTRA_HINT = (
 class TikaWorker:
     """PostgreSQL-backed text extraction worker using Apache Tika."""
 
-    def __init__(self, dsn, tika_url, s3_config=None, poll_interval=5):
+    def __init__(
+        self, dsn, tika_url, s3_config=None, poll_interval=5, http_timeout=120.0
+    ):
         self.dsn = dsn
         self.tika_url = tika_url.rstrip("/")
         self.s3_config = s3_config
         self.poll_interval = poll_interval
+        self.http_timeout = http_timeout
         self._shutdown = threading.Event()
         self._s3_client = None
 
@@ -191,7 +197,7 @@ class TikaWorker:
         headers = {"Accept": "text/plain"}
         if content_type:
             headers["Content-Type"] = content_type
-        with httpx.Client(timeout=120.0) as client:
+        with httpx.Client(timeout=self.http_timeout) as client:
             resp = client.put(
                 f"{self.tika_url}/tika",
                 content=blob_data,
@@ -296,12 +302,14 @@ def main():
         }
 
     poll_interval = int(os.environ.get("TIKA_WORKER_POLL_INTERVAL", "5"))
+    http_timeout = float(os.environ.get("TIKA_WORKER_HTTP_TIMEOUT", "120"))
 
     worker = TikaWorker(
         dsn=dsn,
         tika_url=tika_url,
         s3_config=s3_config,
         poll_interval=poll_interval,
+        http_timeout=http_timeout,
     )
 
     def handle_signal(_sig, _frame):

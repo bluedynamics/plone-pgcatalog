@@ -8,7 +8,7 @@ using PostgreSQL as the job queue. Default behavior (portal_transforms) is uncha
 Apache Tika runs as a **separate Docker container** — a stateless HTTP service that accepts
 binary files and returns extracted text. It has no storage, no config, no state.
 
-**Official Docker image**: [`apache/tika`](https://hub.docker.com/r/apache/tika) (~400MB, includes Tesseract OCR)
+**Official Docker image**: [`apache/tika`](https://hub.docker.com/r/apache/tika). The minimal image has **no** OCR engine; OCR (Tesseract + ImageMagick) ships only in the `-full` variant. See the how-to for OCR setup.
 
 ```bash
 # Development
@@ -32,9 +32,10 @@ services:
 The Tika server exposes a single relevant endpoint:
 - `PUT /tika` — send binary data, get plain text back
 - Supports 1400+ formats: PDF, DOCX, PPTX, ODT, RTF, etc.
-- **Images**: Tika includes Tesseract OCR — extracts text from scanned documents,
-  photographs of text, and EXIF/IPTC metadata (captions, keywords, descriptions)
-  from any image format (JPEG, PNG, TIFF, WebP, etc.)
+- **Images**: with the `-full` image (Tesseract), Tika runs OCR — extracts text
+  from scanned documents and photographs of text. EXIF/IPTC metadata (captions,
+  keywords, descriptions) is read from any image format (JPEG, PNG, TIFF, WebP,
+  etc.) by the minimal image too; only OCR needs `-full`.
 - Content-Type header hints the format (optional, Tika auto-detects)
 
 **Deployment topology**: Tika only needs to be reachable by the **worker** (not by Plone/Zope).
