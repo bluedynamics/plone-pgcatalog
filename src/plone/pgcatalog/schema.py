@@ -226,6 +226,18 @@ DROP INDEX IF EXISTS idx_os_cat_provides_gin;
 CREATE INDEX IF NOT EXISTS idx_os_object_provides
     ON object_state USING gin (object_provides) WHERE object_provides IS NOT NULL;
 
+-- Raise the per-column statistics target for object_provides (#133).
+-- object_provides is a TEXT[] of marker interfaces; PG estimates array
+-- containment via element MCEs (most_common_elems).  At the default
+-- target the MCE list is short, so rare / mid-frequency interfaces fall
+-- below the floor and the planner badly underestimates their selectivity
+-- — flipping to Bitmap-AND plans that heap-scan hundreds of thousands of
+-- rows instead of leading with the object_provides GIN.  A larger target
+-- doubles the MCE list and stabilises those plans.  Populated by the
+-- deferred ANALYZE (whose version tracks this DDL, so it re-runs on the
+-- next deploy after this change).  Idempotent.
+ALTER TABLE object_state ALTER COLUMN object_provides SET STATISTICS 2000;
+
 -- Subject keywords
 CREATE INDEX IF NOT EXISTS idx_os_cat_subject_gin
     ON object_state USING gin ((idx->'Subject'))
