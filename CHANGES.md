@@ -4,6 +4,11 @@
 
 ### Changed
 
+- Require `zodb-pgjsonb>=1.14.0`, the release that ships the startup-DDL
+  schema-version gate the deferred index/ANALYZE actions are tagged for
+  (bluedynamics/zodb-pgjsonb#78). The runtime still feature-detects the
+  `version=` argument, so this only raises the floor for new installs.
+
 - `TestEnqueueUnit` (Tika enqueue unit tests) now runs against a real
   `dict_row` cursor and the actual PG schema instead of a `MagicMock` cursor
   with hand-stubbed `fetchall()` rows. The mocked row shapes were the contract
