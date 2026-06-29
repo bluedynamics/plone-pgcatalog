@@ -1,9 +1,30 @@
 # Changelog
 
+## 1.0.0b67 (unreleased)
 
-## 1.0.0b66 (unreleased)
+### Fixed
+
+- Full-text search now picks up the current site/negotiated language when the
+  query has no explicit `Language` parameter, instead of falling back to the
+  `simple` text-search configuration. On multilingual sites this means BM25 /
+  `tsvector` ranking uses the right language config (stemming, stop words) for
+  queries that don't pass `Language` (e.g. plain `SearchableText` searches).
+  The language is resolved from the request, the context, or the portal default
+  via a small vendored helper (no `plone.api` dependency). #166
+
+## 1.0.0b66 (2026-06-29)
 
 ### Added
+
+- Ship a partial `idx_os_navtree` index for the navigation-tree / navigation-
+  portlet listing pattern (`Language` + `portal_type` + path filter +
+  effectiveRange + nav-visibility flags). The index bakes the two highly
+  selective boolean nav flags (`is_default_page`, `exclude_from_nav`) into its
+  partial predicate and `INCLUDE`s the result/security columns, shrinking the
+  candidate set to the nav-visible subtree before any JSONB heap filter. On a
+  ~4M-row production catalog this navigation shape was the single biggest
+  contributor to the slow-query log. Adapted to the current schema: references
+  the typed `path_depth` column (no longer in `idx` JSONB). #130
 
 - Ship a `plone.observability` `IMetricProvider` (`pgcontent`) that produces
   `plone_content_total` / `plone_content_by_state` content-count metrics via SQL
@@ -16,6 +37,24 @@
 - Add `cdk8s-plone` to the ecosystem navigation dropdown.
 
 ### Fixed
+
+- Catalog searches now ignore query keys that do not match any catalog index,
+  matching ZCatalog semantics. `plone.restapi`'s `@search` forwards its whole
+  request dict to the catalog — including control parameters like
+  `metadata_fields` (e.g. from Volto's `ObjectBrowserWidget`) — which are not
+  indexes. Previously any such unmapped key fell through to a JSONB
+  `idx->>'key'` filter that matched no row and returned an **empty result set**;
+  these keys are now silently dropped before query building (and before the
+  cache key is computed). #168
+
+- The async Tika worker now forwards S3 credentials to boto3. New
+  `TIKA_WORKER_S3_ACCESS_KEY` / `TIKA_WORKER_S3_SECRET_KEY` env vars are passed
+  as `aws_access_key_id` / `aws_secret_access_key`. Previously the worker built
+  the boto3 client without any credentials, so every blob tiered to S3 failed
+  extraction with `Unable to locate credentials` (only inline-`bytea` blobs
+  were extracted). When the vars are unset, boto3 still falls back to its
+  default credential chain, so IAM-role / ambient-credential setups are
+  unaffected. #178
 
 - `PGIndex` no longer parametrizes the JSONB key name in its SQL
   (`idx->>%(key)s`). On PostgreSQL the prepared statement flipped to a generic
@@ -36,9 +75,6 @@
   worker module now imports `httpx` defensively and the script fails
   fast with a clear hint pointing at the required extra; the S3 path
   raises an actionable error too. #171
-  
-- Use site language to mark the search language if `Language` parameter is 
-  not used #166  
 
 
 ## 1.0.0b65
