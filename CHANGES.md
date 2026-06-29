@@ -26,6 +26,15 @@
 
 ### Fixed
 
+- The async Tika worker now forwards S3 credentials to boto3. New
+  `TIKA_WORKER_S3_ACCESS_KEY` / `TIKA_WORKER_S3_SECRET_KEY` env vars are passed
+  as `aws_access_key_id` / `aws_secret_access_key`. Previously the worker built
+  the boto3 client without any credentials, so every blob tiered to S3 failed
+  extraction with `Unable to locate credentials` (only inline-`bytea` blobs
+  were extracted). When the vars are unset, boto3 still falls back to its
+  default credential chain, so IAM-role / ambient-credential setups are
+  unaffected. #178
+
 - `PGIndex` no longer parametrizes the JSONB key name in its SQL
   (`idx->>%(key)s`). On PostgreSQL the prepared statement flipped to a generic
   plan after 5 executions, which could not match the `idx->>'key'` expression

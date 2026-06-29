@@ -20,6 +20,9 @@ Environment variables:
     TIKA_WORKER_S3_BUCKET     S3 bucket name (optional, for S3-tiered blobs)
     TIKA_WORKER_S3_ENDPOINT_URL  S3 endpoint (optional)
     TIKA_WORKER_S3_REGION     S3 region (optional)
+    TIKA_WORKER_S3_ACCESS_KEY S3 access key id (optional; falls back to boto3's
+                              default credential chain when unset)
+    TIKA_WORKER_S3_SECRET_KEY S3 secret access key (optional; see above)
     TIKA_WORKER_POLL_INTERVAL Seconds between polls when idle (default: 5)
 """
 
@@ -235,10 +238,16 @@ class TikaWorker:
                     "    pip install plone-pgcatalog[tika-s3]"
                 ) from None
 
+            # aws_access_key_id / aws_secret_access_key default to None when not
+            # configured; boto3 treats None as "not provided" and falls back to
+            # its default credential provider chain (env, ~/.aws, IAM role), so
+            # this stays backward-compatible with ambient-credential setups.
             self._s3_client = boto3.client(
                 "s3",
                 endpoint_url=self.s3_config.get("endpoint_url"),
                 region_name=self.s3_config.get("region_name"),
+                aws_access_key_id=self.s3_config.get("access_key"),
+                aws_secret_access_key=self.s3_config.get("secret_key"),
             )
         return self._s3_client
 
@@ -282,6 +291,8 @@ def main():
             "bucket_name": bucket,
             "endpoint_url": os.environ.get("TIKA_WORKER_S3_ENDPOINT_URL"),
             "region_name": os.environ.get("TIKA_WORKER_S3_REGION"),
+            "access_key": os.environ.get("TIKA_WORKER_S3_ACCESS_KEY"),
+            "secret_key": os.environ.get("TIKA_WORKER_S3_SECRET_KEY"),
         }
 
     poll_interval = int(os.environ.get("TIKA_WORKER_POLL_INTERVAL", "5"))

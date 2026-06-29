@@ -59,3 +59,93 @@ def test_main_exits_with_clear_hint_without_httpx():
     # ... instead a clear, actionable hint mentioning the extra.
     assert "tika" in combined.lower()
     assert "pip install" in combined.lower()
+
+
+# ---------------------------------------------------------------------------
+# #178: the worker must forward S3 credentials to boto3, otherwise every
+# S3-tiered blob fails extraction with "Unable to locate credentials".
+# ---------------------------------------------------------------------------
+
+
+def test_s3_client_forwards_credentials(monkeypatch):
+    """_get_s3_client passes access/secret key through to boto3.client."""
+    from plone.pgcatalog.tika_worker import TikaWorker
+
+    import types
+
+    captured = {}
+    fake_boto3 = types.SimpleNamespace(
+        client=lambda *a, **k: captured.update(service=a, kwargs=k) or "CLIENT"
+    )
+    monkeypatch.setitem(sys.modules, "boto3", fake_boto3)
+
+    worker = TikaWorker(
+        dsn="x",
+        tika_url="y",
+        s3_config={
+            "bucket_name": "b",
+            "endpoint_url": "http://endpoint",
+            "region_name": "eu",
+            "access_key": "AKIA",
+            "secret_key": "SECRET",
+        },
+    )
+    client = worker._get_s3_client()
+    assert client == "CLIENT"
+    kw = captured["kwargs"]
+    assert kw["endpoint_url"] == "http://endpoint"
+    assert kw["region_name"] == "eu"
+    assert kw["aws_access_key_id"] == "AKIA"
+    assert kw["aws_secret_access_key"] == "SECRET"
+
+
+def test_s3_client_without_credentials_passes_none(monkeypatch):
+    """Backward-compatible: no creds → boto3 falls back to its provider chain."""
+    from plone.pgcatalog.tika_worker import TikaWorker
+
+    import types
+
+    captured = {}
+    fake_boto3 = types.SimpleNamespace(
+        client=lambda *a, **k: captured.update(k) or "CLIENT"
+    )
+    monkeypatch.setitem(sys.modules, "boto3", fake_boto3)
+
+    worker = TikaWorker(
+        dsn="x",
+        tika_url="y",
+        s3_config={"bucket_name": "b", "endpoint_url": None, "region_name": None},
+    )
+    worker._get_s3_client()
+    # Keys are forwarded as None so boto3 uses its default credential chain.
+    assert captured["aws_access_key_id"] is None
+    assert captured["aws_secret_access_key"] is None
+
+
+def test_main_reads_s3_credentials_from_env(monkeypatch):
+    """main() reads TIKA_WORKER_S3_ACCESS_KEY / _SECRET_KEY into s3_config."""
+    from plone.pgcatalog import tika_worker
+
+    monkeypatch.setenv("TIKA_WORKER_DSN", "dsn")
+    monkeypatch.setenv("TIKA_WORKER_URL", "http://tika")
+    monkeypatch.setenv("TIKA_WORKER_S3_BUCKET", "bucket")
+    monkeypatch.setenv("TIKA_WORKER_S3_ACCESS_KEY", "AKIA")
+    monkeypatch.setenv("TIKA_WORKER_S3_SECRET_KEY", "SECRET")
+
+    captured = {}
+
+    class _FakeWorker:
+        def __init__(self, **kw):
+            captured.update(kw)
+
+        def run(self):
+            pass
+
+    monkeypatch.setattr(tika_worker, "TikaWorker", _FakeWorker)
+    monkeypatch.setattr(tika_worker, "httpx", object())  # pretend extra present
+    tika_worker.main()
+
+    s3 = captured["s3_config"]
+    assert s3["access_key"] == "AKIA"
+    assert s3["secret_key"] == "SECRET"
+    assert s3["bucket_name"] == "bucket"
