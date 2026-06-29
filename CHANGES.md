@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.0.0b68 (unreleased)
+## 1.0.0b68 (2026-06-30)
 
 ### Removed
 
