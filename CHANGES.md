@@ -2,6 +2,19 @@
 
 ## 1.0.0b67 (unreleased)
 
+### Changed
+
+- Version-tag the three deferred startup actions (`ensure_text_indexes`,
+  `ensure_field_indexes`, `analyze_object_state`) so zodb-pgjsonb's
+  double-checked schema-version gate lets replicas skip the startup advisory
+  lock when their work is already current. On a rolling deploy this stops every
+  pod from queuing behind the lock — catalog indexes and `ANALYZE` now run once
+  per schema- or registry-changing deploy instead of on every pod start. The
+  index versions track the live `IndexRegistry`; the `ANALYZE` version tracks
+  the catalog DDL. The `version=` argument is passed only when the installed
+  zodb-pgjsonb supports it, so older releases keep working unchanged.
+  bluedynamics/zodb-pgjsonb#78
+
 ### Fixed
 
 - Full-text search now picks up the current site/negotiated language when the

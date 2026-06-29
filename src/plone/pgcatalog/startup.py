@@ -19,6 +19,8 @@ from plone.pgcatalog.interfaces import IPGIndexTranslator
 from plone.pgcatalog.processor import CatalogStateProcessor
 from zope.component import provideUtility
 
+import hashlib
+import inspect
 import logging
 import os
 import psycopg
@@ -131,21 +133,7 @@ def register_catalog_processor(event):
         # snapshot (ACCESS SHARE), which would block CREATE INDEX (needs
         # ACCESS EXCLUSIVE).  defer_startup_action() queues the work for
         # tpc_begin() when the read snapshot has been committed.
-        if hasattr(storage, "defer_startup_action"):
-            storage.defer_startup_action(
-                _make_ensure_text_indexes_action(), "ensure_text_indexes"
-            )
-            storage.defer_startup_action(
-                _make_ensure_field_indexes_action(), "ensure_field_indexes"
-            )
-            storage.defer_startup_action(
-                _make_analyze_object_state_action(),
-                "analyze_object_state",
-            )
-        else:
-            # Fallback for older zodb-pgjsonb without defer_startup_action
-            _ensure_text_indexes(storage)
-            _ensure_field_indexes(storage)
+        _defer_index_actions(storage, processor)
         _backfill_extra_idx_columns(storage)
 
         # Enable refs prefetch for cataloged content objects only.
@@ -170,6 +158,108 @@ def register_catalog_processor(event):
         log.debug("Storage %s does not support state processors", storage)
 
 
+def _text_index_targets():
+    """Return ``[(name, idx_key), ...]`` for dynamic TEXT indexes.
+
+    These are the GIN expression indexes ``_make_ensure_text_indexes_action``
+    would create (SearchableText, with ``idx_key=None``, is excluded).
+    """
+    registry = get_registry()
+    return [
+        (name, idx_key)
+        for name, (idx_type, idx_key, _) in registry.items()
+        if idx_type == IndexType.TEXT and idx_key is not None
+    ]
+
+
+def _field_index_targets():
+    """Return ``[(name, idx_type, idx_key), ...]`` for dynamic btree indexes."""
+    registry = get_registry()
+    return [
+        (name, idx_type, idx_key)
+        for name, (idx_type, idx_key, _) in registry.items()
+        if idx_type in _BTREE_INDEX_TYPES
+        and idx_key is not None
+        and idx_key not in _HARDCODED_IDX_KEYS
+    ]
+
+
+def _index_set_version(targets):
+    """Return a stable ``sha256:`` version for a set of index targets.
+
+    The hash is order-independent and changes whenever the set of indexes
+    (names, types, keys) changes, so the startup schema-version gate
+    re-runs the deferred index action only when the registry changed (#78).
+    """
+    payload = "\n".join(sorted("|".join(str(part) for part in t) for t in targets))
+    return "sha256:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _schema_sql_version(processor):
+    """Return a ``sha256:`` version of the processor's catalog DDL.
+
+    Used to tag the deferred ANALYZE: the extended statistics it populates
+    are defined in ``get_schema_sql()``, so the ANALYZE should re-run exactly
+    when that DDL changes.
+    """
+    sql = processor.get_schema_sql() or ""
+    return "sha256:" + hashlib.sha256(sql.encode("utf-8")).hexdigest()
+
+
+def _defer_supports_version(func):
+    """Return True if *func* accepts a ``version`` keyword argument.
+
+    Lets us tag deferred actions when running against a zodb-pgjsonb that
+    supports the schema-version gate, while staying compatible with older
+    releases whose ``defer_startup_action`` has no ``version`` parameter.
+    """
+    try:
+        return "version" in inspect.signature(func).parameters
+    except (TypeError, ValueError):
+        return False
+
+
+def _defer_index_actions(storage, processor):
+    """Queue the deferred index/ANALYZE startup actions, version-tagged.
+
+    Each action carries a version so the storage's double-checked
+    schema-version gate (#78) lets replicas whose work is already current
+    skip the startup advisory lock entirely.  Text/field index versions
+    track the live IndexRegistry; the ANALYZE version tracks the catalog
+    DDL.  Falls back to immediate creation when the storage has no
+    ``defer_startup_action`` at all.
+    """
+    if not hasattr(storage, "defer_startup_action"):
+        # Fallback for older zodb-pgjsonb without defer_startup_action.
+        _ensure_text_indexes(storage)
+        _ensure_field_indexes(storage)
+        return
+
+    use_version = _defer_supports_version(storage.defer_startup_action)
+
+    def _defer(action, name, version):
+        if use_version:
+            storage.defer_startup_action(action, name, version=version)
+        else:
+            storage.defer_startup_action(action, name)
+
+    _defer(
+        _make_ensure_text_indexes_action(),
+        "ensure_text_indexes",
+        _index_set_version(_text_index_targets()),
+    )
+    _defer(
+        _make_ensure_field_indexes_action(),
+        "ensure_field_indexes",
+        _index_set_version(_field_index_targets()),
+    )
+    _defer(
+        _make_analyze_object_state_action(),
+        "analyze_object_state",
+        _schema_sql_version(processor),
+    )
+
+
 def _make_ensure_text_indexes_action():
     """Return a callable(dsn) that creates text indexes when invoked.
 
@@ -177,12 +267,7 @@ def _make_ensure_text_indexes_action():
     to ``storage.defer_startup_action()`` and executed during the first
     write transaction when REPEATABLE READ locks are released.
     """
-    registry = get_registry()
-    text_indexes = [
-        (name, idx_key)
-        for name, (idx_type, idx_key, _) in registry.items()
-        if idx_type == IndexType.TEXT and idx_key is not None
-    ]
+    text_indexes = _text_index_targets()
     if not text_indexes:
         return lambda dsn: None
 
@@ -226,14 +311,7 @@ def _make_ensure_field_indexes_action():
     to ``storage.defer_startup_action()`` and executed during the first
     write transaction when REPEATABLE READ locks are released.
     """
-    registry = get_registry()
-    candidates = [
-        (name, idx_type, idx_key)
-        for name, (idx_type, idx_key, _) in registry.items()
-        if idx_type in _BTREE_INDEX_TYPES
-        and idx_key is not None
-        and idx_key not in _HARDCODED_IDX_KEYS
-    ]
+    candidates = _field_index_targets()
     if not candidates:
         return lambda dsn: None
 
