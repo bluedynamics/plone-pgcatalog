@@ -122,6 +122,19 @@ def _builtin_index_type(name):
     return None
 
 
+def _is_dedicated_text_array_column(idx_key):
+    """True if *idx_key* is a ``TEXT[]`` ExtraIdxColumn (e.g.
+    allowedRolesAndUsers, object_provides).  Such values are popped out of
+    ``idx`` JSONB into a dedicated column, so ``idx->'key'`` is always NULL —
+    they cannot be used for ordering (#157)."""
+    from plone.pgcatalog.columns import get_extra_idx_columns
+
+    return any(
+        col.column_type == "TEXT[]" and col.idx_key == idx_key
+        for col in get_extra_idx_columns()
+    )
+
+
 def _is_numeric_range(values):
     """Return True iff every value is numeric (``int`` or ``float``).
 
@@ -813,7 +826,31 @@ class _QueryBuilder:
             if idx_key is None:
                 if idx_type == IndexType.PATH:
                     idx_key = sort_on
+                elif sort_on == "effectiveRange":
+                    # DateRangeIndex has no single column; sort by the
+                    # effective date (the range's start), which is what
+                    # callers passing effectiveRange as a default sort
+                    # expect — instead of silently dropping it (#157).
+                    parts.append(
+                        f"pgcatalog_to_timestamptz(idx->>'effective') {direction}"
+                    )
+                    continue
+                elif sort_on == "SearchableText":
+                    # Sort by full-text relevance, reusing the rank the
+                    # auto-relevance path computes — but only when a
+                    # SearchableText term was actually queried (#157).
+                    rank_expr = getattr(self, "_text_rank_expr", None)
+                    if rank_expr is not None:
+                        parts.append(f"{rank_expr} {direction}")
+                    else:
+                        log.warning(
+                            "sort_on='SearchableText' without a SearchableText "
+                            "query term has no relevance rank to sort by — "
+                            "ignoring",
+                        )
+                    continue
                 else:
+                    log.warning("sort_on=%r is not sortable — ignoring", sort_on)
                     continue
 
             if idx_type == IndexType.DATE:
@@ -822,6 +859,15 @@ class _QueryBuilder:
                 expr = f"(idx->>'{idx_key}')::integer"
             elif idx_type == IndexType.BOOLEAN:
                 expr = f"(idx->>'{idx_key}')::boolean"
+            elif _is_dedicated_text_array_column(idx_key):
+                # Value lives in a dedicated TEXT[] column, not idx JSONB, so
+                # idx->'key' would be a NULL no-op ordering (#157).
+                log.warning(
+                    "sort_on=%r maps to a dedicated TEXT[] column and cannot "
+                    "be used for ordering — ignoring",
+                    sort_on,
+                )
+                continue
             else:
                 # jsonb operator `->` instead of text `->>` so PG uses type-aware
                 # comparison: numbers sort numerically, strings lexicographically

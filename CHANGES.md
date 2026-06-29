@@ -4,6 +4,15 @@
 
 ### Fixed
 
+- Sort handling no longer silently drops or no-ops three sort keys (#157):
+  `sort_on=effectiveRange` now sorts by the `effective` date (the range start)
+  instead of being ignored; `sort_on=SearchableText` sorts by full-text
+  relevance when a SearchableText term is queried (and logs a warning, rather
+  than dropping silently, when there is no term); and sorting on a dedicated
+  `TEXT[]` column (`allowedRolesAndUsers`, `object_provides`) — whose value
+  lives in a column, not `idx` JSONB — is now ignored with a warning instead of
+  emitting a NULL `ORDER BY`.
+
 - The Advanced-tab *Update Catalog* and *Clear and Rebuild* buttons now submit
   via `POST` instead of `GET`. The forms in `catalogAdvanced.dtml` had no
   `method`, so the (destructive) action stayed in the URL bar and a reload /

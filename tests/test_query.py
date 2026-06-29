@@ -666,15 +666,41 @@ class TestSortEdgeCases:
         )
         assert "::boolean" in qr["order_by"]
 
-    def test_sort_composite_index_ignored(self):
-        """effectiveRange has idx_key=None — can't sort on it."""
+    def test_sort_effective_range_aliases_to_effective(self):
+        """#157: sort_on=effectiveRange sorts by the effective date (range
+        start) instead of being silently dropped."""
         qr = build_query(
             {
                 "portal_type": "Document",
                 "sort_on": "effectiveRange",
             }
         )
+        assert qr["order_by"] == "pgcatalog_to_timestamptz(idx->>'effective') ASC"
+
+    def test_sort_effective_range_honours_direction(self):
+        qr = build_query({"sort_on": "effectiveRange", "sort_order": "descending"})
+        assert qr["order_by"] == "pgcatalog_to_timestamptz(idx->>'effective') DESC"
+
+    def test_sort_searchable_text_uses_rank_when_queried(self):
+        """#157: sort_on=SearchableText sorts by relevance when a SearchableText
+        term is present (reuses the auto-relevance rank)."""
+        qr = build_query({"SearchableText": "hello", "sort_on": "SearchableText"})
+        assert qr["order_by"] is not None
+        assert "ts_rank_cd" in qr["order_by"]
+
+    def test_sort_searchable_text_without_query_is_ignored(self):
+        """No SearchableText term → no rank to sort by → ignored (a warning is
+        logged instead of a silent drop)."""
+        qr = build_query({"portal_type": "Document", "sort_on": "SearchableText"})
         assert qr["order_by"] is None
+
+    def test_sort_dedicated_text_array_column_ignored(self):
+        """#157: sorting on a dedicated TEXT[] column (allowedRolesAndUsers,
+        object_provides) is a no-op (value not in idx JSONB) and is ignored
+        rather than emitting a NULL ORDER BY."""
+        for field in ("allowedRolesAndUsers", "object_provides"):
+            qr = build_query({"portal_type": "Document", "sort_on": field})
+            assert qr["order_by"] is None, field
 
 
 class TestDateCoercion:
