@@ -2,6 +2,16 @@
 
 ## 1.0.0b68 (unreleased)
 
+### Removed
+
+- Drop the project-specific `idx_os_cat_events_upcoming` partial index. Its
+  `WHERE` referenced `show_in_sidecalendar` (an AAF project field, not generic
+  Plone) and it was never used by the planner. The sidecalendar slowness it
+  targeted (#131) was resolved generically once `path` became a typed column
+  (#132, accurate stats for the selective path predicate) and boolean queries
+  were normalised. Existing installs self-heal via `DROP INDEX IF EXISTS` on the
+  next deploy. #131
+
 ### Changed
 
 - Require `zodb-pgjsonb>=1.14.0`, the release that ships the startup-DDL

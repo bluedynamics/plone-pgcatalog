@@ -89,6 +89,33 @@ class TestSchemaInstallation:
         assert row is not None
         assert row["attstattarget"] == 2000
 
+    def test_legacy_events_upcoming_index_self_heals(self, pg_conn_with_catalog):
+        """#131: the project-specific idx_os_cat_events_upcoming is removed
+        and self-heals (DROP) on existing installs that still have it."""
+        conn = pg_conn_with_catalog
+        # Simulate a legacy install that still carries the old index.
+        with conn.cursor() as cur:
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_os_cat_events_upcoming "
+                "ON object_state (pgcatalog_to_timestamptz(idx->>'end') DESC) "
+                "WHERE idx IS NOT NULL "
+                "  AND (idx->>'portal_type') = 'Event' "
+                "  AND (idx->>'show_in_sidecalendar')::boolean = true"
+            )
+        conn.commit()
+
+        # Re-running the schema must drop it.
+        install_catalog_schema(conn)
+        conn.commit()
+
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT 1 FROM pg_indexes "
+                "WHERE indexname = 'idx_os_cat_events_upcoming'"
+            )
+            assert cur.fetchone() is None
+        assert "idx_os_cat_events_upcoming" not in EXPECTED_INDEXES
+
     def test_idempotent(self, pg_conn_with_catalog):
         """Running install_catalog_schema twice does not error."""
         # Already installed by the fixture — run again

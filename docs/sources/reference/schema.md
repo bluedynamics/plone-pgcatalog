@@ -97,7 +97,6 @@ VectorChord-BM25 extensions are detected at startup.
 | Index Name | Type | Expression | Purpose |
 |---|---|---|---|
 | `idx_os_cat_nav_visible` | B-tree (partial) | Navigation fields where `exclude_from_nav=false` | Navigation listings (only ~1.6% of rows) |
-| `idx_os_cat_events_upcoming` | B-tree (partial) | Event fields where `portal_type=Event` | Calendar/event queries |
 
 ### Text expression indexes
 
