@@ -1,8 +1,17 @@
 """Tests for plone.pgcatalog startup hooks."""
 
+from plone.pgcatalog.columns import get_registry
+from plone.pgcatalog.columns import IndexType
+from plone.pgcatalog.processor import CatalogStateProcessor
+from plone.pgcatalog.startup import _defer_index_actions
+from plone.pgcatalog.startup import _index_set_version
 from plone.pgcatalog.startup import _make_analyze_object_state_action
+from plone.pgcatalog.startup import _schema_sql_version
+from plone.pgcatalog.startup import _text_index_targets
 from psycopg.types.json import Json
 from tests.conftest import DSN
+
+import hashlib
 
 
 def _insert_catalog_rows(conn, count=5):
@@ -77,3 +86,76 @@ class TestAnalyzeObjectStateAction:
         action = _make_analyze_object_state_action()
         action(DSN)
         action(DSN)
+
+
+class _RecordingStorage:
+    """Fake storage recording defer_startup_action calls (version-aware)."""
+
+    def __init__(self):
+        self.calls = []  # (name, version)
+
+    def defer_startup_action(self, action, name, version=None):
+        self.calls.append((name, version))
+
+
+class _LegacyRecordingStorage:
+    """Fake storage whose defer_startup_action predates the version kwarg."""
+
+    def __init__(self):
+        self.calls = []  # (name,)
+
+    def defer_startup_action(self, action, name):
+        self.calls.append((name,))
+
+
+class TestVersionTaggedDeferral:
+    """The three deferred startup actions must be version-tagged (#78)."""
+
+    def test_all_actions_tagged_with_non_none_version(self):
+        storage = _RecordingStorage()
+        _defer_index_actions(storage, CatalogStateProcessor())
+
+        names = [name for name, _ in storage.calls]
+        assert names == [
+            "ensure_text_indexes",
+            "ensure_field_indexes",
+            "analyze_object_state",
+        ]
+        assert all(version is not None for _, version in storage.calls)
+
+    def test_analyze_version_tracks_schema_sql(self):
+        processor = CatalogStateProcessor()
+        storage = _RecordingStorage()
+        _defer_index_actions(storage, processor)
+
+        versions = dict(storage.calls)
+        assert versions["analyze_object_state"] == _schema_sql_version(processor)
+
+    def test_text_version_changes_when_registry_changes(self):
+        before = _index_set_version(_text_index_targets())
+        registry = get_registry()
+        registry.register("GateExtraText", IndexType.TEXT, "GateExtraText")
+        try:
+            after = _index_set_version(_text_index_targets())
+        finally:
+            del registry._indexes["GateExtraText"]
+        assert before != after
+
+    def test_legacy_storage_without_version_kwarg_still_works(self):
+        storage = _LegacyRecordingStorage()
+        _defer_index_actions(storage, CatalogStateProcessor())
+
+        names = [name for (name,) in storage.calls]
+        assert names == [
+            "ensure_text_indexes",
+            "ensure_field_indexes",
+            "analyze_object_state",
+        ]
+
+    def test_index_set_version_is_deterministic_and_order_independent(self):
+        targets_a = [("b", "B"), ("a", "A")]
+        targets_b = [("a", "A"), ("b", "B")]
+        assert _index_set_version(targets_a) == _index_set_version(targets_b)
+        assert _index_set_version([]).startswith("sha256:")
+        expected_empty = "sha256:" + hashlib.sha256(b"").hexdigest()
+        assert _index_set_version([]) == expected_empty

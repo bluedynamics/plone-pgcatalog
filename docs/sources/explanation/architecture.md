@@ -313,6 +313,27 @@ The registry is a module-level singleton.
 Once populated, it is used by both the
 write path (`_extract_idx()`) and the read path (`build_query()`).
 
+### Rolling deploys and the schema-version gate
+
+The GIN text indexes, btree field indexes, and the one-shot `ANALYZE` are not
+applied inline at startup.
+They would need an `ACCESS EXCLUSIVE` lock that deadlocks against the
+`REPEATABLE READ` snapshot the startup connection still holds, so the subscriber
+hands them to `storage.defer_startup_action()` to run from the first write
+transaction instead.
+
+On a rolling deploy every replica queues this same work, and the storage
+serializes it behind a single advisory lock.
+To keep the losing replicas from all waiting on that lock, plone-pgcatalog tags
+each deferred action with a version: the index actions hash the live
+`IndexRegistry`, and the `ANALYZE` hashes the catalog DDL.
+The storage's schema-version gate then lets a replica skip the lock entirely
+when its tagged work is already current.
+The observable effect is that catalog indexes and `ANALYZE` run once per
+schema- or registry-changing deploy, not on every pod start.
+See the zodb-pgjsonb explanation of the startup schema-version gate for how the
+gate itself works.
+
 ### Runtime registration
 
 Addons can register new indexes after startup -- either by calling
