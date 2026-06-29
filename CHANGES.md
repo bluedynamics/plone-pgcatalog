@@ -14,6 +14,11 @@
 
 ### Changed
 
+- Require `zodb-pgjsonb>=1.14.0`, the release that ships the startup-DDL
+  schema-version gate the deferred index/ANALYZE actions are tagged for
+  (bluedynamics/zodb-pgjsonb#78). The runtime still feature-detects the
+  `version=` argument, so this only raises the floor for new installs.
+
 - `TestEnqueueUnit` (Tika enqueue unit tests) now runs against a real
   `dict_row` cursor and the actual PG schema instead of a `MagicMock` cursor
   with hand-stubbed `fetchall()` rows. The mocked row shapes were the contract
@@ -21,6 +26,15 @@
   through psycopg means they can no longer diverge silently. Tests only. #125
 
 ### Fixed
+
+- Sort handling no longer silently drops or no-ops three sort keys (#157):
+  `sort_on=effectiveRange` now sorts by the `effective` date (the range start)
+  instead of being ignored; `sort_on=SearchableText` sorts by full-text
+  relevance when a SearchableText term is queried (and logs a warning, rather
+  than dropping silently, when there is no term); and sorting on a dedicated
+  `TEXT[]` column (`allowedRolesAndUsers`, `object_provides`) — whose value
+  lives in a column, not `idx` JSONB — is now ignored with a warning instead of
+  emitting a NULL `ORDER BY`.
 
 - The Tika worker now streams S3-tiered blobs straight from S3 into the Tika
   request body in chunks, instead of buffering the whole blob in memory (peak
