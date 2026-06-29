@@ -24,9 +24,11 @@ from Acquisition import aq_parent
 from BTrees.IIBTree import IITreeSet
 from plone.pgcatalog.columns import get_registry
 from plone.pgcatalog.columns import IndexType
+from plone.pgcatalog.columns import validate_identifier
 from plone.pgcatalog.interfaces import IPGCatalogTool
 from plone.pgcatalog.query import _bool_to_lower_str
 from Products.ZCatalog.ZCatalogIndexes import ZCatalogIndexes
+from psycopg import sql as pgsql
 
 import logging
 import warnings
@@ -64,10 +66,17 @@ class _PGIndexMapping:
     of the whole array.
     """
 
-    __slots__ = ("_get_conn", "_idx_key", "_index_type")
+    __slots__ = ("_get_conn", "_idx_key", "_index_type", "_key_lit")
 
     def __init__(self, idx_key, get_conn, index_type=None):
+        # #161: the JSONB key is baked into the SQL text as a literal (not a
+        # %(key)s parameter) so every distinct key gets its own prepared
+        # statement / plan and PG matches the idx->>'key' expression indexes.
+        # validate_identifier pins the key to a safe character set; pgsql.Literal
+        # additionally escapes it, so the interpolation can never inject SQL.
+        validate_identifier(idx_key)
         self._idx_key = idx_key
+        self._key_lit = pgsql.Literal(idx_key)
         self._get_conn = get_conn
         self._index_type = index_type
 
@@ -77,14 +86,16 @@ class _PGIndexMapping:
         except Exception:
             return default
         if self._index_type == IndexType.KEYWORD:
-            sql = (
+            sql = pgsql.SQL(
                 "SELECT zoid FROM object_state "
-                "WHERE idx->%(key)s @> to_jsonb(%(val)s::text) LIMIT 1"
-            )
-            params = {"key": self._idx_key, "val": value}
+                "WHERE idx->{key} @> to_jsonb({val}::text) LIMIT 1"
+            ).format(key=self._key_lit, val=pgsql.Placeholder("val"))
+            params = {"val": value}
         else:
-            sql = "SELECT zoid FROM object_state WHERE idx->>%(key)s = %(val)s LIMIT 1"
-            params = {"key": self._idx_key, "val": _bool_to_lower_str(value)}
+            sql = pgsql.SQL(
+                "SELECT zoid FROM object_state WHERE idx->>{key} = {val} LIMIT 1"
+            ).format(key=self._key_lit, val=pgsql.Placeholder("val"))
+            params = {"val": _bool_to_lower_str(value)}
         with conn.cursor() as cur:
             cur.execute(sql, params)
             row = cur.fetchone()
@@ -114,26 +125,26 @@ class _PGIndexMapping:
             return []
         if self._index_type == IndexType.KEYWORD:
             # See PGIndex.uniqueValues for the ``UNION ALL`` rationale.
-            sql = (
+            sql = pgsql.SQL(
                 "SELECT DISTINCT val FROM ("
-                "  SELECT jsonb_array_elements_text(idx->%(key)s) AS val "
+                "  SELECT jsonb_array_elements_text(idx->{key}) AS val "
                 "    FROM object_state "
-                "    WHERE idx ? %(key)s "
-                "      AND jsonb_typeof(idx->%(key)s) = 'array' "
+                "    WHERE idx ? {key} "
+                "      AND jsonb_typeof(idx->{key}) = 'array' "
                 "  UNION ALL "
-                "  SELECT idx->>%(key)s AS val "
+                "  SELECT idx->>{key} AS val "
                 "    FROM object_state "
-                "    WHERE idx ? %(key)s "
-                "      AND jsonb_typeof(idx->%(key)s) NOT IN ('array', 'null') "
+                "    WHERE idx ? {key} "
+                "      AND jsonb_typeof(idx->{key}) NOT IN ('array', 'null') "
                 ") u WHERE val IS NOT NULL"
-            )
+            ).format(key=self._key_lit)
         else:
-            sql = (
-                "SELECT DISTINCT idx->>%(key)s AS val FROM object_state "
-                "WHERE idx ? %(key)s AND idx->>%(key)s IS NOT NULL"
-            )
+            sql = pgsql.SQL(
+                "SELECT DISTINCT idx->>{key} AS val FROM object_state "
+                "WHERE idx ? {key} AND idx->>{key} IS NOT NULL"
+            ).format(key=self._key_lit)
         with conn.cursor() as cur:
-            cur.execute(sql, {"key": self._idx_key})
+            cur.execute(sql)
             return [row["val"] for row in cur.fetchall()]
 
     def __iter__(self):
@@ -159,27 +170,27 @@ class _PGIndexMapping:
         except Exception:
             return 0
         if self._index_type == IndexType.KEYWORD:
-            sql = (
+            sql = pgsql.SQL(
                 "SELECT COUNT(DISTINCT val) AS n FROM ("
-                "  SELECT jsonb_array_elements_text(idx->%(key)s) AS val "
+                "  SELECT jsonb_array_elements_text(idx->{key}) AS val "
                 "    FROM object_state "
-                "    WHERE idx ? %(key)s "
-                "      AND jsonb_typeof(idx->%(key)s) = 'array' "
+                "    WHERE idx ? {key} "
+                "      AND jsonb_typeof(idx->{key}) = 'array' "
                 "  UNION ALL "
-                "  SELECT idx->>%(key)s AS val "
+                "  SELECT idx->>{key} AS val "
                 "    FROM object_state "
-                "    WHERE idx ? %(key)s "
-                "      AND jsonb_typeof(idx->%(key)s) NOT IN ('array', 'null') "
+                "    WHERE idx ? {key} "
+                "      AND jsonb_typeof(idx->{key}) NOT IN ('array', 'null') "
                 ") u WHERE val IS NOT NULL"
-            )
+            ).format(key=self._key_lit)
         else:
-            sql = (
-                "SELECT COUNT(DISTINCT idx->>%(key)s) AS n "
+            sql = pgsql.SQL(
+                "SELECT COUNT(DISTINCT idx->>{key}) AS n "
                 "FROM object_state "
-                "WHERE idx ? %(key)s AND idx->>%(key)s IS NOT NULL"
-            )
+                "WHERE idx ? {key} AND idx->>{key} IS NOT NULL"
+            ).format(key=self._key_lit)
         with conn.cursor() as cur:
-            cur.execute(sql, {"key": self._idx_key})
+            cur.execute(sql)
             row = cur.fetchone()
         return int(row["n"]) if row and row["n"] is not None else 0
 
@@ -199,8 +210,11 @@ class PGIndex:
     """
 
     def __init__(self, wrapped, idx_key, get_conn, index_type=None):
+        # #161: validate + bake the key as a literal (see _PGIndexMapping).
+        validate_identifier(idx_key)
         self._wrapped = wrapped
         self._idx_key = idx_key
+        self._key_lit = pgsql.Literal(idx_key)
         self._index_type = index_type
         self._pg_index = _PGIndexMapping(idx_key, get_conn, index_type=index_type)
 
@@ -251,8 +265,7 @@ class PGIndex:
         except Exception:
             return
 
-        key = self._idx_key
-        params = {"key": key}
+        key = self._key_lit
 
         if self._index_type == IndexType.KEYWORD:
             # ``jsonb_array_elements_text`` is a set-returning function
@@ -260,42 +273,44 @@ class PGIndex:
             # raises 0A000), so the defensive array/scalar split is
             # expressed as a ``UNION ALL`` subquery.  Array rows expand
             # one row per element; a legacy scalar row yields itself.
-            inner = (
-                "SELECT jsonb_array_elements_text(idx->%(key)s) AS val "
+            inner = pgsql.SQL(
+                "SELECT jsonb_array_elements_text(idx->{key}) AS val "
                 "  FROM object_state "
-                "  WHERE idx ? %(key)s "
-                "    AND jsonb_typeof(idx->%(key)s) = 'array' "
+                "  WHERE idx ? {key} "
+                "    AND jsonb_typeof(idx->{key}) = 'array' "
                 "UNION ALL "
-                "SELECT idx->>%(key)s AS val "
+                "SELECT idx->>{key} AS val "
                 "  FROM object_state "
-                "  WHERE idx ? %(key)s "
-                "    AND jsonb_typeof(idx->%(key)s) NOT IN ('array', 'null')"
-            )
-            distinct_sql = f"SELECT DISTINCT val FROM ({inner}) u WHERE val IS NOT NULL"
-            grouped_sql = (
-                f"SELECT val, COUNT(*) AS cnt FROM ({inner}) u "
+                "  WHERE idx ? {key} "
+                "    AND jsonb_typeof(idx->{key}) NOT IN ('array', 'null')"
+            ).format(key=key)
+            distinct_sql = pgsql.SQL(
+                "SELECT DISTINCT val FROM ({inner}) u WHERE val IS NOT NULL"
+            ).format(inner=inner)
+            grouped_sql = pgsql.SQL(
+                "SELECT val, COUNT(*) AS cnt FROM ({inner}) u "
                 "WHERE val IS NOT NULL GROUP BY val"
-            )
+            ).format(inner=inner)
         else:
-            distinct_sql = (
-                "SELECT DISTINCT idx->>%(key)s AS val "
+            distinct_sql = pgsql.SQL(
+                "SELECT DISTINCT idx->>{key} AS val "
                 "FROM object_state "
-                "WHERE idx ? %(key)s AND idx->>%(key)s IS NOT NULL"
-            )
-            grouped_sql = (
-                "SELECT idx->>%(key)s AS val, COUNT(*) AS cnt "
+                "WHERE idx ? {key} AND idx->>{key} IS NOT NULL"
+            ).format(key=key)
+            grouped_sql = pgsql.SQL(
+                "SELECT idx->>{key} AS val, COUNT(*) AS cnt "
                 "FROM object_state "
-                "WHERE idx ? %(key)s AND idx->>%(key)s IS NOT NULL "
+                "WHERE idx ? {key} AND idx->>{key} IS NOT NULL "
                 "GROUP BY 1"
-            )
+            ).format(key=key)
 
         with conn.cursor() as cur:
             if not withLengths:
-                cur.execute(distinct_sql, params)
+                cur.execute(distinct_sql)
                 for row in cur.fetchall():
                     yield row["val"]
             else:
-                cur.execute(grouped_sql, params)
+                cur.execute(grouped_sql)
                 for row in cur.fetchall():
                     yield (row["val"], row["cnt"])
 
@@ -384,12 +399,26 @@ def _maybe_wrap_index(catalog, name, raw_index):
     else:
         idx_key = name  # Fallback: use index name as JSONB key
 
-    return PGIndex(
-        raw_index,
-        idx_key,
-        catalog._get_pg_read_connection,
-        index_type=index_type,
-    )
+    # #161: PGIndex bakes idx_key into the SQL text, so it must be a safe
+    # identifier.  Registry keys are validated at registration time, but the
+    # fallback above uses an arbitrary index name — guard against an exotic
+    # name crashing catalog.Indexes[name] access by degrading to the raw
+    # (unwrapped) ZCatalog index instead of raising.
+    try:
+        return PGIndex(
+            raw_index,
+            idx_key,
+            catalog._get_pg_read_connection,
+            index_type=index_type,
+        )
+    except ValueError:
+        log.warning(
+            "Index %r has a key %r that is not a safe SQL identifier; "
+            "returning the unwrapped ZCatalog index (no PG-backed lookups).",
+            name,
+            idx_key,
+        )
+        return raw_index
 
 
 class PGCatalogIndexes(ZCatalogIndexes):

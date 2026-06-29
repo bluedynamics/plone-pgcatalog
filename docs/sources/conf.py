@@ -69,6 +69,11 @@ html_theme_options = {
                     "url": "https://bluedynamics.github.io/plone-pgthumbor/",
                     "summary": "Thumbor image scaling",
                 },
+                {
+                    "title": "cdk8s-plone",
+                    "url": "https://bluedynamics.github.io/cdk8s-plone/",
+                    "summary": "Deploy Plone to Kubernetes",
+                },
             ],
         },
         {

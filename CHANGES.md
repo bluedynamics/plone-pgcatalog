@@ -1,10 +1,44 @@
 # Changelog
 
-## UNRELEASED
+
+## 1.0.0b66 (unreleased)
+
+### Added
+
+- Ship a `plone.observability` `IMetricProvider` (`pgcontent`) that produces
+  `plone_content_total` / `plone_content_by_state` content-count metrics via SQL
+  for pg-catalog sites. Registered only when `plone.observability` is installed
+  (`zcml:condition`) and emits only for sites backed by `IPGCatalogTool`
+  (migration safe). #174
+
+### Documentation
+
+- Add `cdk8s-plone` to the ecosystem navigation dropdown.
 
 ### Fixed
 
-- Use site language to mark the search language if `Language` parameter is not used #166
+- `PGIndex` no longer parametrizes the JSONB key name in its SQL
+  (`idx->>%(key)s`). On PostgreSQL the prepared statement flipped to a generic
+  plan after 5 executions, which could not match the `idx->>'key'` expression
+  indexes and fell back to a sequential scan over `object_state` — on a large
+  catalog this triggered a `LockManager` LWLock storm and a production outage.
+  The validated key is now baked into the SQL text as a `psycopg.sql.Literal`
+  (value stays parameterized), so each key gets its own plan and matches its
+  expression index. All key-bearing sites in `pgindex.py` (`get`, `keys`,
+  `__len__`, `uniqueValues`) are covered; an index whose name is not a safe
+  identifier degrades to the unwrapped ZCatalog index instead of crashing
+  `catalog.Indexes[name]`. #161
+
+- `pgcatalog-tika-worker` no longer crashes with a bare
+  `ModuleNotFoundError` when installed without the `tika` / `tika-s3`
+  extra. The console script is registered unconditionally, but `httpx`
+  (and `boto3` for the S3 blob path) ship only via those extras. The
+  worker module now imports `httpx` defensively and the script fails
+  fast with a clear hint pointing at the required extra; the S3 path
+  raises an actionable error too. #171
+  
+- Use site language to mark the search language if `Language` parameter is 
+  not used #166  
 
 
 ## 1.0.0b65

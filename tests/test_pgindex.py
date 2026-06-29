@@ -611,6 +611,24 @@ class TestMaybeWrapIndex:
         wrapped = _maybe_wrap_index(catalog, "portal_type", raw_index)
         assert isinstance(wrapped, PGIndex)
 
+    def test_unsafe_index_name_degrades_to_raw(self, pg_conn_with_catalog):
+        """#161: an index whose (fallback) key is not a safe identifier must
+        not crash catalog.Indexes[name] — it degrades to the raw index."""
+        from plone.pgcatalog.interfaces import IPGCatalogTool
+        from plone.pgcatalog.pgindex import _maybe_wrap_index
+        from unittest import mock
+        from zope.interface import directlyProvides
+
+        catalog = mock.Mock()
+        directlyProvides(catalog, IPGCatalogTool)
+        catalog._get_pg_read_connection = lambda: pg_conn_with_catalog
+        raw_index = mock.Mock()
+        raw_index.id = "weird-name"
+        raw_index.meta_type = "FieldIndex"
+
+        wrapped = _maybe_wrap_index(catalog, "weird-name", raw_index)
+        assert wrapped is raw_index
+
     def test_returns_raw_for_non_pg_catalog(self):
         """Non-IPGCatalogTool catalogs get the raw index back."""
         from plone.pgcatalog.pgindex import _maybe_wrap_index
@@ -998,3 +1016,155 @@ class TestPGIndexApplyIndex:
         result, info = idx._apply_index({"portal_type": "Document"})
         assert isinstance(result, IITreeSet)
         assert list(result) == []
+
+
+# ---------------------------------------------------------------------------
+# #161: JSONB key must be baked into the SQL text (literal), not a %(key)s
+# parameter — otherwise PG switches to a generic plan after 5 executions,
+# can't match the idx->>'key' expression indexes, and seq-scans object_state
+# (LockManager LWLock storm / production outage).
+# ---------------------------------------------------------------------------
+
+
+class _CapCursor:
+    """Cursor proxy that records the rendered SQL of every execute()."""
+
+    def __init__(self, real, sink):
+        self._c = real
+        self._sink = sink
+
+    def execute(self, query, params=None, *a, **k):
+        rendered = query.as_string(self._c) if hasattr(query, "as_string") else query
+        self._sink.append(rendered)
+        return self._c.execute(query, params, *a, **k)
+
+    def __enter__(self):
+        self._c.__enter__()
+        return self
+
+    def __exit__(self, *a):
+        return self._c.__exit__(*a)
+
+    def __getattr__(self, name):
+        return getattr(self._c, name)
+
+
+def _capture_sql(real_conn):
+    """Wrap *real_conn* so executed statements are recorded as rendered SQL.
+
+    Returns ``(fake_conn, executed)``; everything delegates to *real_conn*.
+    """
+    executed = []
+    real_cursor = real_conn.cursor
+
+    def cursor(*a, **k):
+        return _CapCursor(real_cursor(*a, **k), executed)
+
+    fake = mock.Mock(wraps=real_conn)
+    fake.cursor = cursor
+    return fake, executed
+
+
+class TestKeyNeverParametrized:
+    """Regression guard for #161 across every key-bearing query site."""
+
+    def test_get_scalar_bakes_key_keeps_value_param(self, pg_conn_with_catalog):
+        _catalog_objects(pg_conn_with_catalog)
+        fake, executed = _capture_sql(pg_conn_with_catalog)
+        m = _PGIndexMapping("UID", lambda: fake)
+        assert m.get("uid-aaa-100") == 100
+        sql = executed[-1]
+        assert "'UID'" in sql, sql
+        assert "%(key)s" not in sql, sql
+        assert "%(val)s" in sql, sql  # value stays parameterized
+
+    def test_get_keyword_bakes_key(self, pg_conn_with_catalog):
+        from plone.pgcatalog.columns import IndexType
+
+        _catalog_objects(pg_conn_with_catalog)
+        fake, executed = _capture_sql(pg_conn_with_catalog)
+        m = _PGIndexMapping("Subject", lambda: fake, index_type=IndexType.KEYWORD)
+        m.get("anything")
+        sql = executed[-1]
+        assert "'Subject'" in sql, sql
+        assert "%(key)s" not in sql, sql
+
+    def test_keys_scalar_bakes_key(self, pg_conn_with_catalog):
+        _catalog_objects(pg_conn_with_catalog)
+        fake, executed = _capture_sql(pg_conn_with_catalog)
+        m = _PGIndexMapping("portal_type", lambda: fake)
+        m.keys()
+        sql = executed[-1]
+        assert "'portal_type'" in sql, sql
+        assert "%(key)s" not in sql, sql
+
+    def test_keys_keyword_bakes_key(self, pg_conn_with_catalog):
+        from plone.pgcatalog.columns import IndexType
+
+        _catalog_objects(pg_conn_with_catalog)
+        fake, executed = _capture_sql(pg_conn_with_catalog)
+        m = _PGIndexMapping("Subject", lambda: fake, index_type=IndexType.KEYWORD)
+        m.keys()
+        sql = executed[-1]
+        assert "'Subject'" in sql, sql
+        assert "%(key)s" not in sql, sql
+
+    def test_len_scalar_bakes_key(self, pg_conn_with_catalog):
+        _catalog_objects(pg_conn_with_catalog)
+        fake, executed = _capture_sql(pg_conn_with_catalog)
+        m = _PGIndexMapping("portal_type", lambda: fake)
+        len(m)
+        sql = executed[-1]
+        assert "'portal_type'" in sql, sql
+        assert "%(key)s" not in sql, sql
+
+    def test_len_keyword_bakes_key(self, pg_conn_with_catalog):
+        from plone.pgcatalog.columns import IndexType
+
+        _catalog_objects(pg_conn_with_catalog)
+        fake, executed = _capture_sql(pg_conn_with_catalog)
+        m = _PGIndexMapping("Subject", lambda: fake, index_type=IndexType.KEYWORD)
+        len(m)
+        sql = executed[-1]
+        assert "'Subject'" in sql, sql
+        assert "%(key)s" not in sql, sql
+
+    def test_unique_values_scalar_bakes_key(self, pg_conn_with_catalog):
+        _catalog_objects(pg_conn_with_catalog)
+        fake, executed = _capture_sql(pg_conn_with_catalog)
+        wrapped = mock.Mock()
+        wrapped.id = "portal_type"
+        idx = PGIndex(wrapped, "portal_type", lambda: fake)
+        list(idx.uniqueValues())
+        sql = executed[-1]
+        assert "'portal_type'" in sql, sql
+        assert "%(key)s" not in sql, sql
+
+    def test_unique_values_with_lengths_bakes_key(self, pg_conn_with_catalog):
+        _catalog_objects(pg_conn_with_catalog)
+        fake, executed = _capture_sql(pg_conn_with_catalog)
+        wrapped = mock.Mock()
+        wrapped.id = "portal_type"
+        idx = PGIndex(wrapped, "portal_type", lambda: fake)
+        list(idx.uniqueValues(withLengths=True))
+        sql = executed[-1]
+        assert "'portal_type'" in sql, sql
+        assert "%(key)s" not in sql, sql
+
+    def test_invalid_key_rejected_at_construction(self):
+        with pytest.raises(ValueError):
+            _PGIndexMapping("UID; DROP TABLE object_state; --", lambda: None)
+
+    def test_pgindex_invalid_key_rejected_at_construction(self):
+        with pytest.raises(ValueError):
+            PGIndex(mock.Mock(), "bad key", lambda: None)
+
+    def test_distinct_keys_resolve_independently(self, pg_conn_with_catalog):
+        """Different keys must each resolve correctly (baked key per call)."""
+        _catalog_objects(pg_conn_with_catalog)
+        uid = _PGIndexMapping("UID", lambda: pg_conn_with_catalog)
+        ptype = _PGIndexMapping("portal_type", lambda: pg_conn_with_catalog)
+        # Reuse each several times — past the generic-plan flip at #5.
+        for _ in range(7):
+            assert uid.get("uid-ccc-102") == 102
+            assert ptype.get("Folder") == 102
