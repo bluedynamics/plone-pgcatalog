@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.0.0b68 (unreleased)
+
+### Fixed
+
+- The Tika worker now streams S3-tiered blobs straight from S3 into the Tika
+  request body in chunks, instead of buffering the whole blob in memory (peak
+  ~2–3× blob size). A single large PDF/image could OOM-kill a small worker pod
+  (256Mi) into `CrashLoopBackOff`; streaming keeps the worker's memory roughly
+  constant regardless of blob size. The PG-bytea path (small inline blobs below
+  the S3 tiering threshold) is unchanged. #189
+
 ## 1.0.0b67 (2026-06-29)
 
 ### Changed

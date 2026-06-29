@@ -7,6 +7,8 @@ script without the extra must not crash with a bare ``ModuleNotFoundError``;
 it must give a clear hint pointing at the extra. See issue #171.
 """
 
+from unittest import mock
+
 import subprocess
 import sys
 import textwrap
@@ -185,7 +187,9 @@ def test_extract_uses_configured_http_timeout(monkeypatch):
 
     monkeypatch.setattr(tika_worker, "httpx", types.SimpleNamespace(Client=_Client))
     worker = tika_worker.TikaWorker(dsn="x", tika_url="http://t", http_timeout=7.5)
-    monkeypatch.setattr(worker, "_fetch_blob", lambda *a, **k: b"blob")
+    monkeypatch.setattr(
+        worker, "_blob_source", lambda *a, **k: {"kind": "bytes", "data": b"blob"}
+    )
     out = worker._extract(conn=None, zoid=1, tid=1, content_type="application/pdf")
     assert out == "extracted text"
     assert captured["timeout"] == 7.5
@@ -219,3 +223,90 @@ def test_main_reads_http_timeout_from_env(monkeypatch):
     tika_worker.main()
 
     assert captured["http_timeout"] == 300.0
+
+
+# ---------------------------------------------------------------------------
+# #189: stream S3 -> Tika instead of buffering the whole blob in memory.
+# ---------------------------------------------------------------------------
+
+
+def _capture_httpx(monkeypatch):
+    """Patch tika_worker.httpx with a client that records the put() call."""
+    from plone.pgcatalog import tika_worker
+
+    import types
+
+    captured = {}
+
+    class _Resp:
+        text = "ok"
+
+        def raise_for_status(self):
+            pass
+
+    class _Client:
+        def __init__(self, *a, **k):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def put(self, url, content=None, headers=None, **k):
+            captured["url"] = url
+            captured["content"] = content
+            captured["headers"] = headers
+            return _Resp()
+
+    monkeypatch.setattr(tika_worker, "httpx", types.SimpleNamespace(Client=_Client))
+    return captured
+
+
+def test_s3_blob_is_streamed_not_buffered(monkeypatch):
+    from plone.pgcatalog import tika_worker
+
+    captured = _capture_httpx(monkeypatch)
+    worker = tika_worker.TikaWorker(
+        dsn="x", tika_url="http://t", s3_config={"bucket_name": "b"}
+    )
+    monkeypatch.setattr(
+        worker, "_blob_source", lambda *a: {"kind": "s3", "s3_key": "k"}
+    )
+
+    chunks = iter([b"chunk1", b"chunk2"])
+
+    class _Body:
+        def iter_chunks(self, chunk_size):
+            _Body.chunk_size = chunk_size
+            return chunks
+
+    fake_s3 = mock.Mock()
+    fake_s3.get_object.return_value = {"Body": _Body(), "ContentLength": 12}
+    monkeypatch.setattr(worker, "_get_s3_client", lambda: fake_s3)
+
+    out = worker._extract(conn=None, zoid=1, tid=1, content_type="application/pdf")
+    assert out == "ok"
+    # streamed: the iterator itself is handed to httpx, not a bytes buffer
+    assert captured["content"] is chunks
+    assert not isinstance(captured["content"], (bytes, bytearray))
+    # explicit Content-Length avoids chunked transfer-encoding
+    assert captured["headers"]["Content-Length"] == "12"
+    # never buffered the whole blob
+    fake_s3.download_fileobj.assert_not_called()
+    fake_s3.get_object.assert_called_once_with(Bucket="b", Key="k")
+
+
+def test_pg_bytea_blob_sent_as_bytes(monkeypatch):
+    from plone.pgcatalog import tika_worker
+
+    captured = _capture_httpx(monkeypatch)
+    worker = tika_worker.TikaWorker(dsn="x", tika_url="http://t")
+    monkeypatch.setattr(
+        worker, "_blob_source", lambda *a: {"kind": "bytes", "data": b"PDFBYTES"}
+    )
+    out = worker._extract(conn=None, zoid=1, tid=1, content_type="application/pdf")
+    assert out == "ok"
+    assert captured["content"] == b"PDFBYTES"
+    assert "Content-Length" not in (captured["headers"] or {})
