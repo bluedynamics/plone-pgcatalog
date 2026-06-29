@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.0.0b67 (unreleased)
+
+### Fixed
+
+- Full-text search now picks up the current site/negotiated language when the
+  query has no explicit `Language` parameter, instead of falling back to the
+  `simple` text-search configuration. On multilingual sites this means BM25 /
+  `tsvector` ranking uses the right language config (stemming, stop words) for
+  queries that don't pass `Language` (e.g. plain `SearchableText` searches).
+  The language is resolved from the request, the context, or the portal default
+  via a small vendored helper (no `plone.api` dependency). #166
+
 ## 1.0.0b66 (2026-06-29)
 
 ### Added
@@ -64,6 +76,7 @@
   fast with a clear hint pointing at the required extra; the S3 path
   raises an actionable error too. #171
 
+
 ## 1.0.0b65
 
 ### Added
@@ -118,6 +131,7 @@
   whichever rebuild test ran second.  ``testSetUp`` now calls
   ``storage.clear_caches()`` after ``restore()``; this requires
   ``zodb-pgjsonb >= 1.13.0`` (the dependency floor is bumped accordingly).
+
 
 ## 1.0.0b64
 

@@ -1378,3 +1378,47 @@ class TestStripNonIndexKeys:
         assert (
             strip_non_index_keys({"metadata_fields": ["Title"]}, ["portal_type"]) == {}
         )
+
+
+class TestSearchableTextCurrentLanguage:
+    """#166: when the query has no Language, fall back to the current/site
+    language for the search text-search configuration instead of 'simple'."""
+
+    def test_uses_current_language_when_language_absent(self, monkeypatch):
+        import plone.pgcatalog.query as q
+
+        monkeypatch.setattr(q, "get_current_language", lambda *a, **k: "de")
+        qr = build_query({"SearchableText": "hallo"})
+        assert [v for v in qr["params"].values() if v == "de"], qr["params"]
+
+    def test_explicit_language_wins_over_current_language(self, monkeypatch):
+        import plone.pgcatalog.query as q
+
+        monkeypatch.setattr(q, "get_current_language", lambda *a, **k: "de")
+        qr = build_query({"SearchableText": "bonjour", "Language": "fr"})
+        assert [v for v in qr["params"].values() if v == "fr"], qr["params"]
+        assert not [v for v in qr["params"].values() if v == "de"], qr["params"]
+
+    def test_no_request_falls_back_to_simple(self, monkeypatch):
+        """No current language available → empty string ('simple' config)."""
+        import plone.pgcatalog.query as q
+
+        monkeypatch.setattr(q, "get_current_language", lambda *a, **k: None)
+        qr = build_query({"SearchableText": "hello"})
+        assert [v for v in qr["params"].values() if v == ""], qr["params"]
+
+
+class TestGetCurrentLanguage:
+    """Unit tests for the vendored get_current_language helper (#166)."""
+
+    def test_returns_none_without_request(self, monkeypatch):
+        import plone.pgcatalog.utils as u
+
+        monkeypatch.setattr(u, "getRequest", lambda: None)
+        assert u.get_current_language() is None
+
+    def test_returns_request_language(self, monkeypatch):
+        import plone.pgcatalog.utils as u
+
+        monkeypatch.setattr(u, "getRequest", lambda: {"LANGUAGE": "eu"})
+        assert u.get_current_language() == "eu"
