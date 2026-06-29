@@ -26,7 +26,7 @@ dependencies = [
     "psycopg[binary,pool]>=3.1",
     "orjson>=3.9",
     "Products.CMFPlone",
-    "zodb-pgjsonb>=1.13.0",
+    "zodb-pgjsonb>=1.14.0",
 ]
 
 [project.entry-points."z3c.autoinclude.plugin"]
