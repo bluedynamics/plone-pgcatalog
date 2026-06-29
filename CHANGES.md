@@ -2,6 +2,14 @@
 
 ## 1.0.0b68 (unreleased)
 
+### Changed
+
+- `TestEnqueueUnit` (Tika enqueue unit tests) now runs against a real
+  `dict_row` cursor and the actual PG schema instead of a `MagicMock` cursor
+  with hand-stubbed `fetchall()` rows. The mocked row shapes were the contract
+  that drifted and shipped a `KeyError` to production (#124); driving the tests
+  through psycopg means they can no longer diverge silently. Tests only. #125
+
 ### Fixed
 
 - The Tika worker now streams S3-tiered blobs straight from S3 into the Tika

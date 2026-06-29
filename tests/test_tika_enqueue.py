@@ -488,144 +488,154 @@ class TestEnqueueLogic:
 
 
 class TestEnqueueUnit:
-    """Unit tests for _enqueue_tika_jobs + _insert_queue_row — mocked cursor, no DB, no TIKA_URL gate.
+    """_enqueue_tika_jobs + _insert_queue_row against a real dict_row cursor.
 
-    These tests run unconditionally so the wrapper-resolution code
-    path is exercised in environments (e.g. CI) where
-    PGCATALOG_TIKA_URL is not configured.
+    Rewritten for #125: the previous version mocked the cursor and stubbed
+    ``fetchall()`` with hand-built row shapes — precisely the contract that
+    drifted and shipped a ``KeyError`` to production (#124). Driving these
+    through the real PG schema means the row shapes come from psycopg itself
+    and cannot silently diverge again. No ``TIKA_URL`` gate, so the
+    wrapper-resolution path still runs in CI (only a DSN is required, via the
+    module-level skip).
     """
 
-    def _make_cursor(self, responses):
-        """Return a MagicMock cursor whose consecutive fetchall() calls
-        return the rows in *responses* (a list of row-lists).
-        """
-        cur = mock.MagicMock()
-        cur.fetchall.side_effect = responses
-        return cur
+    def _insert_blob(self, conn, zoid, tid, data=b"fake-pdf-data"):
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO blob_state (zoid, tid, blob_size, data) "
+                "VALUES (%(zoid)s, %(tid)s, %(size)s, %(data)s) "
+                "ON CONFLICT DO NOTHING",
+                {"zoid": zoid, "tid": tid, "size": len(data), "data": data},
+            )
+        conn.commit()
 
-    def test_empty_candidates_is_noop(self):
+    def _get_queue(self, conn):
+        with conn.cursor(row_factory=dict_row) as cur:
+            cur.execute("SELECT * FROM text_extraction_queue ORDER BY id")
+            return cur.fetchall()
+
+    def _enqueue(self, conn, candidates):
         proc = CatalogStateProcessor()
-        proc._tika_candidates = []
-        cur = mock.MagicMock()
-        proc._enqueue_tika_jobs(cur)
-        cur.execute.assert_not_called()
+        proc._tika_candidates = candidates
+        with conn.cursor(row_factory=dict_row) as cur:
+            proc._enqueue_tika_jobs(cur)
+        conn.commit()
+        return self._get_queue(conn)
 
-    def test_direct_blob_ref_inserts_row(self):
-        proc = CatalogStateProcessor()
-        proc._tika_candidates = [
-            {"zoid": 100, "content_type": "application/pdf", "blob_refs": [999]}
-        ]
-        # First fetchall: direct blob_state lookup returns {"zoid": 999, "tid": 1}
-        cur = self._make_cursor([[{"zoid": 999, "tid": 1}]])
+    def test_empty_candidates_is_noop(self, pg_conn_with_queue):
+        assert self._enqueue(pg_conn_with_queue, []) == []
 
-        proc._enqueue_tika_jobs(cur)
+    def test_direct_blob_ref_inserts_row(self, pg_conn_with_queue):
+        conn = pg_conn_with_queue
+        insert_object(conn, 100, 1)
+        self._insert_blob(conn, 999, 1)
 
-        # Exactly 2 execute calls: 1 SELECT (direct lookup) + 1 INSERT
-        assert cur.execute.call_count == 2
-        insert_sql = cur.execute.call_args_list[1].args[0]
-        insert_params = cur.execute.call_args_list[1].args[1]
-        assert "INSERT INTO text_extraction_queue" in insert_sql
-        assert insert_params == {
-            "zoid": 100,
-            "blob_zoid": 999,
-            "tid": 1,
-            "ct": "application/pdf",
-        }
+        rows = self._enqueue(
+            conn,
+            [{"zoid": 100, "content_type": "application/pdf", "blob_refs": [999]}],
+        )
 
-    def test_wrapper_oid_hops_through_object_state(self):
-        """Wrapper ref -> object_state -> inner blob ref -> blob_state.
+        assert len(rows) == 1
+        assert rows[0]["zoid"] == 100
+        assert rows[0]["blob_zoid"] == 999
+        assert rows[0]["tid"] == 1
+        assert rows[0]["content_type"] == "application/pdf"
 
-        Content ref is a wrapper OID with no direct blob_state entry.
-        Second-hop fetch returns the wrapper's state (JSON string with
-        @ref to inner Blob).  Third fetch returns the inner blob row.
-        """
-        proc = CatalogStateProcessor()
-        wrapper_oid = 701
-        inner_blob_oid = 702
-        proc._tika_candidates = [
-            {
-                "zoid": 700,
-                "content_type": "application/pdf",
-                "blob_refs": [wrapper_oid],
-            }
-        ]
+    def test_wrapper_oid_hops_through_object_state(self, pg_conn_with_queue):
+        """Wrapper ref -> object_state -> inner Blob ref -> blob_state."""
+        conn = pg_conn_with_queue
+        content_zoid, wrapper_oid, inner_blob_oid, tid = 700, 701, 702, 1
+        insert_object(conn, content_zoid, tid)
         wrapper_state = json.dumps(
             {"_blob": {"@ref": [f"{inner_blob_oid:016x}", "ZODB.blob.Blob"]}}
         )
-        cur = self._make_cursor(
+        insert_object(
+            conn,
+            wrapper_oid,
+            tid,
+            class_mod="plone.namedfile.file",
+            class_name="NamedBlobFile",
+            state=wrapper_state,
+        )
+        self._insert_blob(conn, inner_blob_oid, tid)
+
+        rows = self._enqueue(
+            conn,
             [
-                [],  # 1st SELECT: no direct blob_state row for wrapper_oid
-                [{"zoid": wrapper_oid, "state": wrapper_state}],  # 2nd SELECT
-                [{"zoid": inner_blob_oid, "tid": 1}],  # 3rd SELECT
-            ]
+                {
+                    "zoid": content_zoid,
+                    "content_type": "application/pdf",
+                    "blob_refs": [wrapper_oid],
+                }
+            ],
         )
 
-        proc._enqueue_tika_jobs(cur)
+        assert len(rows) == 1
+        assert rows[0]["zoid"] == content_zoid
+        assert rows[0]["blob_zoid"] == inner_blob_oid  # inner Blob, NOT wrapper
+        assert rows[0]["tid"] == tid
 
-        # 3 SELECT + 1 INSERT = 4 execute calls
-        assert cur.execute.call_count == 4
-        insert_params = cur.execute.call_args_list[3].args[1]
-        assert insert_params["zoid"] == 700
-        assert insert_params["blob_zoid"] == inner_blob_oid  # NOT wrapper
-        assert insert_params["tid"] == 1
+    def test_unresolved_ref_without_wrapper_state_is_silent_skip(
+        self, pg_conn_with_queue
+    ):
+        """Ref has neither blob_state nor object_state row — no row, no error."""
+        conn = pg_conn_with_queue
+        insert_object(conn, 800, 1)
 
-    def test_unresolved_ref_without_wrapper_state_is_silent_skip(self):
-        """Ref has neither blob_state nor object_state row — no INSERT, no error."""
-        proc = CatalogStateProcessor()
-        proc._tika_candidates = [
-            {"zoid": 800, "content_type": "application/pdf", "blob_refs": [9999]}
-        ]
-        cur = self._make_cursor(
-            [
-                [],  # 1st SELECT: blob_state empty
-                [],  # 2nd SELECT: object_state empty (no wrapper state)
-            ]
+        rows = self._enqueue(
+            conn,
+            [{"zoid": 800, "content_type": "application/pdf", "blob_refs": [9999]}],
         )
 
-        proc._enqueue_tika_jobs(cur)
+        assert rows == []
 
-        # 2 SELECTs, 0 INSERTs
-        assert cur.execute.call_count == 2
-        # No INSERT call
-        for call in cur.execute.call_args_list:
-            assert "INSERT" not in call.args[0]
-
-    def test_wrapper_state_without_inner_refs_is_silent_skip(self):
+    def test_wrapper_state_without_inner_refs_is_silent_skip(self, pg_conn_with_queue):
         """Wrapper exists in object_state but its state has no @ref."""
-        proc = CatalogStateProcessor()
-        proc._tika_candidates = [
-            {"zoid": 810, "content_type": "application/pdf", "blob_refs": [811]}
-        ]
-        # Wrapper state has no @ref — defensive path
-        cur = self._make_cursor(
+        conn = pg_conn_with_queue
+        content_zoid, wrapper_oid, tid = 810, 811, 1
+        insert_object(conn, content_zoid, tid)
+        insert_object(
+            conn,
+            wrapper_oid,
+            tid,
+            class_mod="plone.namedfile.file",
+            class_name="NamedBlobFile",
+            state=json.dumps({"filename": "empty.pdf"}),  # no @ref
+        )
+
+        rows = self._enqueue(
+            conn,
             [
-                [],  # no direct blob row
-                [{"zoid": 811, "state": json.dumps({"filename": "empty.pdf"})}],
-            ]
+                {
+                    "zoid": content_zoid,
+                    "content_type": "application/pdf",
+                    "blob_refs": [wrapper_oid],
+                }
+            ],
         )
 
-        proc._enqueue_tika_jobs(cur)
+        assert rows == []
 
-        # Only 2 SELECTs (no 3rd because inner_refs is empty), no INSERT
-        assert cur.execute.call_count == 2
-
-    def test_insert_queue_row_uses_correct_sql_and_params(self):
+    def test_insert_queue_row_inserts_and_is_idempotent(self, pg_conn_with_queue):
+        conn = pg_conn_with_queue
         proc = CatalogStateProcessor()
-        cur = mock.MagicMock()
-        proc._insert_queue_row(
-            cur, zoid=42, blob_zoid=43, tid=7, content_type="image/png"
-        )
+        with conn.cursor(row_factory=dict_row) as cur:
+            proc._insert_queue_row(
+                cur, zoid=42, blob_zoid=43, tid=7, content_type="image/png"
+            )
+            # Duplicate (blob_zoid, tid) must be ignored by ON CONFLICT.
+            proc._insert_queue_row(
+                cur, zoid=42, blob_zoid=43, tid=7, content_type="image/png"
+            )
+        conn.commit()
 
-        cur.execute.assert_called_once()
-        sql, params = cur.execute.call_args.args
-        assert "INSERT INTO text_extraction_queue" in sql
-        assert "ON CONFLICT (blob_zoid, tid) DO NOTHING" in sql
-        assert params == {
-            "zoid": 42,
-            "blob_zoid": 43,
-            "tid": 7,
-            "ct": "image/png",
-        }
+        rows = self._get_queue(conn)
+        assert len(rows) == 1
+        assert rows[0]["zoid"] == 42
+        assert rows[0]["blob_zoid"] == 43
+        assert rows[0]["tid"] == 7
+        assert rows[0]["content_type"] == "image/png"
+        assert rows[0]["status"] == "pending"
 
 
 class TestQueueSchema:
