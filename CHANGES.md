@@ -26,6 +26,16 @@
 
 ### Fixed
 
+- Skip `portal_transforms` for searchable `NamedBlobFile` fields when Tika is
+  active. `plone.app.dexterity.textindexer`'s dynamic `SearchableText` indexer
+  runs `NamedfileFieldConverter` (a synchronous `portal_transforms` call) on
+  every field marked *searchable*; only the `IFile` indexer was overridden
+  before (#41). A new `TikaAwareNamedfileFieldConverter` returns the filename
+  and defers body-text extraction to the async Tika worker when
+  `PGCATALOG_TIKA_URL` is set, and delegates to the stock converter otherwise.
+  Registered only when `plone.app.dexterity` is installed. (The secondary-blob
+  enqueue-coverage gap this surfaces is tracked in #184.) #114
+
 - Full-text search now picks up the current site/negotiated language when the
   query has no explicit `Language` parameter, instead of falling back to the
   `simple` text-search configuration. On multilingual sites this means BM25 /
