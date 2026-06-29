@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.0.0b68 (unreleased)
+
+### Fixed
+
+- The Advanced-tab *Update Catalog* and *Clear and Rebuild* buttons now submit
+  via `POST` instead of `GET`. The forms in `catalogAdvanced.dtml` had no
+  `method`, so the (destructive) action stayed in the URL bar and a reload /
+  Back / prefetch silently re-ran it — observed on production as a second full
+  clear+rebuild kicked off by a browser reload. The handlers already redirect,
+  so this yields a clean Post/Redirect/Get flow. #188
+
 ## 1.0.0b67 (2026-06-29)
 
 ### Changed
