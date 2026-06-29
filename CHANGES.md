@@ -16,6 +16,18 @@
 
 ### Fixed
 
+- `PGIndex` no longer parametrizes the JSONB key name in its SQL
+  (`idx->>%(key)s`). On PostgreSQL the prepared statement flipped to a generic
+  plan after 5 executions, which could not match the `idx->>'key'` expression
+  indexes and fell back to a sequential scan over `object_state` — on a large
+  catalog this triggered a `LockManager` LWLock storm and a production outage.
+  The validated key is now baked into the SQL text as a `psycopg.sql.Literal`
+  (value stays parameterized), so each key gets its own plan and matches its
+  expression index. All key-bearing sites in `pgindex.py` (`get`, `keys`,
+  `__len__`, `uniqueValues`) are covered; an index whose name is not a safe
+  identifier degrades to the unwrapped ZCatalog index instead of crashing
+  `catalog.Indexes[name]`. #161
+
 - `pgcatalog-tika-worker` no longer crashes with a bare
   `ModuleNotFoundError` when installed without the `tika` / `tika-s3`
   extra. The console script is registered unconditionally, but `httpx`
