@@ -176,13 +176,15 @@ CREATE INDEX IF NOT EXISTS idx_os_cat_nav_visible
     ON object_state (path text_pattern_ops, (idx->>'portal_type'))
     WHERE path IS NOT NULL AND (idx->>'exclude_from_nav')::boolean = false;
 
--- Partial index for upcoming events (portal_type = Event + sidecalendar).
--- Allows direct index scan on end date for calendar widgets.
-CREATE INDEX IF NOT EXISTS idx_os_cat_events_upcoming
-    ON object_state (pgcatalog_to_timestamptz(idx->>'end') DESC)
-    WHERE idx IS NOT NULL
-      AND (idx->>'portal_type') = 'Event'
-      AND (idx->>'show_in_sidecalendar')::boolean = true;
+-- Removed: idx_os_cat_events_upcoming was a project-specific partial index
+-- (its WHERE referenced `show_in_sidecalendar`, an AAF field, not a generic
+-- Plone one) and was never used by the planner (0 scans on the very
+-- deployment it was built for — superseded there by a project-applied index).
+-- The original sidecalendar slowness (#131) was resolved generically once
+-- `path` became a typed column (#132, accurate stats for the selective path
+-- predicate) and boolean queries were normalised.  DROP it so existing
+-- installs self-heal on the next deploy.
+DROP INDEX IF EXISTS idx_os_cat_events_upcoming;
 
 -- Partial index for the navigation-tree / navigation-portlet listing pattern
 -- (#130).  Plone navigation queries combine
@@ -363,7 +365,6 @@ EXPECTED_INDEXES = [
     "idx_os_cat_review_state",
     "idx_os_cat_uid",
     "idx_os_cat_nav_visible",
-    "idx_os_cat_events_upcoming",
     "idx_os_navtree",
     "idx_os_searchable_text",
     "idx_os_cat_title_tsv",
