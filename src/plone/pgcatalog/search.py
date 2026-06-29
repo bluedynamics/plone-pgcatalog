@@ -146,6 +146,21 @@ def _run_search(conn, query, catalog=None, lazy_conn=None):
     from plone.pgcatalog.cache import _normalize_query as normalize_query
     from plone.pgcatalog.cache import get_query_cache
 
+    # #168: ignore query keys that aren't catalog indexes (ZCatalog-compat).
+    # plone.restapi @search forwards control params (metadata_fields, …) that
+    # would otherwise become JSONB filters matching nothing → empty results.
+    # Done before the cache key is computed so equivalent queries share a slot.
+    if catalog is not None:
+        try:
+            from plone.pgcatalog.query import strip_non_index_keys
+
+            query = strip_non_index_keys(query, catalog.indexes())
+        except Exception:
+            log.warning(
+                "Could not filter non-index query keys; passing query through",
+                exc_info=True,
+            )
+
     cache = get_query_cache()
 
     # Get catalog change counter for cache validation.

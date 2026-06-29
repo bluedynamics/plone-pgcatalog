@@ -26,6 +26,15 @@
 
 ### Fixed
 
+- Catalog searches now ignore query keys that do not match any catalog index,
+  matching ZCatalog semantics. `plone.restapi`'s `@search` forwards its whole
+  request dict to the catalog — including control parameters like
+  `metadata_fields` (e.g. from Volto's `ObjectBrowserWidget`) — which are not
+  indexes. Previously any such unmapped key fell through to a JSONB
+  `idx->>'key'` filter that matched no row and returned an **empty result set**;
+  these keys are now silently dropped before query building (and before the
+  cache key is computed). #168
+
 - The async Tika worker now forwards S3 credentials to boto3. New
   `TIKA_WORKER_S3_ACCESS_KEY` / `TIKA_WORKER_S3_SECRET_KEY` env vars are passed
   as `aws_access_key_id` / `aws_secret_access_key`. Previously the worker built

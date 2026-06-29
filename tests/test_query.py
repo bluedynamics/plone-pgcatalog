@@ -1325,3 +1325,56 @@ class TestBuiltinIndexFallbackDispatch:
             assert "idx->>'object_provides'" not in qr["where"]
         finally:
             restore()
+
+
+class TestStripNonIndexKeys:
+    """#168: query keys that don't match any catalog index are ignored,
+    mirroring ZCatalog.searchResults, instead of being turned into a JSONB
+    ``idx->>'key'`` filter that matches nothing and empties the result set.
+    """
+
+    def test_drops_unknown_non_index_key(self):
+        from plone.pgcatalog.query import strip_non_index_keys
+
+        cleaned = strip_non_index_keys(
+            {"portal_type": "Document", "metadata_fields": ["Title", "Creator"]},
+            ["portal_type", "review_state"],
+        )
+        assert cleaned == {"portal_type": "Document"}
+
+    def test_keeps_meta_keys(self):
+        from plone.pgcatalog.query import strip_non_index_keys
+
+        q = {
+            "sort_on": "effective",
+            "sort_order": "descending",
+            "sort_limit": 10,
+            "b_start": 0,
+            "b_size": 30,
+            "portal_type": "Document",
+        }
+        assert strip_non_index_keys(q, ["portal_type"]) == q
+
+    def test_keeps_known_index(self):
+        from plone.pgcatalog.query import strip_non_index_keys
+
+        cleaned = strip_non_index_keys({"Subject": "Python"}, ["Subject"])
+        assert cleaned == {"Subject": "Python"}
+
+    def test_keeps_builtin_index_absent_from_list(self):
+        from plone.pgcatalog.query import strip_non_index_keys
+
+        # path / effectiveRange / SearchableText resolve via _builtin_index_type
+        # even when the passed index-name list doesn't contain them.
+        cleaned = strip_non_index_keys(
+            {"path": "/plone", "SearchableText": "x", "effectiveRange": "now"},
+            [],
+        )
+        assert set(cleaned) == {"path", "SearchableText", "effectiveRange"}
+
+    def test_empty_when_only_unknown_keys(self):
+        from plone.pgcatalog.query import strip_non_index_keys
+
+        assert (
+            strip_non_index_keys({"metadata_fields": ["Title"]}, ["portal_type"]) == {}
+        )
