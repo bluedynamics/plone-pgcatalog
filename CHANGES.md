@@ -4,6 +4,13 @@
 
 ### Fixed
 
+- The Tika worker now streams S3-tiered blobs straight from S3 into the Tika
+  request body in chunks, instead of buffering the whole blob in memory (peak
+  ~2–3× blob size). A single large PDF/image could OOM-kill a small worker pod
+  (256Mi) into `CrashLoopBackOff`; streaming keeps the worker's memory roughly
+  constant regardless of blob size. The PG-bytea path (small inline blobs below
+  the S3 tiering threshold) is unchanged. #189
+
 - The Advanced-tab *Update Catalog* and *Clear and Rebuild* buttons now submit
   via `POST` instead of `GET`. The forms in `catalogAdvanced.dtml` had no
   `method`, so the (destructive) action stayed in the URL bar and a reload /
