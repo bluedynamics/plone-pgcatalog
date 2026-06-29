@@ -78,6 +78,8 @@ as a standalone process (outside Zope):
 | `TIKA_WORKER_S3_BUCKET` | (none) | S3 bucket name for S3-tiered blobs. |
 | `TIKA_WORKER_S3_ENDPOINT_URL` | (none) | S3 endpoint URL (for MinIO or compatible). |
 | `TIKA_WORKER_S3_REGION` | (none) | S3 region name. |
+| `TIKA_WORKER_S3_ACCESS_KEY` | (none) | S3 access key id. When unset, boto3 falls back to its default credential chain (`AWS_*` environment variables, `~/.aws`, IAM role). |
+| `TIKA_WORKER_S3_SECRET_KEY` | (none) | S3 secret access key. See `TIKA_WORKER_S3_ACCESS_KEY`. |
 
 ## GenericSetup profile
 

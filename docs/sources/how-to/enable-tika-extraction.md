@@ -146,7 +146,14 @@ For S3-tiered blobs:
 export TIKA_WORKER_S3_BUCKET=zodb-blobs
 export TIKA_WORKER_S3_ENDPOINT_URL=http://minio:9000
 export TIKA_WORKER_S3_REGION=us-east-1
+export TIKA_WORKER_S3_ACCESS_KEY=...
+export TIKA_WORKER_S3_SECRET_KEY=...
 ```
+
+If `TIKA_WORKER_S3_ACCESS_KEY` / `TIKA_WORKER_S3_SECRET_KEY` are not set, the
+worker leaves credential resolution to boto3's default provider chain (the
+standard `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` environment variables,
+`~/.aws/credentials`, or an instance/IAM role).
 
 See {doc}`../reference/configuration` for the full list of worker
 environment variables.
