@@ -11,7 +11,10 @@ spreadsheets, images—is not searchable because Plone cannot extract text
 from them.
 
 Apache Tika is a stateless HTTP service that extracts text from over 1400
-file formats, including OCR for images via Tesseract.
+file formats.
+Optical character recognition (OCR) for images and scanned
+PDFs is available only with the `-full` Tika image and additional
+configuration—see [OCR for images and scanned PDFs](#ocr-for-images-and-scanned-pdfs).
 When enabled,
 plone.pgcatalog enqueues binary content for asynchronous extraction via a
 PostgreSQL job queue.
@@ -30,8 +33,15 @@ is unchanged.
 ```bash
 docker run -d --name tika \
   -p 9998:9998 \
-  apache/tika:latest
+  apache/tika:3.2.3.0
 ```
+
+Pin an explicit version rather than `:latest` so extraction behavior is
+reproducible across deploys.
+The minimal image above does **not** include
+an OCR engine; for OCR use the `-full` image (for example
+`apache/tika:3.2.3.0-full`)—see
+[OCR for images and scanned PDFs](#ocr-for-images-and-scanned-pdfs).
 
 Verify it is running:
 
@@ -58,8 +68,10 @@ A single Tika instance handles concurrent requests from
 multiple workers.
 
 Typical resource allocation: 512 MB–1 GB RAM.
-For OCR-heavy workloads
-(images, scanned PDFs), allocate more.
+OCR (the `-full` image) is
+CPU- and memory-heavy and much slower per document; size the Tika service
+accordingly and raise `TIKA_WORKER_HTTP_TIMEOUT` (see below) so large scanned
+PDFs do not time out.
 
 ## Step 2: configure environment variables
 
@@ -137,6 +149,8 @@ The standalone worker:
 - Connects directly to PostgreSQL (no Zope dependency)
 - Uses `LISTEN`/`NOTIFY` for instant wakeup on new jobs
 - Falls back to polling every `TIKA_WORKER_POLL_INTERVAL` seconds (default: 5)
+- Waits up to `TIKA_WORKER_HTTP_TIMEOUT` seconds for each Tika response
+  (default: 120; raise it for OCR of large scanned PDFs)
 - Uses `SELECT ... FOR UPDATE SKIP LOCKED` for safe concurrent dequeuing
 - Handles `SIGTERM`/`SIGINT` for graceful shutdown
 
@@ -157,6 +171,36 @@ standard `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` environment variables,
 
 See {doc}`../reference/configuration` for the full list of worker
 environment variables.
+
+## OCR for images and scanned PDFs
+
+OCR is **not** part of the default Tika image. The minimal `apache/tika`
+image bundles no OCR engine, so plain images, photos, and scanned
+(image-only) PDFs are extracted as **empty text**: the queue row still
+completes as `done`, but no body lexemes are merged into `searchable_text`.
+The full-text index then silently lacks their content.
+
+To enable OCR:
+
+1. **Use the `-full` image**, which ships Tesseract and ImageMagick:
+
+   ```bash
+   docker run -d --name tika -p 9998:9998 apache/tika:3.2.3.0-full
+   ```
+
+2. **Configure OCR server-side.** The worker sends a plain `PUT /tika` with
+   no OCR headers, so the OCR strategy and languages are set on the Tika
+   service via a mounted `tika-config.xml`—for example OCR language
+   `deu+eng`, and a PDF `ocrStrategy` of `auto` (or `ocr_and_text`) so
+   image-only PDFs are run through OCR. See the
+   [Apache Tika OCR documentation](https://cwiki.apache.org/confluence/display/TIKA/TikaOCR).
+
+3. **Budget for it.** OCR is CPU- and memory-heavy and much slower per
+   document. Raise `TIKA_WORKER_HTTP_TIMEOUT` (default 120 s) so large
+   multi-page scans do not time out and get marked `failed`.
+
+If you do not need OCR, the minimal image is the better choice: it is
+smaller, faster, and avoids the resource cost.
 
 ## Step 4: rebuild the catalog
 

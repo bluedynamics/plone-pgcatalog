@@ -149,3 +149,73 @@ def test_main_reads_s3_credentials_from_env(monkeypatch):
     assert s3["access_key"] == "AKIA"
     assert s3["secret_key"] == "SECRET"
     assert s3["bucket_name"] == "bucket"
+
+
+# ---------------------------------------------------------------------------
+# #183 (B): worker Tika HTTP timeout must be configurable (OCR can exceed 120s).
+# ---------------------------------------------------------------------------
+
+
+def test_extract_uses_configured_http_timeout(monkeypatch):
+    """_extract passes self.http_timeout to the httpx client."""
+    from plone.pgcatalog import tika_worker
+
+    import types
+
+    captured = {}
+
+    class _Resp:
+        text = "extracted text"
+
+        def raise_for_status(self):
+            pass
+
+    class _Client:
+        def __init__(self, *a, **k):
+            captured.update(k)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def put(self, *a, **k):
+            return _Resp()
+
+    monkeypatch.setattr(tika_worker, "httpx", types.SimpleNamespace(Client=_Client))
+    worker = tika_worker.TikaWorker(dsn="x", tika_url="http://t", http_timeout=7.5)
+    monkeypatch.setattr(worker, "_fetch_blob", lambda *a, **k: b"blob")
+    out = worker._extract(conn=None, zoid=1, tid=1, content_type="application/pdf")
+    assert out == "extracted text"
+    assert captured["timeout"] == 7.5
+
+
+def test_http_timeout_defaults_to_120(monkeypatch):
+    from plone.pgcatalog import tika_worker
+
+    worker = tika_worker.TikaWorker(dsn="x", tika_url="http://t")
+    assert worker.http_timeout == 120.0
+
+
+def test_main_reads_http_timeout_from_env(monkeypatch):
+    from plone.pgcatalog import tika_worker
+
+    monkeypatch.setenv("TIKA_WORKER_DSN", "dsn")
+    monkeypatch.setenv("TIKA_WORKER_URL", "http://tika")
+    monkeypatch.setenv("TIKA_WORKER_HTTP_TIMEOUT", "300")
+
+    captured = {}
+
+    class _FakeWorker:
+        def __init__(self, **kw):
+            captured.update(kw)
+
+        def run(self):
+            pass
+
+    monkeypatch.setattr(tika_worker, "TikaWorker", _FakeWorker)
+    monkeypatch.setattr(tika_worker, "httpx", object())
+    tika_worker.main()
+
+    assert captured["http_timeout"] == 300.0
