@@ -434,3 +434,35 @@ class TestCatalogFullText:
             },
         )
         assert len(results) == 2
+
+
+class TestNonIndexQueryKeysIgnored:
+    """#168: restapi/control params (e.g. metadata_fields) must not empty results."""
+
+    class _Cat:
+        def indexes(self):
+            return ["portal_type", "review_state", "Subject", "SearchableText"]
+
+    def test_metadata_fields_does_not_empty_results(self, pg_conn_with_catalog):
+        conn = pg_conn_with_catalog
+        _setup_objects(conn)
+        cat = self._Cat()
+        baseline = _run_search(conn, {"portal_type": "Document"}, catalog=cat)
+        with_meta = _run_search(
+            conn,
+            {"portal_type": "Document", "metadata_fields": ["Title", "Creator"]},
+            catalog=cat,
+        )
+        assert len(baseline) > 0
+        assert len(with_meta) == len(baseline)
+
+    def test_only_unknown_key_matches_everything_not_nothing(
+        self, pg_conn_with_catalog
+    ):
+        conn = pg_conn_with_catalog
+        _setup_objects(conn)
+        cat = self._Cat()
+        # A query of only a non-index key reduces to "all cataloged objects"
+        # (ZCatalog ignores it), not an empty set.
+        res = _run_search(conn, {"metadata_fields": ["Title"]}, catalog=cat)
+        assert len(res) > 0

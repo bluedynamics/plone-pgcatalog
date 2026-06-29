@@ -131,6 +131,48 @@ def _is_numeric_range(values):
     return all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in values)
 
 
+def strip_non_index_keys(query_dict, index_names):
+    """Drop query keys that do not correspond to any catalog index.
+
+    ZCatalog's ``searchResults`` only honors query keys matching a registered
+    index and silently ignores the rest.  plone.restapi's ``@search`` passes
+    its whole request dict to the catalog (including control parameters like
+    ``metadata_fields``, ``fullobjects``, ``b_size`` …); without this filter an
+    unknown key falls through to a JSONB ``idx->>'key'`` filter that matches no
+    row and turns the whole result set empty (#168).
+
+    A key is kept when it is a pagination/sort meta key, a real catalog index
+    (``index_names``), a Plone-native built-in (``path``/``effectiveRange``/
+    ``SearchableText``/TEXT[] extra columns), or has an ``IPGIndexTranslator``.
+
+    Args:
+        query_dict: the (already security-filtered) ZCatalog query dict.
+        index_names: iterable of the catalog's actual index names.
+
+    Returns:
+        A new dict containing only the honored keys.
+    """
+    valid = set(index_names)
+    cleaned = {}
+    dropped = []
+    for key, value in query_dict.items():
+        if (
+            key in _QUERY_META_KEYS
+            or key in valid
+            or _builtin_index_type(key) is not None
+            or _lookup_translator(key) is not None
+        ):
+            cleaned[key] = value
+        else:
+            dropped.append(key)
+    if dropped:
+        log.debug(
+            "pgcatalog: ignoring non-index query keys %r (ZCatalog-compat, #168)",
+            sorted(dropped),
+        )
+    return cleaned
+
+
 def build_query(query_dict):
     """Translate a ZCatalog query dict into SQL components.
 

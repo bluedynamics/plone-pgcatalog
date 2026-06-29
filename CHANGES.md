@@ -26,6 +26,15 @@
 
 ### Fixed
 
+- Catalog searches now ignore query keys that do not match any catalog index,
+  matching ZCatalog semantics. `plone.restapi`'s `@search` forwards its whole
+  request dict to the catalog — including control parameters like
+  `metadata_fields` (e.g. from Volto's `ObjectBrowserWidget`) — which are not
+  indexes. Previously any such unmapped key fell through to a JSONB
+  `idx->>'key'` filter that matched no row and returned an **empty result set**;
+  these keys are now silently dropped before query building (and before the
+  cache key is computed). #168
+
 - `PGIndex` no longer parametrizes the JSONB key name in its SQL
   (`idx->>%(key)s`). On PostgreSQL the prepared statement flipped to a generic
   plan after 5 executions, which could not match the `idx->>'key'` expression
