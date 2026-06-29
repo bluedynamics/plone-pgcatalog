@@ -15,6 +15,15 @@
   zodb-pgjsonb supports it, so older releases keep working unchanged.
   bluedynamics/zodb-pgjsonb#78
 
+- Raise the per-column statistics target for `object_provides` to 2000. The
+  planner estimates `TEXT[]` array-containment via element MCEs; at the default
+  target the MCE list is short, so rare / mid-frequency marker interfaces fall
+  below the floor and get badly underestimated — flipping to Bitmap-AND plans
+  that heap-scan hundreds of thousands of rows (queries on rare markers spiked
+  to 20–30 s). The larger target doubles the MCE list and stabilises those
+  plans; it is populated by the deferred `ANALYZE` (whose version tracks the
+  catalog DDL, so it re-runs on the next deploy). #133
+
 ### Fixed
 
 - Full-text search now picks up the current site/negotiated language when the

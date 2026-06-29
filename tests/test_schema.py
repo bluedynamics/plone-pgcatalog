@@ -70,6 +70,25 @@ class TestSchemaInstallation:
         for stat_name in EXPECTED_STATISTICS:
             assert stat_name in found, f"Statistics {stat_name} not found"
 
+    def test_object_provides_statistics_target_bumped(self, pg_conn_with_catalog):
+        """object_provides carries a raised statistics target (#133).
+
+        Rare/mid-frequency marker interfaces sit below the default
+        array-element MCE floor, so the planner underestimates their
+        selectivity and flips to plans that heap-scan hundreds of
+        thousands of rows.  A higher per-column statistics target
+        doubles the MCV/MCE list and stabilises those plans.
+        """
+        with pg_conn_with_catalog.cursor() as cur:
+            cur.execute(
+                "SELECT attstattarget FROM pg_attribute "
+                "WHERE attrelid = 'object_state'::regclass "
+                "  AND attname = 'object_provides'"
+            )
+            row = cur.fetchone()
+        assert row is not None
+        assert row["attstattarget"] == 2000
+
     def test_idempotent(self, pg_conn_with_catalog):
         """Running install_catalog_schema twice does not error."""
         # Already installed by the fixture — run again
