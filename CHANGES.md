@@ -2,6 +2,14 @@
 
 ## 1.0.0b68 (unreleased)
 
+### Changed
+
+- `TestEnqueueUnit` (Tika enqueue unit tests) now runs against a real
+  `dict_row` cursor and the actual PG schema instead of a `MagicMock` cursor
+  with hand-stubbed `fetchall()` rows. The mocked row shapes were the contract
+  that drifted and shipped a `KeyError` to production (#124); driving the tests
+  through psycopg means they can no longer diverge silently. Tests only. #125
+
 ### Fixed
 
 - Sort handling no longer silently drops or no-ops three sort keys (#157):
@@ -12,6 +20,13 @@
   `TEXT[]` column (`allowedRolesAndUsers`, `object_provides`) — whose value
   lives in a column, not `idx` JSONB — is now ignored with a warning instead of
   emitting a NULL `ORDER BY`.
+
+- The Tika worker now streams S3-tiered blobs straight from S3 into the Tika
+  request body in chunks, instead of buffering the whole blob in memory (peak
+  ~2–3× blob size). A single large PDF/image could OOM-kill a small worker pod
+  (256Mi) into `CrashLoopBackOff`; streaming keeps the worker's memory roughly
+  constant regardless of blob size. The PG-bytea path (small inline blobs below
+  the S3 tiering threshold) is unchanged. #189
 
 - The Advanced-tab *Update Catalog* and *Clear and Rebuild* buttons now submit
   via `POST` instead of `GET`. The forms in `catalogAdvanced.dtml` had no

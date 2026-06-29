@@ -65,6 +65,9 @@ MISSING_EXTRA_HINT = (
     "    pip install plone-pgcatalog[tika-s3]   # + S3-tiered blobs"
 )
 
+# Chunk size for streaming S3 blobs into the Tika request body (#189).
+_S3_STREAM_CHUNK = 1024 * 1024  # 1 MiB
+
 
 class TikaWorker:
     """PostgreSQL-backed text extraction worker using Apache Tika."""
@@ -190,24 +193,45 @@ class TikaWorker:
             return True
 
     def _extract(self, conn, zoid, tid, content_type):
-        """Fetch blob and send to Tika, return extracted text."""
-        blob_data = self._fetch_blob(conn, zoid, tid)
+        """Fetch blob and send to Tika, return extracted text.
+
+        S3-tiered blobs are streamed straight from S3 into the Tika request
+        body in chunks, so the worker never holds the whole blob in memory
+        (#189).  PG-bytea blobs are sub-threshold (small) and sent as bytes.
+        """
         if httpx is None:
             raise RuntimeError(MISSING_EXTRA_HINT)
         headers = {"Accept": "text/plain"}
         if content_type:
             headers["Content-Type"] = content_type
+
+        source = self._blob_source(conn, zoid, tid)
         with httpx.Client(timeout=self.http_timeout) as client:
+            if source["kind"] == "s3":
+                # Stream S3 -> Tika without buffering the whole blob.  An
+                # explicit Content-Length (from get_object) lets us avoid
+                # chunked transfer-encoding.
+                obj = self._get_s3_client().get_object(
+                    Bucket=self.s3_config["bucket_name"], Key=source["s3_key"]
+                )
+                headers["Content-Length"] = str(obj["ContentLength"])
+                content = obj["Body"].iter_chunks(chunk_size=_S3_STREAM_CHUNK)
+            else:
+                content = source["data"]
             resp = client.put(
                 f"{self.tika_url}/tika",
-                content=blob_data,
+                content=content,
                 headers=headers,
             )
             resp.raise_for_status()
             return resp.text
 
-    def _fetch_blob(self, conn, zoid, tid):
-        """Fetch blob bytes from PG bytea or S3."""
+    def _blob_source(self, conn, zoid, tid):
+        """Locate a blob without materializing S3 data.
+
+        Returns ``{"kind": "bytes", "data": ...}`` for inline PG-bytea blobs
+        or ``{"kind": "s3", "s3_key": ...}`` for S3-tiered blobs.
+        """
         with conn.cursor(row_factory=dict_row) as cur:
             cur.execute(
                 "SELECT data, s3_key FROM blob_state "
@@ -218,13 +242,24 @@ class TikaWorker:
         if row is None:
             raise ValueError(f"No blob for zoid={zoid} tid={tid}")
         if row["data"] is not None:
-            return bytes(row["data"])
+            return {"kind": "bytes", "data": bytes(row["data"])}
         if row["s3_key"]:
-            return self._fetch_from_s3(row["s3_key"])
+            return {"kind": "s3", "s3_key": row["s3_key"]}
         raise ValueError(f"Blob row has neither data nor s3_key for zoid={zoid}")
 
+    def _fetch_blob(self, conn, zoid, tid):
+        """Fetch blob bytes from PG bytea or S3 (materializes the blob).
+
+        Used by callers that need the bytes in hand; ``_extract`` streams S3
+        instead (see #189).
+        """
+        source = self._blob_source(conn, zoid, tid)
+        if source["kind"] == "bytes":
+            return source["data"]
+        return self._fetch_from_s3(source["s3_key"])
+
     def _fetch_from_s3(self, s3_key):
-        """Download blob from S3."""
+        """Download a full blob from S3 into memory."""
         import io
 
         client = self._get_s3_client()
