@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.0.0b69 (unreleased)
+## 1.0.0b69 (2026-07-03)
 
 ### Added
 
