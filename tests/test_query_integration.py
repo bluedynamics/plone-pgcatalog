@@ -485,3 +485,40 @@ class TestSortAndPagination:
             columns="zoid",
         )
         assert [r["zoid"] for r in rows] == [204, 201, 203, 200, 202]  # 1,2,3,10,20
+
+
+# ---------------------------------------------------------------------------
+# zoid / oid pseudo-index (object_state primary key)
+# ---------------------------------------------------------------------------
+
+
+class TestZoidIndexIntegration:
+    def test_zoid_list(self, pg_conn_with_catalog):
+        conn = pg_conn_with_catalog
+        _setup_test_data(conn)
+        assert _query_zoids(conn, {"zoid": [100, 102]}) == [100, 102]
+
+    def test_zoid_scalar(self, pg_conn_with_catalog):
+        conn = pg_conn_with_catalog
+        _setup_test_data(conn)
+        assert _query_zoids(conn, {"zoid": 103}) == [103]
+
+    def test_oid_bytes(self, pg_conn_with_catalog):
+        conn = pg_conn_with_catalog
+        _setup_test_data(conn)
+        # 8-byte ZODB oid for zoid 101 -> int.from_bytes big-endian
+        assert _query_zoids(conn, {"oid": [(101).to_bytes(8, "big")]}) == [101]
+
+    def test_empty_matches_nothing(self, pg_conn_with_catalog):
+        conn = pg_conn_with_catalog
+        _setup_test_data(conn)
+        # empty set must not degrade to "match all rows"
+        assert _query_zoids(conn, {"zoid": []}) == []
+
+    def test_composes_with_field(self, pg_conn_with_catalog):
+        conn = pg_conn_with_catalog
+        _setup_test_data(conn)
+        # 100 (Document) matches; 102 (Folder) is excluded by the AND
+        assert _query_zoids(conn, {"zoid": [100, 102], "portal_type": "Document"}) == [
+            100
+        ]

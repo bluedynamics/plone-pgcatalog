@@ -38,5 +38,6 @@ titlesonly: true
 ---
 write-custom-translator
 query-raw-sql
+resolve-relations-by-zoid
 use-with-distribution
 ```

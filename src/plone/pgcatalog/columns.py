@@ -68,6 +68,10 @@ class IndexType(Enum):
     TEXT = "ZCTextIndex"
     PATH = "ExtendedPathIndex"
     GOPIP = "GopipIndex"
+    # Pseudo-index: not a ZCatalog meta-type, so it is never auto-registered as
+    # a real index. Filters on the object_state `zoid` BIGINT primary key, wired
+    # via `_SPECIAL_BUILTIN_INDEX_TYPES` in query.py (`zoid`/`oid` query keys).
+    ZOID = "ZOID"
 
 
 # --------------------------------------------------------------------------
@@ -87,6 +91,12 @@ META_TYPE_MAP = {
     "PathIndex": IndexType.PATH,
     "GopipIndex": IndexType.GOPIP,
 }
+
+# IndexTypes that are pgcatalog pseudo-indexes, NOT backed by a ZCatalog
+# meta_type: they filter a real object_state column via a hardcoded query key
+# (see `_SPECIAL_BUILTIN_INDEX_TYPES` in query.py) rather than a registered
+# index, so they deliberately have no `META_TYPE_MAP` entry.
+PSEUDO_INDEX_TYPES = frozenset({IndexType.ZOID})
 
 # Indexes with special PG handling (idx_key=None): dedicated columns or
 # composite logic that can't be expressed as a simple JSONB key.

@@ -49,6 +49,11 @@ _MAX_OFFSET = 1000000
 # Maximum search text length (characters) to prevent resource exhaustion.
 _MAX_SEARCH_LENGTH = 1000
 
+# Maximum number of zoids/oids in a single zoid query (DoS prevention). Generous
+# because a popular object can carry hundreds of back-references; well above any
+# real relation set, but bounds a hostile `zoid=[...]` from @search.
+_MAX_ZOIDS = 10000
+
 
 def _lookup_translator(name):
     """Look up an IPGIndexTranslator utility for a given index name.
@@ -88,6 +93,13 @@ _SPECIAL_BUILTIN_INDEX_TYPES: dict[str, tuple[IndexType, str | None]] = {
     "path": (IndexType.PATH, None),
     "effectiveRange": (IndexType.DATE_RANGE, None),
     "SearchableText": (IndexType.TEXT, None),
+    # Filter by the object_state `zoid` BIGINT primary key (the row's own id;
+    # the catalog rid IS the zoid). `oid` is the same filter, accepting raw
+    # 8-byte ZODB oids (converted via int.from_bytes). Lets callers resolve a
+    # set of ZODB object ids to their security-filtered brains without waking
+    # the objects — e.g. zc.relation/intids: intid -> KeyReference.oid -> zoid.
+    "zoid": (IndexType.ZOID, None),
+    "oid": (IndexType.ZOID, None),
 }
 
 
@@ -357,6 +369,7 @@ class _QueryBuilder:
         IndexType.TEXT: "_handle_text",
         IndexType.PATH: "_handle_path",
         IndexType.GOPIP: "_handle_field",  # same as field
+        IndexType.ZOID: "_handle_zoid",
     }
 
     def _process_index(self, name, raw):
@@ -604,6 +617,41 @@ class _QueryBuilder:
         else:
             self.clauses.append(f"idx->>'{idx_key}' = %({p})s")
             self.params[p] = _bool_to_lower_str(query_val)
+
+    # -- zoid / oid (object_state primary key) ------------------------------
+
+    def _handle_zoid(self, name, idx_key, spec):
+        """Filter by the object's ``zoid`` (the ``object_state`` BIGINT primary
+        key; the catalog rid *is* the zoid).
+
+        Enables wake-free resolution of a set of ZODB object ids to their
+        (security-filtered) brains — e.g. ``zc.relation``/``intids``:
+        ``intid -> KeyReference.oid -> int.from_bytes(...) -> zoid`` then
+        ``catalog(zoid=[...])``. It filters the real primary-key column, so it
+        is index-backed with no extra storage.
+
+        Accepts an int (zoid), an 8-byte ZODB oid (``oid=`` / bytes, converted
+        via ``int.from_bytes(..., "big")`` — matching ``extraction.obj_to_zoid``),
+        or a digit string; as a scalar or a list/tuple/set. Non-coercible values
+        are dropped (ZCatalog-lenient). An empty/all-dropped set matches nothing
+        (``= ANY('{}')``) — never the whole table.
+        """
+        query_val = spec.get("query")
+        if query_val is None:
+            return
+        values = (
+            list(query_val)
+            if isinstance(query_val, (list, tuple, set, frozenset))
+            else [query_val]
+        )
+        if len(values) > _MAX_ZOIDS:
+            raise ValueError("Too many zoids in query")
+        zoids = [z for z in (_coerce_zoid(v) for v in values) if z is not None]
+        p = self._pname("zoid")
+        # Explicit ::bigint[] cast so an empty list is an unambiguous empty
+        # array (matches nothing) rather than a type-inference error.
+        self.clauses.append(f"zoid = ANY(%({p})s::bigint[])")
+        self.params[p] = zoids
 
     # -- ZCTextIndex (SearchableText / Title / Description) -----------------
 
@@ -893,6 +941,25 @@ def _normalize_query(raw):
     if isinstance(raw, dict):
         return raw
     return {"query": raw}
+
+
+def _coerce_zoid(value):
+    """Coerce a query value to an integer zoid, or None if not coercible.
+
+    Accepts an int (the zoid itself), 8-byte ZODB oid bytes (converted via
+    ``int.from_bytes(..., "big")``, matching ``extraction.obj_to_zoid``), or a
+    string of digits.  ``bool`` is rejected — Python treats it as ``int`` but a
+    boolean zoid is nonsensical.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, (bytes, bytearray)):
+        return int.from_bytes(bytes(value), "big")
+    if isinstance(value, str) and value.isdigit():
+        return int(value)
+    return None
 
 
 def _validate_path(path):
