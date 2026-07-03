@@ -84,8 +84,9 @@
     <dtml-else>
     <p class="text-muted p-3 mb-0">
       No slow queries recorded yet.
-      Queries exceeding the threshold (<code>PGCATALOG_SLOW_QUERY_MS</code>,
-      default 10ms) are logged here automatically.
+      Queries exceeding the configured threshold
+      (<code><dtml-var "manage_get_slow_query_threshold()">ms</code>, set via
+      <code>PGCATALOG_SLOW_QUERY_MS</code>) are logged here automatically.
     </p>
     </dtml-if>
   </div>

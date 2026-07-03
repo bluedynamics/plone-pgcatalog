@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.0b69 (unreleased)
+
+### Fixed
+
+- The Slow Queries tab's empty-state message now shows the actually-configured
+  threshold (via `manage_get_slow_query_threshold()`) instead of hard-coding the
+  `PGCATALOG_SLOW_QUERY_MS` default of 10 ms.
+
 ## 1.0.0b68 (2026-06-30)
 
 ### Removed
