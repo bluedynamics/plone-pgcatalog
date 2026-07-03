@@ -1448,3 +1448,79 @@ class TestGetCurrentLanguage:
 
         monkeypatch.setattr(u, "getRequest", lambda: {"LANGUAGE": "eu"})
         assert u.get_current_language() == "eu"
+
+
+# ---------------------------------------------------------------------------
+# zoid / oid pseudo-index (object_state primary key)
+# ---------------------------------------------------------------------------
+
+
+class TestZoidIndex:
+    """`zoid`/`oid` filter the object_state BIGINT primary key directly."""
+
+    def test_single_int(self):
+        qr = build_query({"zoid": 42})
+        assert "zoid = ANY(" in qr["where"]
+        assert "::bigint[]" in qr["where"]  # explicit cast (empty-list safe)
+        assert _find_list_param(qr["params"]) == [42]
+
+    def test_list_of_ints(self):
+        qr = build_query({"zoid": [1, 2, 3]})
+        assert "zoid = ANY(" in qr["where"]
+        assert _find_list_param(qr["params"]) == [1, 2, 3]
+
+    def test_explicit_query_spec(self):
+        qr = build_query({"zoid": {"query": [7, 8]}})
+        assert _find_list_param(qr["params"]) == [7, 8]
+
+    def test_oid_bytes_converted(self):
+        # 8-byte ZODB oid -> int.from_bytes big-endian (== extraction.obj_to_zoid)
+        oid = (0xFF).to_bytes(8, "big")
+        qr = build_query({"oid": [oid]})
+        assert "zoid = ANY(" in qr["where"]
+        assert _find_list_param(qr["params"]) == [0xFF]
+
+    def test_oid_single_bytes_scalar(self):
+        qr = build_query({"oid": (0x42).to_bytes(8, "big")})
+        assert _find_list_param(qr["params"]) == [0x42]
+
+    def test_digit_string_coerced(self):
+        qr = build_query({"zoid": "123"})
+        assert _find_list_param(qr["params"]) == [123]
+
+    def test_bool_rejected(self):
+        # bool is an int subclass but a boolean zoid is nonsensical — drop it
+        qr = build_query({"zoid": [True, 5]})
+        assert _find_list_param(qr["params"]) == [5]
+
+    def test_non_coercible_dropped(self):
+        qr = build_query({"zoid": ["nope", 9]})
+        assert _find_list_param(qr["params"]) == [9]
+
+    def test_empty_list_matches_nothing(self):
+        # empty/all-dropped set -> ANY('{}') matches nothing, never the table
+        qr = build_query({"zoid": []})
+        assert "zoid = ANY(" in qr["where"]
+        assert _find_list_param(qr["params"]) == []
+
+    def test_too_many_raises(self):
+        import pytest
+
+        with pytest.raises(ValueError):
+            build_query({"zoid": list(range(10001))})
+
+    def test_composes_with_other_filters(self):
+        qr = build_query({"zoid": [1, 2], "portal_type": "Document"})
+        assert "zoid = ANY(" in qr["where"]
+        assert "idx->>'portal_type'" in qr["where"]
+        assert " AND " in qr["where"]
+
+    def test_honored_by_strip_non_index_keys(self):
+        from plone.pgcatalog.query import strip_non_index_keys
+
+        cleaned = strip_non_index_keys(
+            {"zoid": [1], "oid": [b"x"], "bogus": 1}, ["portal_type"]
+        )
+        assert "zoid" in cleaned
+        assert "oid" in cleaned
+        assert "bogus" not in cleaned

@@ -2,6 +2,21 @@
 
 ## 1.0.0b69 (unreleased)
 
+### Added
+
+- Built-in `zoid` (and `oid`) query operator: `catalog(zoid=[...])` /
+  `catalog(oid=[...])` filters the `object_state` BIGINT primary key directly
+  (the catalog rid *is* the zoid). It lets callers resolve a set of ZODB object
+  ids to their security-filtered brains **without waking the objects** — e.g.
+  `zc.relation`/`intids`: `intid -> KeyReference.oid -> int.from_bytes(...) ->
+  zoid`, replacing an object-load N+1 in relation/back-reference resolution.
+  `oid` accepts raw 8-byte ZODB oids (converted via `int.from_bytes`, matching
+  `extraction.obj_to_zoid`); `zoid` accepts ints or digit strings; both take a
+  scalar or a list. Filters the real primary-key column, so it is index-backed
+  with **no extra storage and no reindex**, and composes with the normal query
+  and the `allowedRolesAndUsers` security filter (`searchResults`). An empty set
+  matches nothing (never the whole table). #197
+
 ### Fixed
 
 - The Slow Queries tab's empty-state message now shows the actually-configured

@@ -109,11 +109,15 @@ class TestMetaTypeMap:
         assert META_TYPE_MAP["GopipIndex"] == IndexType.GOPIP
 
     def test_all_index_types_covered(self):
-        """Every IndexType enum value has at least one meta_type mapping."""
+        """Every IndexType enum value has a meta_type mapping, except the
+        pseudo-index types (which filter a real column, not a ZCatalog index)."""
         from plone.pgcatalog.columns import META_TYPE_MAP
+        from plone.pgcatalog.columns import PSEUDO_INDEX_TYPES
 
         covered = set(META_TYPE_MAP.values())
         for idx_type in IndexType:
+            if idx_type in PSEUDO_INDEX_TYPES:
+                continue
             assert idx_type in covered, (
                 f"IndexType.{idx_type.name} has no META_TYPE_MAP entry"
             )
