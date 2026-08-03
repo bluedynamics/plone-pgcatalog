@@ -232,24 +232,23 @@ class TestDateRangeListValues:
         assert "modified" not in qr["where"]
 
     def test_range_min_list_of_zope_datetimes(self):
-        """The real-world shape: queryparser yields Zope DateTime objects."""
+        """The real-world shape: queryparser yields Zope DateTime objects,
+        and they mix tz-naive and tz-aware (#203).
 
-        class FakeDateTime:
-            def __init__(self, dt):
-                self._dt = dt
+        A stored row value like ``'2021-10-08 14:55'`` has no timezone, so
+        ``DateTime(...)`` is ``timezoneNaive()`` and ``asdatetime()`` is
+        naive; the merged ``afterToday`` partner (``DateTime()``) is aware.
+        b70 crashed on ``min(naive, aware)`` — a FakeDateTime with only
+        aware values hid exactly this.
+        """
+        from DateTime import DateTime
 
-            def asdatetime(self):
-                return self._dt
+        d_naive = DateTime("2021-10-08 14:55")  # widget-stored, tz-less
+        d_aware = DateTime("2026/08/03 12:00:00 UTC")  # afterToday-like
+        assert d_naive.timezoneNaive()
 
-        qr = build_query(
-            {
-                "modified": {
-                    "query": [FakeDateTime(self.D2), FakeDateTime(self.D1)],
-                    "range": "min",
-                }
-            }
-        )
-        assert list(qr["params"].values()) == [self.D1]
+        qr = build_query({"modified": {"query": [d_aware, d_naive], "range": "min"}})
+        assert list(qr["params"].values()) == [d_naive.asdatetime()]
 
 
 # ---------------------------------------------------------------------------

@@ -321,6 +321,27 @@ def ensure_date_param(value):
     return str(value)
 
 
+def _comparable_date(param):
+    """Normalize an ``ensure_date_param`` result for *ordering only* (#203).
+
+    The converted values in one merged query list can mix tz-naive and
+    tz-aware datetimes: a stored querystring row like ``'2021-10-08 14:55'``
+    (no timezone — exactly what the collection widget stores) parses to a
+    ``timezoneNaive()`` Zope DateTime whose ``asdatetime()`` is naive, while
+    the merged ``afterToday`` partner row is aware.  Naive values are
+    treated as UTC — the same assumption PostgreSQL applies when binding a
+    naive parameter as ``timestamptz`` on a UTC server.  ISO strings (the
+    ``ensure_date_param`` fallback) are parsed the same way.  The result is
+    used only to pick the min/max element; the bind parameter itself stays
+    whatever ``ensure_date_param`` produced.
+    """
+    if not isinstance(param, datetime):
+        param = datetime.fromisoformat(str(param))
+    if param.tzinfo is None:
+        return param.replace(tzinfo=UTC)
+    return param
+
+
 def resolve_date_bound(value, bound):
     """Resolve a ``range='min'``/``'max'`` query value to one bind parameter.
 
@@ -330,12 +351,16 @@ def resolve_date_bound(value, bound):
     collection produces exactly that shape via ``parseFormquery`` row
     merging (#200).  A scalar passes straight through ``ensure_date_param``;
     an empty sequence resolves to ``None`` (caller emits no constraint).
+
+    Ordering uses ``_comparable_date`` so mixed tz-naive/aware lists don't
+    raise ``TypeError`` (#203).
     """
     if isinstance(value, (list, tuple)):
         if not value:
             return None
         resolved = [ensure_date_param(v) for v in value]
-        return min(resolved) if bound == "min" else max(resolved)
+        pick = min if bound == "min" else max
+        return pick(resolved, key=_comparable_date)
     return ensure_date_param(value)
 
 
