@@ -14,6 +14,13 @@
   multi-value date query without `range` now ORs over the values
   (`= ANY(...)`) instead of binding the list as one scalar. #200
 
+### Changed
+
+- Pin ruff in the QA workflow to the same version as the pre-commit hook
+  (0.15.0). Unpinned `uvx ruff` picked up 0.16, which newly format-checks
+  Python code blocks in Markdown files and turned CI red on 32 docs files no
+  PR had touched.
+
 ## 1.0.0b69 (2026-07-03)
 
 ### Added
