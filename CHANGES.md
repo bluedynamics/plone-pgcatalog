@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.0.0b71 (unreleased)
+## 1.0.0b71 (2026-08-03)
 
 ### Fixed
 
