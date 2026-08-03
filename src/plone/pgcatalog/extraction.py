@@ -103,13 +103,10 @@ def wrap_object(obj, catalog):
     wrapper = queryMultiAdapter((obj, catalog), IIndexableObject)
     if wrapper is not None:
         return wrapper
-    try:
-        return IndexableObjectWrapper(obj, catalog)
-    except Exception:
-        # Degenerate contexts (unit-test fakes without tool lookup):
-        # keep the previous raw-object behavior.
-        log.debug("wrap_object: direct wrapper failed for %r", obj, exc_info=True)
-        return obj
+    # No try/except here on purpose: classic Plone lets wrapper
+    # construction propagate too, and a silent raw-object fallback
+    # would quietly reintroduce the acquisition leak this fixes.
+    return IndexableObjectWrapper(obj, catalog)
 
 
 def obj_to_zoid(obj):
