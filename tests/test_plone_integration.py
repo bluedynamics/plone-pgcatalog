@@ -255,6 +255,78 @@ class TestExtractionWithPloneContent:
             registry._indexes = old_indexes
             registry._metadata = old_metadata
 
+    def test_ofs_file_does_not_inherit_container_uid(self, pgcatalog_layer):
+        """Regression #205 — non-ICatalogAware objects acquired their
+        container's UID (and other values) into idx.
+
+        CMFPlone registers the IndexableObjectWrapper adapter for
+        ``(ICatalogAware, IPloneCatalogTool)`` only.  A subsite's
+        ``robots.txt`` (plain ``OFS.Image.File``), tools, FTIs and
+        workflow definitions got no wrapper, so extraction ran getattr
+        on the raw acquisition wrapper and stored the *container's*
+        UID — ``uuidToObject`` then returned an arbitrary object among
+        the colliding rows.
+        """
+        from OFS.Image import File
+        from plone.pgcatalog.columns import get_registry
+        from plone.pgcatalog.extraction import extract_idx
+        from plone.pgcatalog.extraction import wrap_object
+
+        layer = pgcatalog_layer
+        portal = layer["portal"]
+        setRoles(portal, TEST_USER_ID, ["Manager"])
+
+        portal.invokeFactory("Folder", "subsite", title="Subsite")
+        folder = portal["subsite"]
+        folder._setObject("robots.txt", File("robots.txt", "", b"User-agent: *"))
+        robots = folder["robots.txt"]
+
+        registry = get_registry()
+        old_indexes = dict(registry._indexes)
+        old_metadata = set(registry._metadata)
+        try:
+            registry.sync_from_catalog(portal.portal_catalog)
+
+            wrapper = wrap_object(robots, portal.portal_catalog)
+            idx = extract_idx(wrapper)
+
+            # The container's values must not leak in via acquisition.
+            assert idx.get("UID") != folder.UID()
+            assert "UID" not in idx
+            assert "Creator" not in idx
+            # Own attributes are still extracted.
+            assert idx.get("getId") == "robots.txt"
+        finally:
+            registry._indexes = old_indexes
+            registry._metadata = old_metadata
+
+    def test_dexterity_content_keeps_own_uid(self, pgcatalog_layer):
+        """Sanity for #205 — content owning its UUID still gets it in idx."""
+        from plone.pgcatalog.columns import get_registry
+        from plone.pgcatalog.extraction import extract_idx
+        from plone.pgcatalog.extraction import wrap_object
+
+        layer = pgcatalog_layer
+        portal = layer["portal"]
+        setRoles(portal, TEST_USER_ID, ["Manager"])
+
+        portal.invokeFactory("Document", "uid-doc", title="UID Doc")
+        doc = portal["uid-doc"]
+
+        registry = get_registry()
+        old_indexes = dict(registry._indexes)
+        old_metadata = set(registry._metadata)
+        try:
+            registry.sync_from_catalog(portal.portal_catalog)
+
+            wrapper = wrap_object(doc, portal.portal_catalog)
+            idx = extract_idx(wrapper)
+
+            assert idx.get("UID") == doc.UID()
+        finally:
+            registry._indexes = old_indexes
+            registry._metadata = old_metadata
+
     def test_extract_searchable_text(self, pgcatalog_layer):
         """SearchableText is extracted from Document body."""
         from plone.pgcatalog.extraction import extract_searchable_text
