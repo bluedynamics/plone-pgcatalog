@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.0.0b71 (unreleased)
+
+### Fixed
+
+- b70 regression of #200: `resolve_date_bound` crashed with `TypeError:
+  can't compare offset-naive and offset-aware datetimes` when a merged
+  date-range list mixed tz-naive and tz-aware values — the original #200
+  query kept failing, one layer earlier. A stored querystring value like
+  `'2021-10-08 14:55'` (no timezone, exactly what the collection widget
+  stores) parses to a `timezoneNaive()` Zope DateTime whose `asdatetime()`
+  is naive, while the merged `afterToday` partner is aware. The min/max
+  ordering now uses a normalization key that treats naive datetimes as UTC
+  (comparison only — the bind parameter stays as converted); the b70 tests
+  missed this because they built DateTimes from strings with explicit
+  timezone suffix. #203
+
 ## 1.0.0b70 (2026-08-03)
 
 ### Fixed

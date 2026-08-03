@@ -205,3 +205,59 @@ class TestEnsureDateParam:
 
         result = ensure_date_param("2026-04-01T00:00:00+00:00")
         assert result == "2026-04-01T00:00:00+00:00"
+
+
+class TestResolveDateBound:
+    """Regression for #203 — mixed tz-naive/aware values in one list.
+
+    A stored querystring row like ``'2021-10-08 14:55'`` (no timezone —
+    exactly what the collection widget stores) parses to a Zope DateTime
+    with ``timezoneNaive() == True``, whose ``asdatetime()`` is a *naive*
+    datetime.  The merged ``afterToday`` partner row is *aware*.  b70
+    converted before ``min()``/``max()`` and crashed with ``TypeError:
+    can't compare offset-naive and offset-aware datetimes`` — the #200
+    query kept failing, just one layer earlier.
+    """
+
+    def test_mixed_naive_aware_min(self):
+        from DateTime import DateTime
+        from plone.pgcatalog.columns import resolve_date_bound
+
+        d_naive = DateTime("2021-10-08 14:55")  # tz-less → naive
+        d_aware = DateTime("2026/08/03 12:00:00 UTC")
+        assert d_naive.timezoneNaive()
+        assert not d_aware.timezoneNaive()
+        result = resolve_date_bound([d_naive, d_aware], "min")
+        assert result == d_naive.asdatetime()
+
+    def test_mixed_naive_aware_max(self):
+        from DateTime import DateTime
+        from plone.pgcatalog.columns import resolve_date_bound
+
+        d_naive = DateTime("2021-10-08 14:55")
+        d_aware = DateTime("2026/08/03 12:00:00 UTC")
+        result = resolve_date_bound([d_aware, d_naive], "max")
+        assert result == d_aware.asdatetime()
+
+    def test_mixed_python_and_zope_datetime(self):
+        from DateTime import DateTime
+        from datetime import datetime
+        from plone.pgcatalog.columns import resolve_date_bound
+
+        d_py = datetime(2021, 10, 8, tzinfo=UTC)
+        d_zope = DateTime("2026-08-03 12:00")  # naive
+        result = resolve_date_bound([d_zope, d_py], "min")
+        assert result == d_py
+
+    def test_scalar_passthrough(self):
+        from datetime import datetime
+        from plone.pgcatalog.columns import resolve_date_bound
+
+        dt = datetime(2026, 4, 1, 12, 0, tzinfo=UTC)
+        assert resolve_date_bound(dt, "min") is dt
+
+    def test_empty_list_returns_none(self):
+        from plone.pgcatalog.columns import resolve_date_bound
+
+        assert resolve_date_bound([], "min") is None
+        assert resolve_date_bound((), "max") is None
