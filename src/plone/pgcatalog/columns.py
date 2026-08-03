@@ -321,6 +321,24 @@ def ensure_date_param(value):
     return str(value)
 
 
+def resolve_date_bound(value, bound):
+    """Resolve a ``range='min'``/``'max'`` query value to one bind parameter.
+
+    ZCatalog resolves a *list* value against a range bound as ``min(keys)`` /
+    ``max(keys)`` (``Products.PluginIndexes`` UnIndex ``_apply_index``) — an
+    editor stacking two "after ..." rows on the same date index in a
+    collection produces exactly that shape via ``parseFormquery`` row
+    merging (#200).  A scalar passes straight through ``ensure_date_param``;
+    an empty sequence resolves to ``None`` (caller emits no constraint).
+    """
+    if isinstance(value, (list, tuple)):
+        if not value:
+            return None
+        resolved = [ensure_date_param(v) for v in value]
+        return min(resolved) if bound == "min" else max(resolved)
+    return ensure_date_param(value)
+
+
 # --------------------------------------------------------------------------
 # Language → PG text search configuration mapping
 # --------------------------------------------------------------------------

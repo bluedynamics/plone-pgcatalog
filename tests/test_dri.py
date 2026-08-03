@@ -166,6 +166,40 @@ class TestQuerySQL:
         assert sql == "TRUE"
         assert params == {}
 
+    # Regression #200 — list values with range='min'/'max'/exact.
+    # queryparser merges two "after ..." rows on the same index into
+    # {'query': [d1, d2], 'range': 'min'}; ZCatalog resolves min(keys).
+
+    def test_min_range_list_uses_minimum(self, translator):
+        d_lo = datetime(2021, 10, 8, tzinfo=UTC)
+        d_hi = datetime(2026, 8, 3, tzinfo=UTC)
+        spec = {"query": [d_hi, d_lo], "range": "min"}
+        sql, params = translator.query("start", spec, spec)
+        assert 'rrule."after"' in sql
+        assert params["dri_start_min"] == d_lo
+
+    def test_max_range_list_uses_maximum(self, translator):
+        d_lo = datetime(2021, 10, 8, tzinfo=UTC)
+        d_hi = datetime(2026, 8, 3, tzinfo=UTC)
+        spec = {"query": [d_lo, d_hi], "range": "max"}
+        sql, params = translator.query("start", spec, spec)
+        assert "<=" in sql
+        assert params["dri_start_max"] == d_hi
+
+    def test_exact_match_list_ors_over_values(self, translator):
+        d1 = datetime(2025, 3, 15, tzinfo=UTC)
+        d2 = datetime(2025, 3, 20, tzinfo=UTC)
+        spec = {"query": [d1, d2]}
+        sql, params = translator.query("start", spec, spec)
+        assert " OR " in sql
+        assert sorted(params.values()) == [d1, d2]
+
+    def test_min_range_empty_list_matches_all(self, translator):
+        spec = {"query": [], "range": "min"}
+        sql, params = translator.query("start", spec, spec)
+        assert sql == "TRUE"
+        assert params == {}
+
 
 # ---------------------------------------------------------------------------
 # Unit tests: sort()

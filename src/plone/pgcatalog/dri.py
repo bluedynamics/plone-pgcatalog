@@ -15,6 +15,7 @@ Query strategy:
 
 from plone.pgcatalog.columns import convert_value
 from plone.pgcatalog.columns import ensure_date_param as _ensure_date_param
+from plone.pgcatalog.columns import resolve_date_bound as _resolve_date_bound
 from plone.pgcatalog.columns import validate_identifier
 from plone.pgcatalog.interfaces import IPGIndexTranslator
 from zope.interface import implementer
@@ -137,7 +138,11 @@ class DateRecurringIndexTranslator:
             return (sql, {p_min: min_val, p_max: max_val})
 
         elif range_spec == "min":
-            val = _ensure_date_param(query_val)
+            # ZCatalog semantics: a list value with range='min' resolves
+            # to min(keys) (#200).
+            val = _resolve_date_bound(query_val, "min")
+            if val is None:
+                return ("TRUE", {})
             p = f"dri_{index_name}_min"
 
             sql = (
@@ -155,26 +160,39 @@ class DateRecurringIndexTranslator:
             # For max: if the base date <= query, the event qualifies.
             # Recurrence only adds later occurrences, so base date check
             # is sufficient for both recurring and non-recurring.
-            val = _ensure_date_param(query_val)
+            val = _resolve_date_bound(query_val, "max")
+            if val is None:
+                return ("TRUE", {})
             p = f"dri_{index_name}_max"
             sql = f"{date_expr} <= %({p})s::timestamptz"
             return (sql, {p: val})
 
         else:
-            # Exact date match
-            val = _ensure_date_param(query_val)
-            p = f"dri_{index_name}_exact"
-
-            sql = (
-                f"(CASE WHEN {has_recurrence}"
-                f" THEN EXISTS ("
-                f'SELECT 1 FROM rrule."between"('
-                f"idx->>'{recurrence_key}', {date_expr},"
-                f" %({p})s::timestamptz, %({p})s::timestamptz))"
-                f" ELSE {date_expr} = %({p})s::timestamptz"
-                f" END)"
-            )
-            return (sql, {p: val})
+            # Exact date match.  ZCatalog ORs over the keys for a plain
+            # multi-value query (#200).
+            values = query_val if isinstance(query_val, (list, tuple)) else [query_val]
+            if not values:
+                return ("TRUE", {})
+            parts = []
+            params = {}
+            for i, v in enumerate(values):
+                p = (
+                    f"dri_{index_name}_exact"
+                    if len(values) == 1
+                    else f"dri_{index_name}_exact_{i}"
+                )
+                parts.append(
+                    f"(CASE WHEN {has_recurrence}"
+                    f" THEN EXISTS ("
+                    f'SELECT 1 FROM rrule."between"('
+                    f"idx->>'{recurrence_key}', {date_expr},"
+                    f" %({p})s::timestamptz, %({p})s::timestamptz))"
+                    f" ELSE {date_expr} = %({p})s::timestamptz"
+                    f" END)"
+                )
+                params[p] = _ensure_date_param(v)
+            sql = parts[0] if len(parts) == 1 else "(" + " OR ".join(parts) + ")"
+            return (sql, params)
 
     def sort(self, index_name):
         """Sort by base date.
