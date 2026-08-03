@@ -7,6 +7,13 @@ on:
 permissions:
   contents: read
 
+env:
+  # Keep in sync with the ruff-pre-commit rev in .pre-commit-config.yaml.
+  # Unpinned, every ruff release changes CI behavior — 0.16 started
+  # formatting Python code blocks in Markdown and turned CI red on files
+  # no PR touched.
+  RUFF_VERSION: "0.15.0"
+
 jobs:
   lint:
     name: Ruff
@@ -17,7 +24,7 @@ jobs:
       - uses: astral-sh/setup-uv@v7
 
       - name: Run ruff check
-        run: uvx ruff check .
+        run: uvx ruff@${{ env.RUFF_VERSION }} check .
 
       - name: Run ruff format check
-        run: uvx ruff format --check .
+        run: uvx ruff@${{ env.RUFF_VERSION }} format --check .
