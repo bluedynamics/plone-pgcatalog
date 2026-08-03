@@ -203,21 +203,28 @@ class TestWrapObject:
         obj = mock.Mock()
         wrapped = mock.Mock()
         with mock.patch(
-            "zope.component.queryMultiAdapter",
+            "plone.pgcatalog.extraction.queryMultiAdapter",
             return_value=wrapped,
         ):
             result = tool._wrap_object(obj)
             assert result is wrapped
 
-    def test_returns_obj_if_no_adapter(self):
+    def test_constructs_wrapper_if_no_adapter(self):
+        """Regression #205 — without a registered IIndexableObject
+        adapter (non-ICatalogAware objects), wrap_object constructs the
+        IndexableObjectWrapper directly instead of returning the raw
+        acquisition-wrapped object, so its aq_base guard prevents
+        acquired index values (the container-UID leak)."""
+        from plone.indexer.wrapper import IndexableObjectWrapper
+
         tool = PlonePGCatalogTool.__new__(PlonePGCatalogTool)
         obj = mock.Mock()
         with mock.patch(
-            "zope.component.queryMultiAdapter",
+            "plone.pgcatalog.extraction.queryMultiAdapter",
             return_value=None,
         ):
             result = tool._wrap_object(obj)
-            assert result is obj
+            assert isinstance(result, IndexableObjectWrapper)
 
 
 def _mock_pg_connection(mock_conn):

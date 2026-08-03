@@ -58,6 +58,30 @@ def reindex_index(conn, name, batch_size=_REINDEX_BATCH_SIZE):
     return count
 
 
+def remove_acquired_uids(conn):
+    """Strip acquisition-inherited ``UID`` values from idx (#205).
+
+    Before the ``wrap_object`` fix, non-ICatalogAware objects (a
+    subsite's ``robots.txt``, tools, FTIs, workflow definitions, …)
+    stored their *container's* UID in ``idx->>'UID'``, making UID
+    lookups ambiguous.  Such rows are identified by having a ``UID`` in
+    idx while their pickled state carries no own ``_plone.uuid``
+    attribute — the plone.uuid ownership marker.
+
+    One-shot data repair for existing databases; new writes are safe
+    since the extraction fix.  Returns the number of repaired rows.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE object_state SET idx = idx - 'UID' "
+            "WHERE idx ? 'UID' AND state->>'_plone.uuid' IS NULL"
+        )
+        count = cur.rowcount
+
+    log.info("remove_acquired_uids: stripped acquired UID from %d rows", count)
+    return count
+
+
 def clear_catalog_data(conn):
     """Clear all catalog data (path, idx, searchable_text, and backend extras).
 

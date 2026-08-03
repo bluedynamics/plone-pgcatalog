@@ -5,11 +5,14 @@ from wrapped indexable objects.  Used by ``PlonePGCatalogTool`` methods
 that prepare data for PostgreSQL storage.
 """
 
+from plone.indexer.interfaces import IIndexableObject
+from plone.indexer.wrapper import IndexableObjectWrapper
 from plone.pgcatalog.columns import compute_path_info
 from plone.pgcatalog.columns import convert_value
 from plone.pgcatalog.columns import get_registry
 from plone.pgcatalog.columns import IndexType
 from plone.pgcatalog.interfaces import IPGIndexTranslator
+from zope.component import queryMultiAdapter
 
 import logging
 import pickle
@@ -76,12 +79,34 @@ def _path_value_to_string(value):
 
 
 def wrap_object(obj, catalog):
-    """Wrap an object with IIndexableObject for plone.indexer."""
-    from plone.indexer.interfaces import IIndexableObject
-    from zope.component import queryMultiAdapter
+    """Wrap an object with IIndexableObject for plone.indexer.
 
+    CMFPlone registers the ``IndexableObjectWrapper`` adapter for
+    ``(ICatalogAware, IPloneCatalogTool)`` only.  Classic portal_catalog
+    never sees non-ICatalogAware objects, but pgcatalog extracts idx for
+    anything that reaches ``catalog_object()`` — plain OFS objects (a
+    subsite's ``robots.txt``), tools, FTIs, workflow definitions.
+    Falling back to the raw acquisition-wrapped object made ``getattr``
+    acquire *container* values: such objects inherited their parent's
+    UID (and Creator, dates, …), making UID lookups ambiguous (#205).
+
+    When no adapter is registered, construct the wrapper directly
+    instead: its ``aq_base`` guard turns acquired attributes into
+    ``AttributeError`` → "not applicable" → skipped (#81), exactly as
+    extraction treats real content.
+
+    Note: ``plone.indexer`` imports live at module level on purpose —
+    a first import of ``plone.indexer.wrapper`` inside a caller's
+    ``mock.patch("zope.component.queryMultiAdapter")`` window would
+    freeze the mock into that module's globals permanently.
+    """
     wrapper = queryMultiAdapter((obj, catalog), IIndexableObject)
-    return wrapper if wrapper is not None else obj
+    if wrapper is not None:
+        return wrapper
+    # No try/except here on purpose: classic Plone lets wrapper
+    # construction propagate too, and a silent raw-object fallback
+    # would quietly reintroduce the acquisition leak this fixes.
+    return IndexableObjectWrapper(obj, catalog)
 
 
 def obj_to_zoid(obj):

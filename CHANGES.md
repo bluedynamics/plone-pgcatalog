@@ -1,5 +1,31 @@
 # Changelog
 
+## 1.0.0b72 (unreleased)
+
+### Fixed
+
+- Non-ICatalogAware objects no longer acquire their container's index values
+  into `idx` — most damagingly the **UID**, which made UID lookups ambiguous:
+  `uuidToObject` could return a subsite's `robots.txt` or `lineage_registry`
+  instead of the subsite (417+ colliding rows on a production DB, the site
+  root's UID shared by 387 tool/FTI/workflow rows). CMFPlone registers the
+  `IndexableObjectWrapper` adapter for `(ICatalogAware, IPloneCatalogTool)`
+  only; `wrap_object` fell back to the raw acquisition-wrapped object for
+  everything else, so `getattr` acquired UID, Creator, dates, … from the
+  container. Classic portal_catalog never catalogs such objects, which is why
+  the leak was invisible there. `wrap_object` now constructs the
+  `IndexableObjectWrapper` directly when no adapter is registered — its
+  `aq_base` guard turns acquired attributes into "not applicable" (#81), so
+  only genuinely-owned values are extracted. #205
+
+### Added
+
+- `maintenance.remove_acquired_uids(conn)` — one-shot data repair that strips
+  `idx->>'UID'` from rows whose pickled state carries no own `_plone.uuid`
+  attribute (the plone.uuid ownership marker). Run it once on databases
+  written before this fix; alternatively a full
+  `clearFindAndRebuild()` also heals all leaked idx values. #205
+
 ## 1.0.0b71 (2026-08-03)
 
 ### Fixed

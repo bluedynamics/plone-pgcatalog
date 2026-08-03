@@ -433,6 +433,36 @@ class TestSearchableTextLanguage:
             assert cur.fetchone()["zoid"] == 41
 
 
+class TestRemoveAcquiredUids:
+    """Data repair for #205 — strip acquisition-inherited UIDs."""
+
+    def test_strips_only_non_owner_rows(self, pg_conn_with_catalog):
+        from plone.pgcatalog.maintenance import remove_acquired_uids
+
+        conn = pg_conn_with_catalog
+        # Owner: pickled state carries its own _plone.uuid.
+        insert_object(conn, zoid=70, state={"_plone.uuid": "uid-owner"})
+        catalog_object(conn, zoid=70, path="/plone/subsite", idx={"UID": "uid-owner"})
+        # Leaked row (robots.txt shape): same UID in idx, no own uuid.
+        insert_object(conn, zoid=71, state={"title": "robots"})
+        catalog_object(
+            conn,
+            zoid=71,
+            path="/plone/subsite/robots.txt",
+            idx={"UID": "uid-owner", "getId": "robots.txt"},
+        )
+        conn.commit()
+
+        assert remove_acquired_uids(conn) == 1
+        conn.commit()
+
+        assert _get_row(conn, 70)["idx"]["UID"] == "uid-owner"
+        leaked = _get_row(conn, 71)["idx"]
+        assert "UID" not in leaked
+        # Other idx keys stay untouched.
+        assert leaked["getId"] == "robots.txt"
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
