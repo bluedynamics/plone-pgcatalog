@@ -192,6 +192,66 @@ class TestDateIndex:
         assert val == datetime(2025, 6, 15, tzinfo=UTC)
 
 
+class TestDateRangeListValues:
+    """Regression for #200 — DateIndex list values with ``range='min'``/``'max'``.
+
+    ``plone.app.querystring.queryparser.parseFormquery`` merges rows on the
+    same index: two "after ..." rows on one date index produce
+    ``{'query': [date1, date2], 'range': 'min'}``.  ZCatalog resolves that
+    as ``min(keys)`` / ``max(keys)`` (``Products.PluginIndexes`` UnIndex);
+    pgcatalog bound ``str(list)`` as a single timestamptz parameter and PG
+    aborted the whole search with InvalidDatetimeFormat (22007).
+    """
+
+    D1 = datetime(2021, 10, 8, tzinfo=UTC)
+    D2 = datetime(2026, 8, 3, tzinfo=UTC)
+
+    def test_range_min_list_uses_minimum(self):
+        qr = build_query({"modified": {"query": [self.D2, self.D1], "range": "min"}})
+        assert "pgcatalog_to_timestamptz(idx->>'modified') >=" in qr["where"]
+        assert list(qr["params"].values()) == [self.D1]
+
+    def test_range_max_list_uses_maximum(self):
+        qr = build_query({"modified": {"query": [self.D1, self.D2], "range": "max"}})
+        assert "pgcatalog_to_timestamptz(idx->>'modified') <=" in qr["where"]
+        assert list(qr["params"].values()) == [self.D2]
+
+    def test_exact_list_matches_any_value(self):
+        """Plain multi-value date query without range: ZCatalog ORs over
+        the keys — translate to ``= ANY(...)``, not one scalar bind."""
+        qr = build_query({"modified": {"query": [self.D1, self.D2]}})
+        assert "= ANY(" in qr["where"]
+        assert list(qr["params"].values()) == [[self.D1, self.D2]]
+
+    def test_range_min_empty_list_emits_no_clause(self):
+        qr = build_query({"modified": {"query": [], "range": "min"}})
+        assert "modified" not in qr["where"]
+
+    def test_exact_empty_list_emits_no_clause(self):
+        qr = build_query({"modified": {"query": []}})
+        assert "modified" not in qr["where"]
+
+    def test_range_min_list_of_zope_datetimes(self):
+        """The real-world shape: queryparser yields Zope DateTime objects."""
+
+        class FakeDateTime:
+            def __init__(self, dt):
+                self._dt = dt
+
+            def asdatetime(self):
+                return self._dt
+
+        qr = build_query(
+            {
+                "modified": {
+                    "query": [FakeDateTime(self.D2), FakeDateTime(self.D1)],
+                    "range": "min",
+                }
+            }
+        )
+        assert list(qr["params"].values()) == [self.D1]
+
+
 # ---------------------------------------------------------------------------
 # DateRangeIndex (effectiveRange)
 # ---------------------------------------------------------------------------
@@ -1039,6 +1099,31 @@ class TestFieldRangeNumeric:
         max_key = next(k for k in params if k.endswith("_max_2"))
         assert params[min_key] == "a"
         assert params[max_key] == "m"
+
+    def test_numeric_field_range_min_list_uses_minimum(self, populated_registry):
+        """Regression #200 — list value with ``range='min'`` resolves to
+        ``min(values)`` (ZCatalog UnIndex semantics), not ``str(list)``."""
+        self._register("latitude")
+        qr = build_query({"latitude": {"query": [49.0, 46.1], "range": "min"}})
+        assert "(idx->>'latitude')::numeric >=" in qr["where"]
+        assert 46.1 in qr["params"].values()
+
+    def test_numeric_field_range_max_list_uses_maximum(self, populated_registry):
+        self._register("latitude")
+        qr = build_query({"latitude": {"query": [46.1, 49.0], "range": "max"}})
+        assert "(idx->>'latitude')::numeric <=" in qr["where"]
+        assert 49.0 in qr["params"].values()
+
+    def test_string_field_range_min_list_uses_minimum(self, populated_registry):
+        self._register("getId")
+        qr = build_query({"getId": {"query": ["m", "a"], "range": "min"}})
+        assert "idx->>'getId' >=" in qr["where"]
+        assert "a" in qr["params"].values()
+
+    def test_field_range_min_empty_list_emits_no_clause(self, populated_registry):
+        self._register("latitude")
+        qr = build_query({"latitude": {"query": [], "range": "min"}})
+        assert "latitude" not in qr["where"]
 
 
 class TestDynamicKeywordIndex:

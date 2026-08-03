@@ -12,6 +12,7 @@ from datetime import UTC
 from plone.pgcatalog.columns import ensure_date_param as _ensure_date_param
 from plone.pgcatalog.columns import get_registry
 from plone.pgcatalog.columns import IndexType
+from plone.pgcatalog.columns import resolve_date_bound as _resolve_date_bound
 from plone.pgcatalog.columns import validate_identifier
 from plone.pgcatalog.utils import get_current_language
 from psycopg.types.json import Json
@@ -470,12 +471,22 @@ class _QueryBuilder:
             self.params[p_min] = v_min if cast else _bool_to_lower_str(v_min)
             self.params[p_max] = v_max if cast else _bool_to_lower_str(v_max)
         elif range_spec == "min":
+            # ZCatalog semantics: a list value with range='min' resolves
+            # to min(keys), range='max' to max(keys) (#200).
+            if isinstance(value, (list, tuple)):
+                if not value:
+                    return
+                value = min(value)
             cast = "::numeric" if _is_numeric_range((value,)) else ""
             col = f"(idx->>'{idx_key}'){cast}" if cast else f"idx->>'{idx_key}'"
             p = self._pname(idx_key)
             self.clauses.append(f"{col} >= %({p})s")
             self.params[p] = value if cast else _bool_to_lower_str(value)
         elif range_spec == "max":
+            if isinstance(value, (list, tuple)):
+                if not value:
+                    return
+                value = max(value)
             cast = "::numeric" if _is_numeric_range((value,)) else ""
             col = f"(idx->>'{idx_key}'){cast}" if cast else f"idx->>'{idx_key}'"
             p = self._pname(idx_key)
@@ -553,19 +564,35 @@ class _QueryBuilder:
             self.params[p_min] = min_val
             self.params[p_max] = max_val
         elif range_spec == "min":
-            val = _ensure_date_param(query_val)
+            # ZCatalog semantics: a list value with range='min' resolves
+            # to min(keys) (#200).
+            val = _resolve_date_bound(query_val, "min")
+            if val is None:
+                return
             p = self._pname(idx_key)
             self.clauses.append(
                 f"pgcatalog_to_timestamptz(idx->>'{idx_key}') >= %({p})s"
             )
             self.params[p] = val
         elif range_spec == "max":
-            val = _ensure_date_param(query_val)
+            val = _resolve_date_bound(query_val, "max")
+            if val is None:
+                return
             p = self._pname(idx_key)
             self.clauses.append(
                 f"pgcatalog_to_timestamptz(idx->>'{idx_key}') <= %({p})s"
             )
             self.params[p] = val
+        elif isinstance(query_val, (list, tuple)):
+            # Plain multi-value date query: ZCatalog ORs over the keys (#200).
+            if not query_val:
+                return
+            p = self._pname(idx_key)
+            self.clauses.append(
+                f"pgcatalog_to_timestamptz(idx->>'{idx_key}')"
+                f" = ANY(%({p})s::timestamptz[])"
+            )
+            self.params[p] = [_ensure_date_param(v) for v in query_val]
         else:
             # Exact date match
             val = _ensure_date_param(query_val)

@@ -248,6 +248,28 @@ class TestDateIndexIntegration:
         )
         assert set(zoids) == {101, 103, 100}
 
+    def test_range_min_list_value(self, pg_conn_with_catalog):
+        """Regression #200 — list value with range='min' (queryparser row
+        merging) aborted the whole search with InvalidDatetimeFormat
+        (22007).  ZCatalog semantics: min(values) applies."""
+        conn = pg_conn_with_catalog
+        _setup_test_data(conn)
+        d1 = datetime(2025, 7, 1, tzinfo=UTC)
+        d2 = datetime(2025, 8, 1, tzinfo=UTC)
+        zoids = _query_zoids(conn, {"modified": {"query": [d2, d1], "range": "min"}})
+        # min([d2, d1]) == 2025-07-01 → same result as scalar test_range_min
+        assert set(zoids) == {102, 104}
+
+    def test_exact_list_value(self, pg_conn_with_catalog):
+        """Regression #200 — plain multi-value date query ORs over the
+        values instead of binding str(list) as one timestamptz."""
+        conn = pg_conn_with_catalog
+        _setup_test_data(conn)
+        d1 = datetime(2025, 3, 1, 8, 0, 0, tzinfo=UTC)
+        d2 = datetime(2025, 8, 1, 16, 0, 0, tzinfo=UTC)
+        zoids = _query_zoids(conn, {"modified": {"query": [d1, d2]}})
+        assert set(zoids) == {101, 104}
+
 
 # ---------------------------------------------------------------------------
 # DateRangeIndex queries

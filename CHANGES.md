@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.0.0b70 (unreleased)
+
+### Fixed
+
+- Date queries with `range='min'`/`'max'` and a **list** value no longer crash
+  the whole search with `InvalidDatetimeFormat` (SQLSTATE 22007).
+  `plone.app.querystring` merges two "after …" (or "before …") rows on the same
+  date index into `{'query': [d1, d2], 'range': 'min'}`; pgcatalog bound
+  `str(list)` as a single `timestamptz` parameter. Now ZCatalog UnIndex
+  semantics apply: `min(values)` for `'min'`, `max(values)` for `'max'` — in
+  the DateIndex, DateRecurringIndex, and FieldIndex range branches. A plain
+  multi-value date query without `range` now ORs over the values
+  (`= ANY(...)`) instead of binding the list as one scalar. #200
+
 ## 1.0.0b69 (2026-07-03)
 
 ### Added
