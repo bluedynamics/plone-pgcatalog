@@ -74,6 +74,16 @@ html_theme_options = {
                     "url": "https://bluedynamics.github.io/cdk8s-plone/",
                     "summary": "Deploy Plone to Kubernetes",
                 },
+                {
+                    "title": "cloud-vinyl",
+                    "url": "https://bluedynamics.github.io/cloud-vinyl/",
+                    "summary": "Vinyl Cache operator for Kubernetes",
+                },
+                {
+                    "title": "plone.observability",
+                    "url": "https://plone.github.io/plone.observability/",
+                    "summary": "Health probes, metrics, and tracing",
+                },
             ],
         },
         {
