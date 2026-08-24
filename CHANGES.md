@@ -2,6 +2,13 @@
 
 ## 1.0.0b73 (unreleased)
 
+### Added
+
+- Add the `LICENSE` file with the full GNU General Public License v2.0 text.
+  The packaging metadata already declared `GPL-2.0-only`, but the license text
+  itself was missing from the repository, so GitHub reported "No license" and
+  the terms could not be verified from the source tree alone. Fixes #208.
+
 ### Documentation
 
 - Add `cloud-vinyl` and `plone.observability` to the ecosystem navigation
