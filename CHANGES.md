@@ -2,6 +2,13 @@
 
 ## 1.0.0b73 (unreleased)
 
+### Fixed
+
+- Bump `hynek/build-and-inspect-python-package` from v2 to v3.0.1. Hatchling now
+  emits `Metadata-Version: 2.5`, which the Twine bundled in v2 rejects with
+  `InvalidDistribution: '2.5' is not a valid metadata version` — the release
+  build failed before uploading anything. v3 ships Twine 7, which supports it.
+
 ### Added
 
 - Add the `LICENSE` file with the full GNU General Public License v2.0 text.
