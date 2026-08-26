@@ -124,7 +124,7 @@ def _build_results(rows, actual_count, catalog, lazy_conn):
     return results
 
 
-def _run_search(conn, query, catalog=None, lazy_conn=None):
+def _run_search(conn, query, catalog=None, lazy_conn=None):  # noqa: C901
     """Execute a prepared query dict and return CatalogSearchResults.
 
     Results are cached process-wide with TID-based invalidation.

@@ -117,7 +117,7 @@ def obj_to_zoid(obj):
     return int.from_bytes(oid, "big")
 
 
-def extract_idx(wrapper, idxs=None):
+def extract_idx(wrapper, idxs=None):  # noqa: C901
     """Extract all idx values from a wrapped indexable object.
 
     Iterates the dynamic ``IndexRegistry`` for indexes (using

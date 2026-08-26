@@ -16,6 +16,11 @@
   itself was missing from the repository, so GitHub reported "No license" and
   the terms could not be verified from the source tree alone. Fixes #208.
 
+- Enable ruff's cyclomatic-complexity check (`C901`, mccabe) with
+  `max-complexity = 15`. Three existing hotspots are marked with targeted
+  `# noqa: C901` as visible refactor candidates (`extract_idx` 23,
+  `_process_sort` 16, `_run_search` 16).
+
 ### Documentation
 
 - Add `cloud-vinyl` and `plone.observability` to the ecosystem navigation

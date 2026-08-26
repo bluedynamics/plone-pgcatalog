@@ -865,7 +865,7 @@ class _QueryBuilder:
 
     # -- sort ---------------------------------------------------------------
 
-    def _process_sort(self, sort_on_list, sort_order_list):
+    def _process_sort(self, sort_on_list, sort_order_list):  # noqa: C901
         """Build ORDER BY from one or more sort keys.
 
         Args:
