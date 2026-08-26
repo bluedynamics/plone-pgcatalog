@@ -2,6 +2,16 @@
 
 ## 1.0.0b73 (unreleased)
 
+### Internal
+
+- Refactor the three C901 complexity hotspots below the threshold and drop
+  their `# noqa: C901` markers (#212): `extract_idx` (23 → 1) now delegates to
+  phase helpers for index extraction, metadata extraction, and `@meta`
+  encoding; `_process_sort` (16 → 4) resolves each key via a dedicated
+  sort-expression helper; `_run_search` (16 → 4) gains helpers for query-key
+  stripping, change-counter lookup, SQL assembly, query logging, and total
+  count extraction. Behavior is unchanged.
+
 ### Fixed
 
 - Bump `hynek/build-and-inspect-python-package` from v2 to v3.0.1. Hatchling now

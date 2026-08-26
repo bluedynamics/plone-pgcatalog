@@ -124,7 +124,97 @@ def _build_results(rows, actual_count, catalog, lazy_conn):
     return results
 
 
-def _run_search(conn, query, catalog=None, lazy_conn=None):  # noqa: C901
+def _strip_query_control_keys(query, catalog):
+    """Drop query keys that aren't catalog indexes (ZCatalog-compat, #168).
+
+    plone.restapi @search forwards control params (metadata_fields, …) that
+    would otherwise become JSONB filters matching nothing → empty results.
+    Done before the cache key is computed so equivalent queries share a slot.
+    """
+    if catalog is None:
+        return query
+    try:
+        from plone.pgcatalog.query import strip_non_index_keys
+
+        return strip_non_index_keys(query, catalog.indexes())
+    except Exception:
+        log.warning(
+            "Could not filter non-index query keys; passing query through",
+            exc_info=True,
+        )
+        return query
+
+
+def _read_change_counter(conn, cache, catalog):
+    """Return the catalog change counter for cache validation, or None.
+
+    Uses pgcatalog_change_seq (incremented only on catalog writes) instead
+    of MAX(tid) which changes on every ZODB write (#94).
+    """
+    if cache.max_entries <= 0 or catalog is None:
+        return None
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT last_value FROM pgcatalog_change_seq")
+            row = cur.fetchone()
+        return row["last_value"] if row else None
+    except Exception:
+        log.warning("Query cache: change counter lookup failed", exc_info=True)
+        return None
+
+
+def _build_sql(qr, lazy_conn):
+    """Assemble the SELECT statement for a built query dict."""
+    has_limit = qr["limit"] is not None
+    if lazy_conn is not None:
+        cols = _SELECT_COLS_LAZY_COUNTED if has_limit else _SELECT_COLS_LAZY
+    else:
+        cols = _SELECT_COLS_EAGER_COUNTED if has_limit else _SELECT_COLS_EAGER
+
+    sql = f"SELECT {cols} FROM object_state WHERE {qr['where']}"
+    if qr["order_by"]:
+        sql += f" ORDER BY {qr['order_by']}"
+    if qr["limit"]:
+        sql += f" LIMIT {qr['limit']}"
+    if qr["offset"]:
+        sql += f" OFFSET {qr['offset']}"
+    return sql
+
+
+def _log_query(conn, query, qr, sql, duration_ms):
+    """Log slow queries (always) and all queries (when enabled)."""
+    is_slow = duration_ms > _SLOW_QUERY_MS
+    if not (is_slow or _log_all_queries_enabled()):
+        return
+    query_keys = sorted(query.keys())
+    msg = "SQL catalog query (%.2f ms): %s | params: %s | keys: %s"
+    msg = f"Slow {msg}" if is_slow else msg
+    logger = log.warning if is_slow else log.info
+
+    logger(
+        msg,
+        duration_ms,
+        sql,
+        _truncate_params_repr(qr["params"]),
+        query_keys or [],
+    )
+    if is_slow:
+        _record_slow_query(conn, query_keys, duration_ms, sql, qr["params"])
+
+
+def _split_total_count(rows, has_limit):
+    """Extract the window-function total count; strip it from the rows."""
+    if has_limit and rows:
+        first = rows[0]
+        actual_count = first["_total_count"] if isinstance(first, dict) else first[-1]
+        rows = [{k: v for k, v in r.items() if k != "_total_count"} for r in rows]
+        return rows, actual_count
+    if has_limit:
+        return rows, 0
+    return rows, None
+
+
+def _run_search(conn, query, catalog=None, lazy_conn=None):
     """Execute a prepared query dict and return CatalogSearchResults.
 
     Results are cached process-wide with TID-based invalidation.
@@ -146,35 +236,10 @@ def _run_search(conn, query, catalog=None, lazy_conn=None):  # noqa: C901
     from plone.pgcatalog.cache import _normalize_query as normalize_query
     from plone.pgcatalog.cache import get_query_cache
 
-    # #168: ignore query keys that aren't catalog indexes (ZCatalog-compat).
-    # plone.restapi @search forwards control params (metadata_fields, …) that
-    # would otherwise become JSONB filters matching nothing → empty results.
-    # Done before the cache key is computed so equivalent queries share a slot.
-    if catalog is not None:
-        try:
-            from plone.pgcatalog.query import strip_non_index_keys
-
-            query = strip_non_index_keys(query, catalog.indexes())
-        except Exception:
-            log.warning(
-                "Could not filter non-index query keys; passing query through",
-                exc_info=True,
-            )
+    query = _strip_query_control_keys(query, catalog)
 
     cache = get_query_cache()
-
-    # Get catalog change counter for cache validation.
-    # Uses pgcatalog_change_seq (incremented only on catalog writes) instead
-    # of MAX(tid) which changes on every ZODB write (#94).
-    current_tid = None
-    if cache.max_entries > 0 and catalog is not None:
-        try:
-            with conn.cursor() as cur:
-                cur.execute("SELECT last_value FROM pgcatalog_change_seq")
-                row = cur.fetchone()
-            current_tid = row["last_value"] if row else None
-        except Exception:
-            log.warning("Query cache: change counter lookup failed", exc_info=True)
+    current_tid = _read_change_counter(conn, cache, catalog)
 
     # Cache lookup
     cache_key = normalize_query(query)
@@ -186,20 +251,7 @@ def _run_search(conn, query, catalog=None, lazy_conn=None):  # noqa: C901
 
     # Cache miss — execute query
     qr = build_query(query)
-
-    has_limit = qr["limit"] is not None
-    if lazy_conn is not None:
-        cols = _SELECT_COLS_LAZY_COUNTED if has_limit else _SELECT_COLS_LAZY
-    else:
-        cols = _SELECT_COLS_EAGER_COUNTED if has_limit else _SELECT_COLS_EAGER
-
-    sql = f"SELECT {cols} FROM object_state WHERE {qr['where']}"
-    if qr["order_by"]:
-        sql += f" ORDER BY {qr['order_by']}"
-    if qr["limit"]:
-        sql += f" LIMIT {qr['limit']}"
-    if qr["offset"]:
-        sql += f" OFFSET {qr['offset']}"
+    sql = _build_sql(qr, lazy_conn)
 
     t0 = time.monotonic()
     with conn.cursor() as cur:
@@ -207,31 +259,9 @@ def _run_search(conn, query, catalog=None, lazy_conn=None):  # noqa: C901
         rows = cur.fetchall()
     duration_ms = (time.monotonic() - t0) * 1000
 
-    is_slow = duration_ms > _SLOW_QUERY_MS
-    log_all = _log_all_queries_enabled()
-    if is_slow or log_all:
-        query_keys = sorted(query.keys())
-        msg = "SQL catalog query (%.2f ms): %s | params: %s | keys: %s"
-        msg = f"Slow {msg}" if is_slow else msg
-        logger = log.warning if is_slow else log.info
+    _log_query(conn, query, qr, sql, duration_ms)
 
-        logger(
-            msg,
-            duration_ms,
-            sql,
-            _truncate_params_repr(qr["params"]),
-            query_keys or [],
-        )
-        if is_slow:
-            _record_slow_query(conn, query_keys, duration_ms, sql, qr["params"])
-
-    actual_count = None
-    if has_limit and rows:
-        first = rows[0]
-        actual_count = first["_total_count"] if isinstance(first, dict) else first[-1]
-        rows = [{k: v for k, v in r.items() if k != "_total_count"} for r in rows]
-    elif has_limit:
-        actual_count = 0
+    rows, actual_count = _split_total_count(rows, qr["limit"] is not None)
 
     # Store in cache
     if current_tid is not None:

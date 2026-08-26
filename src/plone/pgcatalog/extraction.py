@@ -117,40 +117,41 @@ def obj_to_zoid(obj):
     return int.from_bytes(oid, "big")
 
 
-def extract_idx(wrapper, idxs=None):  # noqa: C901
-    """Extract all idx values from a wrapped indexable object.
+def _lookup_source_value(wrapper, source_attrs):
+    """Return the first non-None attribute value, or ``_MISSING`` if no
+    attribute exists.
 
-    Iterates the dynamic ``IndexRegistry`` for indexes (using
-    ``source_attrs`` for attribute lookup) and metadata columns.
-    Indexes with ``idx_key=None`` (special: SearchableText,
-    effectiveRange, path) are skipped — they have dedicated columns.
-
-    PATH-type indexes with ``idx_key`` set (additional path indexes
-    like ``tgpath``) store the path value plus derived ``_parent``
-    and ``_depth`` keys in the idx JSONB.
+    Callables are called.  An attribute that exists but returns None keeps
+    the loop going; if no later attribute yields a value, None is returned
+    (not ``_MISSING``) — the attribute *was* applicable.
     """
-    registry = get_registry()
-    idx = {}
+    value = _MISSING
+    for attr in source_attrs:
+        try:
+            value = getattr(wrapper, attr)
+        except AttributeError:
+            continue
+        if callable(value):
+            value = value()
+        if value is not None:
+            break
+    return value
 
-    # Extract index values.
-    # AttributeError means "not applicable" (ZCatalog convention) — skip
-    # the key entirely instead of storing null (#81).
+
+def _extract_index_values(wrapper, registry, idxs):
+    """Extract idx values for all registered indexes.
+
+    AttributeError means "not applicable" (ZCatalog convention) — skip
+    the key entirely instead of storing null (#81).
+    """
+    idx = {}
     for name, (idx_type, idx_key, source_attrs) in registry.items():
         if idx_key is None:
             continue  # composite/special (path, SearchableText, effectiveRange)
         if idxs and name not in idxs:
             continue  # partial reindex — skip unrequested indexes
         try:
-            value = _MISSING
-            for attr in source_attrs:
-                try:
-                    value = getattr(wrapper, attr)
-                except AttributeError:
-                    continue
-                if callable(value):
-                    value = value()
-                if value is not None:
-                    break
+            value = _lookup_source_value(wrapper, source_attrs)
             if value is _MISSING:
                 continue  # attribute not found — don't store in idx
             if idx_type == IndexType.PATH:
@@ -164,13 +165,18 @@ def extract_idx(wrapper, idxs=None):  # noqa: C901
                 idx[idx_key] = convert_value(value)
         except Exception:
             log.debug("Extraction failed for index %r", name, exc_info=True)
+    return idx
 
-    # Extract metadata columns.
-    # JSON-native values (str, int, float, bool, None) go into top-level idx.
-    # Non-native values (DateTime, datetime, date, …) are collected separately,
-    # pickled as a dict, and stored under idx["@meta"] via the Rust codec.
-    # This preserves original types for brain attribute access while keeping
-    # index data in top-level idx for PG queries.
+
+def _extract_metadata_values(wrapper, registry, idxs, idx):
+    """Extract metadata columns into *idx*; return the non-native leftovers.
+
+    JSON-native values (str, int, float, bool, None) go into top-level idx.
+    Non-native values (DateTime, datetime, date, …) are collected in the
+    returned dict for ``_encode_meta``.  This preserves original types for
+    brain attribute access while keeping index data in top-level idx for
+    PG queries.
+    """
     meta_nonstandard = {}
     for meta_name in registry.metadata:
         if idxs and meta_name not in idxs:
@@ -192,15 +198,38 @@ def extract_idx(wrapper, idxs=None):  # noqa: C901
                 meta_nonstandard[meta_name] = value
         except Exception:
             log.debug("Extraction failed for metadata %r", meta_name, exc_info=True)
+    return meta_nonstandard
 
-    if meta_nonstandard:
-        try:
-            from zodb_json_codec import pickle_to_dict
 
-            pickled = pickle.dumps(meta_nonstandard, protocol=3)
-            idx["@meta"] = pickle_to_dict(pickled)
-        except Exception:
-            log.debug("Failed to encode @meta for pickle", exc_info=True)
+def _encode_meta(idx, meta_nonstandard):
+    """Pickle non-native metadata and store it as ``idx["@meta"]``."""
+    if not meta_nonstandard:
+        return
+    try:
+        from zodb_json_codec import pickle_to_dict
+
+        pickled = pickle.dumps(meta_nonstandard, protocol=3)
+        idx["@meta"] = pickle_to_dict(pickled)
+    except Exception:
+        log.debug("Failed to encode @meta for pickle", exc_info=True)
+
+
+def extract_idx(wrapper, idxs=None):
+    """Extract all idx values from a wrapped indexable object.
+
+    Iterates the dynamic ``IndexRegistry`` for indexes (using
+    ``source_attrs`` for attribute lookup) and metadata columns.
+    Indexes with ``idx_key=None`` (special: SearchableText,
+    effectiveRange, path) are skipped — they have dedicated columns.
+
+    PATH-type indexes with ``idx_key`` set (additional path indexes
+    like ``tgpath``) store the path value plus derived ``_parent``
+    and ``_depth`` keys in the idx JSONB.
+    """
+    registry = get_registry()
+    idx = _extract_index_values(wrapper, registry, idxs)
+    meta_nonstandard = _extract_metadata_values(wrapper, registry, idxs, idx)
+    _encode_meta(idx, meta_nonstandard)
 
     # IPGIndexTranslator fallback: custom extractors
     extract_from_translators(wrapper, idx, idxs=idxs)
