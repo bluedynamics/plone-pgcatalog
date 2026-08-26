@@ -364,60 +364,76 @@ class CatalogStateProcessor:
         blob_rows = {row["zoid"]: row["tid"] for row in cursor.fetchall()}
 
         # Step 2: resolve wrapper refs via object_state second hop
-        # (Dexterity NamedBlobFile/Image: content -> wrapper -> blob)
-        wrapper_to_inner = {}  # wrapper_oid -> list[inner_oid]
-        unresolved = all_refs - set(blob_rows)
-        if unresolved:
-            cursor.execute(
-                "SELECT DISTINCT ON (zoid) zoid, state FROM object_state "
-                "WHERE zoid = ANY(%(zoids)s) ORDER BY zoid, tid DESC",
-                {"zoids": list(unresolved)},
-            )
-            inner_refs = set()
-            for row in cursor.fetchall():
-                wrapper_oid, wrapper_state = row["zoid"], row["state"]
-                inner = _collect_ref_oids(wrapper_state)
-                if inner:
-                    wrapper_to_inner[wrapper_oid] = inner
-                    inner_refs.update(inner)
-
-            if inner_refs:
-                cursor.execute(
-                    "SELECT DISTINCT ON (zoid) zoid, tid FROM blob_state "
-                    "WHERE zoid = ANY(%(zoids)s) ORDER BY zoid, tid DESC",
-                    {"zoids": list(inner_refs)},
-                )
-                for row in cursor.fetchall():
-                    blob_rows[row["zoid"]] = row["tid"]
+        wrapper_to_inner = self._resolve_wrapper_refs(
+            cursor, all_refs - set(blob_rows), blob_rows
+        )
 
         if not blob_rows:
             return
 
         for c in candidates:
-            content_zoid = c["zoid"]
-            content_type = c.get("content_type")
-            for ref_zoid in c["blob_refs"]:
-                if ref_zoid in blob_rows:
-                    # Direct hit: content ref is a Blob OID
-                    self._insert_queue_row(
-                        cursor,
-                        content_zoid,
-                        ref_zoid,
-                        blob_rows[ref_zoid],
-                        content_type,
-                    )
-                elif ref_zoid in wrapper_to_inner:
-                    # Wrapper hit: content ref is a NamedBlob* wrapper;
-                    # enqueue for each resolvable inner Blob OID.
-                    for inner_zoid in wrapper_to_inner[ref_zoid]:
-                        if inner_zoid in blob_rows:
-                            self._insert_queue_row(
-                                cursor,
-                                content_zoid,
-                                inner_zoid,
-                                blob_rows[inner_zoid],
-                                content_type,
-                            )
+            self._enqueue_candidate(cursor, c, blob_rows, wrapper_to_inner)
+
+    def _resolve_wrapper_refs(self, cursor, unresolved, blob_rows):
+        """Second hop: resolve wrapper OIDs to their inner Blob OIDs.
+
+        (Dexterity NamedBlobFile/Image: content -> wrapper -> blob.)
+        Extends *blob_rows* with the inner Blob rows found and returns
+        the ``wrapper_oid -> list[inner_oid]`` mapping.
+        """
+        wrapper_to_inner = {}
+        if not unresolved:
+            return wrapper_to_inner
+
+        cursor.execute(
+            "SELECT DISTINCT ON (zoid) zoid, state FROM object_state "
+            "WHERE zoid = ANY(%(zoids)s) ORDER BY zoid, tid DESC",
+            {"zoids": list(unresolved)},
+        )
+        inner_refs = set()
+        for row in cursor.fetchall():
+            wrapper_oid, wrapper_state = row["zoid"], row["state"]
+            inner = _collect_ref_oids(wrapper_state)
+            if inner:
+                wrapper_to_inner[wrapper_oid] = inner
+                inner_refs.update(inner)
+
+        if inner_refs:
+            cursor.execute(
+                "SELECT DISTINCT ON (zoid) zoid, tid FROM blob_state "
+                "WHERE zoid = ANY(%(zoids)s) ORDER BY zoid, tid DESC",
+                {"zoids": list(inner_refs)},
+            )
+            for row in cursor.fetchall():
+                blob_rows[row["zoid"]] = row["tid"]
+        return wrapper_to_inner
+
+    def _enqueue_candidate(self, cursor, candidate, blob_rows, wrapper_to_inner):
+        """Insert queue rows for one content candidate's blob refs."""
+        content_zoid = candidate["zoid"]
+        content_type = candidate.get("content_type")
+        for ref_zoid in candidate["blob_refs"]:
+            if ref_zoid in blob_rows:
+                # Direct hit: content ref is a Blob OID
+                self._insert_queue_row(
+                    cursor,
+                    content_zoid,
+                    ref_zoid,
+                    blob_rows[ref_zoid],
+                    content_type,
+                )
+            elif ref_zoid in wrapper_to_inner:
+                # Wrapper hit: content ref is a NamedBlob* wrapper;
+                # enqueue for each resolvable inner Blob OID.
+                for inner_zoid in wrapper_to_inner[ref_zoid]:
+                    if inner_zoid in blob_rows:
+                        self._insert_queue_row(
+                            cursor,
+                            content_zoid,
+                            inner_zoid,
+                            blob_rows[inner_zoid],
+                            content_type,
+                        )
 
     def _insert_queue_row(self, cursor, zoid, blob_zoid, tid, content_type):
         cursor.execute(

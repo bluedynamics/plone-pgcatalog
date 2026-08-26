@@ -4,6 +4,13 @@
 
 ### Internal
 
+- Lower ruff's C901 max-complexity threshold from 15 to 13 as part of the
+  ecosystem-wide complexity ratchet, refactoring the two functions above the
+  new limit: `_enqueue_tika_jobs` (15 → 5, wrapper-ref resolution and
+  per-candidate enqueueing become dedicated methods) and `importToolset`
+  (15 → 5, required-tool filtering, forbidden-tool deletion, and
+  required-tool creation become module helpers). Behavior is unchanged.
+
 - Refactor the three C901 complexity hotspots below the threshold and drop
   their `# noqa: C901` markers (#212): `extract_idx` (23 → 1) now delegates to
   phase helpers for index extraction, metadata extraction, and `@meta`

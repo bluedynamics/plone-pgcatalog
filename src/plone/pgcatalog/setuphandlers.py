@@ -68,32 +68,53 @@ def importToolset(context):
     toolset = setup_tool.getToolsetRegistry()
     toolset.parseXML(xml, context.getEncoding())
 
-    # Remove portal_catalog from required tools before processing
-    had_catalog = False
-    if "portal_catalog" in {info["id"] for info in toolset.listRequiredToolInfo()}:
-        had_catalog = True
-        # Clear and re-add without portal_catalog
-        new_required = [
-            info
-            for info in toolset.listRequiredToolInfo()
-            if info["id"] != "portal_catalog"
-        ]
-        toolset._required.clear()
-        for info in new_required:
-            toolset.addRequiredTool(info["id"], info["class"])
-
+    had_catalog = _required_without_catalog(toolset)
     setup_tool._p_changed = True
 
     # Now process all tools except portal_catalog
+    _delete_forbidden_tools(site, toolset)
+    _ensure_required_tools(site, toolset)
+
+    # Re-add portal_catalog to the registry (for record-keeping) without
+    # actually touching the object
+    if had_catalog:
+        toolset.addRequiredTool(
+            "portal_catalog", "plone.pgcatalog.catalog.PlonePGCatalogTool"
+        )
+
+    log.info("Toolset imported (portal_catalog protected)")
+
+
+def _required_without_catalog(toolset):
+    """Remove portal_catalog from the required tools before processing.
+
+    Returns True when it was registered (so the caller re-adds it).
+    """
+    required = toolset.listRequiredToolInfo()
+    if "portal_catalog" not in {info["id"] for info in required}:
+        return False
+    # Clear and re-add without portal_catalog
+    new_required = [info for info in required if info["id"] != "portal_catalog"]
+    toolset._required.clear()
+    for info in new_required:
+        toolset.addRequiredTool(info["id"], info["class"])
+    return True
+
+
+def _delete_forbidden_tools(site, toolset):
+    """Delete every forbidden tool that exists on the site."""
     existing_ids = site.objectIds()
     for tool_id in toolset.listForbiddenTools():
         if tool_id in existing_ids:
             site._delObject(tool_id)
 
+
+def _ensure_required_tools(site, toolset):
+    """Create or replace each required tool (portal_catalog already removed)."""
+    from Products.GenericSetup.utils import _resolveDottedName
+
     for info in toolset.listRequiredToolInfo():
         tool_id = str(info["id"])
-        from Products.GenericSetup.utils import _resolveDottedName
-
         tool_class = _resolveDottedName(info["class"])
         if tool_class is None:
             continue
@@ -109,15 +130,6 @@ def importToolset(context):
         elif type(aq_base(existing_tool)) is not tool_class:
             site._delObject(tool_id)
             site._setObject(tool_id, tool_class())
-
-    # Re-add portal_catalog to the registry (for record-keeping) without
-    # actually touching the object
-    if had_catalog:
-        toolset.addRequiredTool(
-            "portal_catalog", "plone.pgcatalog.catalog.PlonePGCatalogTool"
-        )
-
-    log.info("Toolset imported (portal_catalog protected)")
 
 
 class _Extra:
