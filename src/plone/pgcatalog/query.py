@@ -865,7 +865,7 @@ class _QueryBuilder:
 
     # -- sort ---------------------------------------------------------------
 
-    def _process_sort(self, sort_on_list, sort_order_list):  # noqa: C901
+    def _process_sort(self, sort_on_list, sort_order_list):
         """Build ORDER BY from one or more sort keys.
 
         Args:
@@ -880,79 +880,82 @@ class _QueryBuilder:
         for i, sort_on in enumerate(sort_on_list):
             order_str = sort_order_list[min(i, len(sort_order_list) - 1)]
             direction = "DESC" if order_str in ("descending", "reverse") else "ASC"
-
-            entry = registry.get(sort_on)
-            if entry is None:
-                translator = _lookup_translator(sort_on)
-                if translator is not None:
-                    expr = translator.sort(sort_on)
-                    if expr is not None:
-                        parts.append(f"{expr} {direction}")
-                else:
-                    log.warning("Unknown sort index %r — ignoring", sort_on)
-                continue
-
-            idx_type, idx_key, _source_attrs = entry
-            # Built-in "path" sort lives in the typed `path` column (#132).
-            # Custom PATH indexes (e.g. "tgpath") still store data in idx JSONB.
-            if idx_type == IndexType.PATH and idx_key is None and sort_on == "path":
-                parts.append(f"path {direction}")
-                continue
-            if idx_key is None:
-                if idx_type == IndexType.PATH:
-                    idx_key = sort_on
-                elif sort_on == "effectiveRange":
-                    # DateRangeIndex has no single column; sort by the
-                    # effective date (the range's start), which is what
-                    # callers passing effectiveRange as a default sort
-                    # expect — instead of silently dropping it (#157).
-                    parts.append(
-                        f"pgcatalog_to_timestamptz(idx->>'effective') {direction}"
-                    )
-                    continue
-                elif sort_on == "SearchableText":
-                    # Sort by full-text relevance, reusing the rank the
-                    # auto-relevance path computes — but only when a
-                    # SearchableText term was actually queried (#157).
-                    rank_expr = getattr(self, "_text_rank_expr", None)
-                    if rank_expr is not None:
-                        parts.append(f"{rank_expr} {direction}")
-                    else:
-                        log.warning(
-                            "sort_on='SearchableText' without a SearchableText "
-                            "query term has no relevance rank to sort by — "
-                            "ignoring",
-                        )
-                    continue
-                else:
-                    log.warning("sort_on=%r is not sortable — ignoring", sort_on)
-                    continue
-
-            if idx_type == IndexType.DATE:
-                expr = f"pgcatalog_to_timestamptz(idx->>'{idx_key}')"
-            elif idx_type == IndexType.GOPIP:
-                expr = f"(idx->>'{idx_key}')::integer"
-            elif idx_type == IndexType.BOOLEAN:
-                expr = f"(idx->>'{idx_key}')::boolean"
-            elif _is_dedicated_text_array_column(idx_key):
-                # Value lives in a dedicated TEXT[] column, not idx JSONB, so
-                # idx->'key' would be a NULL no-op ordering (#157).
-                log.warning(
-                    "sort_on=%r maps to a dedicated TEXT[] column and cannot "
-                    "be used for ordering — ignoring",
-                    sort_on,
-                )
-                continue
-            else:
-                # jsonb operator `->` instead of text `->>` so PG uses type-aware
-                # comparison: numbers sort numerically, strings lexicographically
-                # (#158 — otherwise numeric FieldIndexes sort "10" < "2").
-                expr = f"idx->'{idx_key}'"
-
-            parts.append(f"{expr} {direction}")
+            expr = self._sort_expr(sort_on, registry)
+            if expr is not None:
+                parts.append(f"{expr} {direction}")
 
         if parts:
             self.order_by = ", ".join(parts)
+
+    def _sort_expr(self, sort_on, registry):
+        """Return the ORDER BY expression for one sort key, or None to skip."""
+        entry = registry.get(sort_on)
+        if entry is None:
+            return self._translator_sort_expr(sort_on)
+
+        idx_type, idx_key, _source_attrs = entry
+        if idx_key is None:
+            if idx_type == IndexType.PATH:
+                # Built-in "path" sort lives in the typed `path` column (#132).
+                # Custom PATH indexes (e.g. "tgpath") still store their data
+                # in idx JSONB under their own name.
+                if sort_on == "path":
+                    return "path"
+                idx_key = sort_on
+            elif sort_on == "effectiveRange":
+                # DateRangeIndex has no single column; sort by the
+                # effective date (the range's start), which is what
+                # callers passing effectiveRange as a default sort
+                # expect — instead of silently dropping it (#157).
+                return "pgcatalog_to_timestamptz(idx->>'effective')"
+            elif sort_on == "SearchableText":
+                # Sort by full-text relevance, reusing the rank the
+                # auto-relevance path computes — but only when a
+                # SearchableText term was actually queried (#157).
+                rank_expr = getattr(self, "_text_rank_expr", None)
+                if rank_expr is not None:
+                    return rank_expr
+                log.warning(
+                    "sort_on='SearchableText' without a SearchableText "
+                    "query term has no relevance rank to sort by — "
+                    "ignoring",
+                )
+                return None
+            else:
+                log.warning("sort_on=%r is not sortable — ignoring", sort_on)
+                return None
+
+        return self._typed_sort_expr(sort_on, idx_type, idx_key)
+
+    def _translator_sort_expr(self, sort_on):
+        """Sort expression from an IPGIndexTranslator, or None to skip."""
+        translator = _lookup_translator(sort_on)
+        if translator is None:
+            log.warning("Unknown sort index %r — ignoring", sort_on)
+            return None
+        return translator.sort(sort_on)  # may be None — not sortable
+
+    def _typed_sort_expr(self, sort_on, idx_type, idx_key):
+        """Sort expression for an idx-JSONB-backed key, or None to skip."""
+        if idx_type == IndexType.DATE:
+            return f"pgcatalog_to_timestamptz(idx->>'{idx_key}')"
+        if idx_type == IndexType.GOPIP:
+            return f"(idx->>'{idx_key}')::integer"
+        if idx_type == IndexType.BOOLEAN:
+            return f"(idx->>'{idx_key}')::boolean"
+        if _is_dedicated_text_array_column(idx_key):
+            # Value lives in a dedicated TEXT[] column, not idx JSONB, so
+            # idx->'key' would be a NULL no-op ordering (#157).
+            log.warning(
+                "sort_on=%r maps to a dedicated TEXT[] column and cannot "
+                "be used for ordering — ignoring",
+                sort_on,
+            )
+            return None
+        # jsonb operator `->` instead of text `->>` so PG uses type-aware
+        # comparison: numbers sort numerically, strings lexicographically
+        # (#158 — otherwise numeric FieldIndexes sort "10" < "2").
+        return f"idx->'{idx_key}'"
 
 
 # ---------------------------------------------------------------------------
