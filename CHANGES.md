@@ -4,6 +4,12 @@
 
 ### Internal
 
+- Add a `workflow_dispatch` trigger to the CI workflow so a run on `main`
+  can be started manually. Needed after a GitHub Actions outage left the
+  merge-commit CI run stuck in queue with no way to retrigger it (a
+  `startup_failure` run cannot be retried, and CI previously only ran on
+  push and pull_request events).
+
 - Lower ruff's C901 max-complexity threshold from 15 to 13 as part of the
   ecosystem-wide complexity ratchet, refactoring the two functions above the
   new limit: `_enqueue_tika_jobs` (15 → 5, wrapper-ref resolution and
