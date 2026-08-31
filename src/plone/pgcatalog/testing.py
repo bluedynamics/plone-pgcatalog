@@ -176,16 +176,23 @@ class PGCatalogPGFixture(Layer):
         components directly in Python to avoid genericsetup namespace
         issues with a fresh configuration context.
         """
+        from plone.folder.interfaces import IOrderableFolder
         from plone.pgcatalog.catalog import PlonePGCatalogTool
+        from plone.pgcatalog.gopip import container_modified
         from plone.pgcatalog.interfaces import IPGCatalogTool
         from plone.pgcatalog.move import install_move_handlers
+        from zope.component import provideHandler
         from zope.component import provideUtility
+        from zope.container.interfaces import IContainerModifiedEvent
 
         # Register IPGCatalogTool utility (normally via ZCML <utility>)
         provideUtility(PlonePGCatalogTool(), IPGCatalogTool)
 
         # Install move optimization handlers
         install_move_handlers()
+
+        # Register gopip resync subscriber (normally via ZCML <subscriber>)
+        provideHandler(container_modified, (IOrderableFolder, IContainerModifiedEvent))
 
     def _setup_plone_site(self):
         """Create a Plone site in the PG-backed database."""

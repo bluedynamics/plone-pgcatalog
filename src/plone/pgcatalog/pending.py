@@ -18,8 +18,10 @@ import transaction
 
 
 __all__ = [
+    "add_pending_gopip",
     "add_pending_move",
     "pop_all_partial_pending",
+    "pop_all_pending_gopip",
     "pop_all_pending_moves",
     "pop_pending",
     "set_partial_pending",
@@ -154,14 +156,52 @@ def pop_all_pending_moves():
     return result
 
 
+def _get_pending_gopip():
+    """Return the thread-local pending gopip orderings dict."""
+    try:
+        return _local.pending_gopip
+    except AttributeError:
+        _local.pending_gopip = {}
+        return _local.pending_gopip
+
+
+def add_pending_gopip(parent_path, ordered_ids):
+    """Register a container's desired child order for finalize().
+
+    Called by the gopip beforeCommitHook (plone.pgcatalog.gopip) once per
+    touched container per transaction; a later registration for the same
+    path wins.  finalize() turns each entry into a minimal set of rank
+    updates (see gopip.assign_ranks).
+
+    Args:
+        parent_path: the container's path (children's parent_path)
+        ordered_ids: child ids in the container's final order
+    """
+    _get_pending_gopip()[parent_path] = list(ordered_ids)
+    _ensure_joined()
+
+
+def pop_all_pending_gopip():
+    """Pop all pending gopip orderings, returning and clearing the dict.
+
+    Returns:
+        dict of {parent_path: [child_id, ...]}
+    """
+    pending = _get_pending_gopip()
+    result = dict(pending)
+    pending.clear()
+    return result
+
+
 @implementer(IDataManagerSavepoint)
 class PendingSavepoint:
     """Snapshot of pending catalog data for savepoint rollback."""
 
-    def __init__(self, snapshot, partial_snapshot, moves_snapshot):
+    def __init__(self, snapshot, partial_snapshot, moves_snapshot, gopip_snapshot):
         self._snapshot = snapshot
         self._partial_snapshot = partial_snapshot
         self._moves_snapshot = moves_snapshot
+        self._gopip_snapshot = gopip_snapshot
 
     def rollback(self):
         pending = _get_pending()
@@ -173,6 +213,9 @@ class PendingSavepoint:
         moves = _get_pending_moves()
         moves.clear()
         moves.extend(self._moves_snapshot)
+        gopip = _get_pending_gopip()
+        gopip.clear()
+        gopip.update(self._gopip_snapshot)
 
 
 @implementer(ISavepointDataManager)
@@ -194,12 +237,14 @@ class PendingDataManager:
             dict(_get_pending()),
             dict(_get_partial_pending()),
             list(_get_pending_moves()),
+            dict(_get_pending_gopip()),
         )
 
     def abort(self, transaction):
         _get_pending().clear()
         _get_partial_pending().clear()
         _get_pending_moves().clear()
+        _get_pending_gopip().clear()
         self._joined = False  # AbortSavepoint may have unjoined us
 
     def tpc_begin(self, transaction):
@@ -215,11 +260,13 @@ class PendingDataManager:
         _get_pending().clear()
         _get_partial_pending().clear()
         _get_pending_moves().clear()
+        _get_pending_gopip().clear()
 
     def tpc_abort(self, transaction):
         _get_pending().clear()
         _get_partial_pending().clear()
         _get_pending_moves().clear()
+        _get_pending_gopip().clear()
 
     def sortKey(self):
         return "~plone.pgcatalog.pending"

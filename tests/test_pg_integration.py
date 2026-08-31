@@ -1515,3 +1515,176 @@ class TestKeywordsVocabulary:
         vocab = KeywordsVocabularyFactory(portal)
         tokens = {term.value for term in vocab}
         assert "AT26" in tokens
+
+
+# ---------------------------------------------------------------------------
+# getObjPositionInParent resync after reorderings (#216)
+# ---------------------------------------------------------------------------
+#
+# plone.folder's GopipIndex is a *fake* index: ZCatalog resolves the
+# position at sort time from the container's ordering, which is why Plone
+# never reindexes siblings after a reordering.  pgcatalog sorts on the
+# stored snapshot ``(idx->>'getObjPositionInParent')::integer`` in SQL, so
+# it has to maintain that snapshot itself (subscriber + finalize resync,
+# see gopip.py).
+#
+# The stored values are sparse *ranks*, not dense ordinals — only their
+# order is observable (ZCatalog's GopipIndex is a StubIndex; the value is
+# neither queryable nor metadata).  Assertions here therefore check order,
+# plus the minimal-write guarantee that makes the design cheap on large
+# folders.
+
+
+def _stored_ranks(pg_functional, folder_path):
+    """{id: rank} for getObjPositionInParent as stored in PostgreSQL."""
+    rows = _query_pg(
+        pg_functional,
+        "SELECT path, (idx->>'getObjPositionInParent')::integer AS rank "
+        "FROM object_state WHERE parent_path = %s AND idx IS NOT NULL",
+        (folder_path,),
+    )
+    return {row[0].rsplit("/", 1)[-1]: row[1] for row in rows}
+
+
+def _stored_order(pg_functional, folder_path):
+    """Child ids ordered by their stored rank."""
+    ranks = _stored_ranks(pg_functional, folder_path)
+    return sorted(ranks, key=lambda cid: ranks[cid])
+
+
+def _make_gopip_folder(portal, object_ids=("one", "two", "three")):
+    setRoles(portal, TEST_USER_ID, ["Manager"])
+    portal.invokeFactory("Folder", "gopip")
+    folder = portal["gopip"]
+    for obj_id in object_ids:
+        folder.invokeFactory("Document", obj_id, title=obj_id)
+    transaction.commit()
+    return folder, "/".join(folder.getPhysicalPath())
+
+
+class TestGopipAfterReorder:
+    def test_move_to_top_syncs_order(self, pg_functional):
+        folder, folder_path = _make_gopip_folder(pg_functional["portal"])
+        before = _stored_ranks(pg_functional, folder_path)
+
+        folder.getOrdering().moveObjectsToTop(["three"])
+        transaction.commit()
+
+        assert folder.objectIds() == ["three", "one", "two"]  # sanity
+        assert _stored_order(pg_functional, folder_path) == ["three", "one", "two"]
+        # minimal-write guarantee: only the moved row was rewritten
+        after = _stored_ranks(pg_functional, folder_path)
+        changed = {cid for cid in after if after[cid] != before[cid]}
+        assert changed == {"three"}
+
+    def test_move_by_delta_syncs_order(self, pg_functional):
+        folder, folder_path = _make_gopip_folder(pg_functional["portal"])
+
+        folder.getOrdering().moveObjectsDown(["one"])
+        transaction.commit()
+
+        assert folder.objectIds() == ["two", "one", "three"]  # sanity
+        assert _stored_order(pg_functional, folder_path) == ["two", "one", "three"]
+
+    def test_delete_keeps_order_without_writes(self, pg_functional):
+        folder, folder_path = _make_gopip_folder(pg_functional["portal"])
+        before = _stored_ranks(pg_functional, folder_path)
+
+        folder.manage_delObjects(["one"])
+        transaction.commit()
+
+        assert _stored_order(pg_functional, folder_path) == ["two", "three"]
+        # deletes shift dense positions in ZODB terms, but ranks keep
+        # their gaps: the remaining siblings must not have been rewritten
+        after = _stored_ranks(pg_functional, folder_path)
+        assert after == {cid: before[cid] for cid in ("two", "three")}
+
+    def test_sort_on_gopip_query_order(self, pg_functional):
+        portal = pg_functional["portal"]
+        folder, folder_path = _make_gopip_folder(portal)
+        catalog = portal["portal_catalog"]
+
+        folder.getOrdering().moveObjectsToTop(["two"])
+        transaction.commit()
+
+        results = catalog.unrestrictedSearchResults(
+            path={"query": folder_path, "depth": 1},
+            sort_on="getObjPositionInParent",
+        )
+        assert [b.getId for b in results] == ["two", "one", "three"]
+
+        results = catalog.unrestrictedSearchResults(
+            path={"query": folder_path, "depth": 1},
+            sort_on="getObjPositionInParent",
+            sort_order="descending",
+        )
+        assert [b.getId for b in results] == ["three", "one", "two"]
+
+    def test_rename_keeps_position(self, pg_functional):
+        folder, folder_path = _make_gopip_folder(pg_functional["portal"])
+
+        folder.manage_renameObject("two", "renamed")
+        transaction.commit()
+
+        assert folder.objectIds() == ["one", "renamed", "three"]  # sanity
+        assert _stored_order(pg_functional, folder_path) == [
+            "one",
+            "renamed",
+            "three",
+        ]
+
+
+class TestGopipMaintenanceResync:
+    def test_resync_heals_stale_ranks(self, pg_functional):
+        """maintenance.resync_gopip heals folders corrupted before the fix.
+
+        Staleness is simulated by corrupting a rank directly in PG — no
+        ZODB transaction, so no event and no subscriber resync.
+        """
+        from plone.pgcatalog.maintenance import resync_gopip
+        from psycopg.rows import dict_row
+        from zodb_pgjsonb.testing import get_test_dsn
+
+        import psycopg
+
+        portal = pg_functional["portal"]
+        folder, folder_path = _make_gopip_folder(portal)
+
+        test_db = pg_functional["pgTestDB"]
+        with test_db.connection.cursor() as cur:
+            cur.execute(
+                "UPDATE object_state "
+                "SET idx = jsonb_set(idx, '{getObjPositionInParent}', '9999') "
+                "WHERE path = %s",
+                (folder_path + "/one",),
+            )
+            assert cur.rowcount == 1
+        assert _stored_order(pg_functional, folder_path) == ["two", "three", "one"]
+
+        root = portal.getPhysicalRoot()
+        with psycopg.connect(
+            get_test_dsn(), autocommit=True, row_factory=dict_row
+        ) as conn:
+            folders, rows = resync_gopip(root, conn)
+
+        assert folders >= 1
+        assert _stored_order(pg_functional, folder_path) == ["one", "two", "three"]
+
+    def test_resync_is_noop_when_in_sync(self, pg_functional):
+        from plone.pgcatalog.maintenance import resync_gopip
+        from psycopg.rows import dict_row
+        from zodb_pgjsonb.testing import get_test_dsn
+
+        import psycopg
+
+        portal = pg_functional["portal"]
+        folder, folder_path = _make_gopip_folder(portal)
+        before = _stored_ranks(pg_functional, folder_path)
+
+        with psycopg.connect(
+            get_test_dsn(), autocommit=True, row_factory=dict_row
+        ) as conn:
+            folders, rows = resync_gopip(portal.getPhysicalRoot(), conn)
+
+        assert (folders, rows) == (0, 0)
+        assert _stored_ranks(pg_functional, folder_path) == before
