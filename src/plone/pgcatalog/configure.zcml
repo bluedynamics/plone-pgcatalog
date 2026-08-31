@@ -40,6 +40,17 @@
       handler=".pool.release_request_connection"
       />
 
+  <!-- Resync getObjPositionInParent ranks when a container's ordering
+       changes (#216).  plone.folder's GopipIndex is a fake index that
+       ZCatalog resolves at sort time, so Plone never reindexes siblings
+       after a reorder; pgcatalog sorts on the stored snapshot and must
+       maintain it itself.  See src/plone/pgcatalog/gopip.py. -->
+  <subscriber
+      for="plone.folder.interfaces.IOrderableFolder
+           zope.container.interfaces.IContainerModifiedEvent"
+      handler=".gopip.container_modified"
+      />
+
   <!-- Filter malformed query rows (missing/None/non-string 'i') before
        plone.app.querystring.parseFormquery turns them into a
        parsedquery[None]=... entry that breaks catalog(**kw).  See

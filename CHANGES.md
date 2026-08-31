@@ -2,6 +2,29 @@
 
 ## 1.0.0b73 (unreleased)
 
+### Fixed
+
+- `getObjPositionInParent` no longer goes stale after a reordering. Plone
+  never reindexes siblings when a container's order changes (plone.folder's
+  `GopipIndex` is a fake index that ZCatalog resolves at sort time), so the
+  stored snapshot pgcatalog sorts on went stale on every reorder and every
+  delete — most visibly `folder_contents` showed the old order and its drag
+  & drop aborted with *"Client/server ordering mismatch"*. A subscriber on
+  `IContainerModifiedEvent` now snapshots the final ordering once per
+  transaction (beforeCommitHook) and `finalize()` resyncs the stored values
+  in the same PG transaction as the ZODB commit. Values are maintained as
+  sparse LexoRank-style ranks — only their *order* is observable (the
+  ZCatalog index is a `StubIndex`: not queryable, not metadata) — so a
+  prepend or drag & drop rewrites one row and a delete rewrites none,
+  instead of O(n) wide-tuple rewrites per operation in large folders. Sort
+  SQL, indexes (`idx_os_navtree` included) and the query cache are
+  unchanged, and existing dense positions are valid ranks (no migration).
+  Profile upgrade step 2→3 runs `maintenance.resync_gopip()` once to heal
+  folders that went stale before the fix. Known gap:
+  `IExplicitOrdering.orderObjects` fires no event in plone.folder (no
+  Plone UI path calls it). See `docs/plans/gopip-resync-on-reorder.md`.
+  #216
+
 ### Internal
 
 - Add a `workflow_dispatch` trigger to the CI workflow so a run on `main`

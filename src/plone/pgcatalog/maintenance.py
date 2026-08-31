@@ -5,6 +5,7 @@ requiring a Plone context.  Also contains the ``_CatalogCompat`` shim
 and the unsupported-method factory used by ``PlonePGCatalogTool``.
 """
 
+from Acquisition import aq_base
 from Acquisition import aq_inner
 from Acquisition import aq_parent
 from Acquisition import Implicit
@@ -109,6 +110,77 @@ def clear_catalog_data(conn):
 
     log.info("clear_catalog_data: cleared %d objects", count)
     return count
+
+
+def _traverse(base, path):
+    """Simplified fast unrestricted traverse (same as plone.folder.nogopip).
+
+    base: object to start from (usually the app root)
+    path: absolute path as string
+    returns: content at the end or None
+    """
+    current = base
+    for cid in path.split("/"):
+        if not cid:
+            continue
+        try:
+            current = current[cid]
+        except (AttributeError, KeyError, TypeError):
+            return None
+    return current
+
+
+def resync_gopip(root, conn):
+    """Heal stale getObjPositionInParent ranks for every ordered folder.
+
+    Snapshots written before the gopip resync subscriber existed (#216)
+    may be stale, and folder_contents drag & drop aborts on the resulting
+    order mismatch — so affected folders cannot even heal through the UI.
+
+    Walks every parent_path that has cataloged children, reads the
+    container's ordering from ZODB (annotations only, the children stay
+    ghosts), and applies the minimal rank diff.  Folders whose stored
+    order is already correct cost one read and zero writes.
+
+    Args:
+        root: the Zope application root
+        conn: psycopg connection (autocommit, e.g. from the pool)
+
+    Returns:
+        (folders_updated, rows_updated)
+    """
+    from plone.folder.interfaces import IExplicitOrdering
+    from plone.pgcatalog.gopip import sync_folder_ranks
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT DISTINCT parent_path FROM object_state "
+            "WHERE idx IS NOT NULL AND parent_path IS NOT NULL"
+        )
+        parent_paths = [row["parent_path"] for row in cur.fetchall()]
+
+    folders = rows = 0
+    for parent_path in sorted(parent_paths):
+        container = _traverse(root, parent_path)
+        if container is None:
+            continue
+        if getattr(aq_base(container), "getOrdering", None) is None:
+            continue
+        ordering = container.getOrdering()
+        if not IExplicitOrdering.providedBy(ordering):
+            continue
+        ordered_ids = ordering.idsInOrder()
+        if not ordered_ids:
+            continue
+        with conn.cursor() as cur:
+            updated = sync_folder_ranks(cur, parent_path, ordered_ids)
+        if updated:
+            folders += 1
+            rows += updated
+            log.info("resync_gopip: %s — %d rank rows updated", parent_path, updated)
+
+    log.info("resync_gopip: %d folders updated, %d rank rows total", folders, rows)
+    return folders, rows
 
 
 # ---------------------------------------------------------------------------

@@ -1,3 +1,4 @@
 <configure xmlns="http://namespaces.zope.org/zope">
   <include file="profile_2.zcml" />
+  <include file="profile_3.zcml" />
 </configure>

@@ -9,8 +9,10 @@ from plone.pgcatalog.backends import get_backend
 from plone.pgcatalog.columns import compute_path_info
 from plone.pgcatalog.columns import extract_extra_idx_columns
 from plone.pgcatalog.columns import get_extra_idx_columns
+from plone.pgcatalog.gopip import sync_folder_ranks
 from plone.pgcatalog.pending import _MISSING
 from plone.pgcatalog.pending import pop_all_partial_pending
+from plone.pgcatalog.pending import pop_all_pending_gopip
 from plone.pgcatalog.pending import pop_all_pending_moves
 from plone.pgcatalog.pending import pop_pending
 from plone.pgcatalog.schema import CATALOG_CHANGE_SEQ
@@ -312,6 +314,16 @@ class CatalogStateProcessor:
                 depth_delta,
             )
 
+        # Resync getObjPositionInParent ranks for containers whose ordering
+        # changed (#216).  Registered by the gopip subscriber via a
+        # beforeCommitHook; one read + minimal-write UPDATE per container.
+        # Must run after the bulk path moves so parent_path is final.
+        gopip_rows = 0
+        for parent_path, ordered_ids in pop_all_pending_gopip().items():
+            gopip_rows += sync_folder_ranks(cursor, parent_path, ordered_ids)
+        if gopip_rows:
+            log.debug("gopip resync: %d rank rows updated", gopip_rows)
+
         # Enqueue Tika extraction jobs for blobs in this transaction
         if TIKA_URL and self._tika_candidates:
             self._enqueue_tika_jobs(cursor)
@@ -319,7 +331,7 @@ class CatalogStateProcessor:
         # Increment catalog change counter if any catalog data was modified.
         # Used by the query cache instead of MAX(tid) — avoids invalidation
         # on non-catalog ZODB writes (scales, sessions, etc.) (#94).
-        catalog_changed = self._catalog_changed or partial or moves
+        catalog_changed = self._catalog_changed or partial or moves or gopip_rows
         self._catalog_changed = False
         if catalog_changed:
             try:
