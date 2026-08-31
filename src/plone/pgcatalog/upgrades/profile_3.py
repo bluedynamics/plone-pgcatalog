@@ -7,6 +7,10 @@ the UI.  This step runs ``maintenance.resync_gopip`` once so all ordered
 folders match their ZODB ordering again.
 """
 
+from Acquisition import aq_parent
+from plone.pgcatalog.interfaces import IPGCatalogTool
+from plone.pgcatalog.maintenance import resync_gopip
+
 import logging
 
 
@@ -20,10 +24,6 @@ def resync_gopip_ranks(context):
     portal_setup tool or an ImportContext).  No-ops when the active
     catalog is not the PG tool.
     """
-    from Acquisition import aq_parent
-    from plone.pgcatalog.interfaces import IPGCatalogTool
-    from plone.pgcatalog.maintenance import resync_gopip
-
     getSite = getattr(context, "getSite", None)
     site = getSite() if getSite is not None else aq_parent(context)
     if site is None:

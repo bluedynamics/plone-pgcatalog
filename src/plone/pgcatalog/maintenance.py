@@ -11,7 +11,9 @@ from Acquisition import aq_parent
 from Acquisition import Implicit
 from Persistence import Persistent
 from persistent.mapping import PersistentMapping
+from plone.folder.interfaces import IExplicitOrdering
 from plone.pgcatalog.backends import get_backend
+from plone.pgcatalog.gopip import sync_folder_ranks
 from plone.pgcatalog.indexing import reindex_object as _sql_reindex
 from plone.pgcatalog.pgindex import _maybe_wrap_index
 from psycopg import sql as pgsql
@@ -149,9 +151,6 @@ def resync_gopip(root, conn):
     Returns:
         (folders_updated, rows_updated)
     """
-    from plone.folder.interfaces import IExplicitOrdering
-    from plone.pgcatalog.gopip import sync_folder_ranks
-
     with conn.cursor() as cur:
         cur.execute(
             "SELECT DISTINCT parent_path FROM object_state "
