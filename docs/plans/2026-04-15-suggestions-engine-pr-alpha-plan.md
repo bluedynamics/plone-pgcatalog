@@ -696,9 +696,7 @@ def _build_btree_bundle(filter_fields, sort_field, existing_indexes):
     btree_pairs = [(name, idx_type) for (name, idx_type, _op, _val) in filter_fields]
 
     # Selectivity ordering (most selective first).
-    btree_pairs = sorted(
-        btree_pairs, key=lambda ft: _SELECTIVITY_ORDER.get(ft[1], 99)
-    )
+    btree_pairs = sorted(btree_pairs, key=lambda ft: _SELECTIVITY_ORDER.get(ft[1], 99))
 
     filter_cap = (
         _MAX_COMPOSITE_COLUMNS - 1 if sort_field is not None else _MAX_COMPOSITE_COLUMNS
@@ -751,7 +749,9 @@ def _build_btree_bundle(filter_fields, sort_field, existing_indexes):
     )
 
     bundle_name = "btree-" + "-".join(field_names)
-    rationale = f"Btree composite for filter shape BTREE_ONLY on {', '.join(field_names)}"
+    rationale = (
+        f"Btree composite for filter shape BTREE_ONLY on {', '.join(field_names)}"
+    )
     return Bundle(
         name=bundle_name,
         rationale=rationale,
@@ -886,7 +886,8 @@ def _build_keyword_gin_bundle(filter_fields, partial_where_terms, existing_index
         return None
 
     keyword_fields = [
-        (name, idx_type) for (name, idx_type, _op, _val) in filter_fields
+        (name, idx_type)
+        for (name, idx_type, _op, _val) in filter_fields
         if idx_type == IndexType.KEYWORD
     ]
     if not keyword_fields:
@@ -916,7 +917,8 @@ def _build_keyword_gin_bundle(filter_fields, partial_where_terms, existing_index
         )
         reason_detail = (
             f"partial GIN scoped by {len(partial_where_terms)} predicate(s)"
-            if partial_where_terms else "plain GIN"
+            if partial_where_terms
+            else "plain GIN"
         )
         reason = f"{reason_detail.capitalize()} for KEYWORD field '{name}'"
         status = _check_covered(ddl, existing_indexes)
@@ -1180,6 +1182,7 @@ def test_single_field_returns_single_btree(self):
     assert len(result) == 1
     ...
 
+
 # After
 def test_single_field_returns_single_btree(self):
     registry = _reg(portal_type=IndexType.FIELD)
@@ -1199,54 +1202,54 @@ Find `manage_get_slow_query_stats` (around line 1175). The current body builds a
 Replace the result-building loop with this shape (the SQL block stays unchanged):
 
 ```python
-        result = []
-        for row in rows:
-            keys = row["query_keys"]
-            params = row["representative_params"]
-            bundles = suggest_indexes(
-                keys, params, registry, existing, conn=pg_conn
-            )
-            # Back-compat flat list for the existing DTML.
-            flat_suggestions = []
-            for bundle in bundles:
-                for member in bundle.members:
-                    flat_suggestions.append({
-                        "fields": member.fields,
-                        "field_types": member.field_types,
-                        "ddl": member.ddl,
-                        "status": member.status,
-                        "reason": member.reason,
-                    })
-            result.append(
+result = []
+for row in rows:
+    keys = row["query_keys"]
+    params = row["representative_params"]
+    bundles = suggest_indexes(keys, params, registry, existing, conn=pg_conn)
+    # Back-compat flat list for the existing DTML.
+    flat_suggestions = []
+    for bundle in bundles:
+        for member in bundle.members:
+            flat_suggestions.append(
                 {
-                    "query_keys": ", ".join(keys),
-                    "count": row["cnt"],
-                    "avg_ms": float(row["avg_ms"]),
-                    "max_ms": float(row["max_ms"]),
-                    "last_seen": str(row["last_seen"])[:19],
-                    "suggestions": flat_suggestions,
-                    "suggestions_bundles": [
-                        {
-                            "name": b.name,
-                            "rationale": b.rationale,
-                            "shape_classification": b.shape_classification,
-                            "members": [
-                                {
-                                    "ddl": m.ddl,
-                                    "fields": m.fields,
-                                    "field_types": m.field_types,
-                                    "status": m.status,
-                                    "role": m.role,
-                                    "reason": m.reason,
-                                }
-                                for m in b.members
-                            ],
-                        }
-                        for b in bundles
-                    ],
+                    "fields": member.fields,
+                    "field_types": member.field_types,
+                    "ddl": member.ddl,
+                    "status": member.status,
+                    "reason": member.reason,
                 }
             )
-        return result
+    result.append(
+        {
+            "query_keys": ", ".join(keys),
+            "count": row["cnt"],
+            "avg_ms": float(row["avg_ms"]),
+            "max_ms": float(row["max_ms"]),
+            "last_seen": str(row["last_seen"])[:19],
+            "suggestions": flat_suggestions,
+            "suggestions_bundles": [
+                {
+                    "name": b.name,
+                    "rationale": b.rationale,
+                    "shape_classification": b.shape_classification,
+                    "members": [
+                        {
+                            "ddl": m.ddl,
+                            "fields": m.fields,
+                            "field_types": m.field_types,
+                            "status": m.status,
+                            "role": m.role,
+                            "reason": m.reason,
+                        }
+                        for m in b.members
+                    ],
+                }
+                for b in bundles
+            ],
+        }
+    )
+return result
 ```
 
 **Important:** `suggest_indexes(..., conn=pg_conn)` must be called inside the `try/with pool.getconn()` block *before* `pool.putconn(pg_conn)` — i.e. inside the existing `try:` block, not after. Structurally: the cursor and fetch happen, rows are read, the conn is still live when we call `suggest_indexes(..., conn=pg_conn)` → bundles come back → then the `finally: pool.putconn(pg_conn)` returns the conn. The above loop must therefore live **before** `pool.putconn(pg_conn)`.
@@ -1562,8 +1565,7 @@ def _probe_selectivity(conn, key, value):
         )
         count = cur.fetchone()["c"]
         cur.execute(
-            "SELECT reltuples::bigint AS t FROM pg_class "
-            "WHERE relname = 'object_state'"
+            "SELECT reltuples::bigint AS t FROM pg_class WHERE relname = 'object_state'"
         )
         total = max(cur.fetchone()["t"], 1)
     sel = count / total
@@ -2032,12 +2034,12 @@ def _build_hybrid_bundle(
     on shape == MIXED, but guard anyway).
     """
     btree_candidates = [
-        (n, t, op, v) for (n, t, op, v) in filter_fields
+        (n, t, op, v)
+        for (n, t, op, v) in filter_fields
         if t != IndexType.KEYWORD and t != IndexType.TEXT
     ]
     keyword_candidates = [
-        (n, t, op, v) for (n, t, op, v) in filter_fields
-        if t == IndexType.KEYWORD
+        (n, t, op, v) for (n, t, op, v) in filter_fields if t == IndexType.KEYWORD
     ]
 
     if not btree_candidates and not keyword_candidates:
@@ -2066,9 +2068,7 @@ def _build_hybrid_bundle(
         f"+ GIN covers {', '.join(f for (f, _, _, _) in keyword_candidates)}"
     )
     if partial_where_terms:
-        rationale += (
-            f"; partial predicate scopes GIN by {len(partial_where_terms)} equality filter(s)"
-        )
+        rationale += f"; partial predicate scopes GIN by {len(partial_where_terms)} equality filter(s)"
     return Bundle(
         name=bundle_name,
         rationale=rationale,

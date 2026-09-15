@@ -78,6 +78,7 @@ from persistent.mapping import PersistentMapping
 def _fresh_compat():
     """Build a _CatalogCompat with no catalog parent (tests defensive path)."""
     from plone.pgcatalog.maintenance import _CatalogCompat
+
     return _CatalogCompat()
 
 
@@ -90,6 +91,7 @@ def _bind_to_catalog(compat, catalog):
 
 
 # ── Wrapper contract when no catalog context is reachable ─────────────────
+
 
 class TestViewWithoutCatalog:
     def test_view_returns_raw_on_getitem_when_no_catalog(self):
@@ -122,6 +124,7 @@ class TestViewWithoutCatalog:
 
 # ── Wrapper contract with a PG catalog parent — indexes get wrapped ──────
 
+
 class TestViewWithPgCatalog:
     def _setup(self, pg_conn_with_catalog):
         """Build a PlonePGCatalogTool + _CatalogCompat chained by Acquisition."""
@@ -140,6 +143,7 @@ class TestViewWithPgCatalog:
 
     def test_getitem_returns_pg_index(self, pg_conn_with_catalog):
         from plone.pgcatalog.pgindex import PGIndex
+
         tool = self._setup(pg_conn_with_catalog)
         raw = self._register_field_index(tool, "portal_type")
 
@@ -150,6 +154,7 @@ class TestViewWithPgCatalog:
 
     def test_get_returns_pg_index(self, pg_conn_with_catalog):
         from plone.pgcatalog.pgindex import PGIndex
+
         tool = self._setup(pg_conn_with_catalog)
         self._register_field_index(tool, "portal_type")
 
@@ -163,6 +168,7 @@ class TestViewWithPgCatalog:
 
     def test_items_yields_wrapped(self, pg_conn_with_catalog):
         from plone.pgcatalog.pgindex import PGIndex
+
         tool = self._setup(pg_conn_with_catalog)
         self._register_field_index(tool, "a")
         self._register_field_index(tool, "b")
@@ -174,6 +180,7 @@ class TestViewWithPgCatalog:
 
     def test_values_yields_wrapped(self, pg_conn_with_catalog):
         from plone.pgcatalog.pgindex import PGIndex
+
         tool = self._setup(pg_conn_with_catalog)
         self._register_field_index(tool, "a")
 
@@ -184,6 +191,7 @@ class TestViewWithPgCatalog:
     def test_special_index_not_wrapped(self, pg_conn_with_catalog):
         """`idx_key=None` indexes (path, SearchableText, effectiveRange) return raw."""
         from plone.pgcatalog.columns import get_registry, IndexType
+
         registry = get_registry()
         registry.register("path", IndexType.PATH, None)
 
@@ -197,6 +205,7 @@ class TestViewWithPgCatalog:
 
 
 # ── Mutations go to raw mapping, no wrapping ────────────────────────────
+
 
 class TestViewMutations:
     def test_setitem_writes_to_raw(self):
@@ -218,6 +227,7 @@ class TestViewMutations:
 
 
 # ── Upgrade step migrates legacy persisted state ────────────────────────
+
 
 class TestProfileUpgradeV1ToV2:
     def test_migrate_moves_indexes_attr_to_raw_indexes(self):
@@ -265,6 +275,7 @@ class TestProfileUpgradeV1ToV2:
 
 
 # ── getIndex still works (existing API) ────────────────────────────────
+
 
 class TestGetIndexMethod:
     def test_get_index_via_method(self, pg_conn_with_catalog):
@@ -530,9 +541,7 @@ def migrate_catalog_indexes(context):
     """
     compat = _resolve_compat(context)
     if compat is None:
-        log.warning(
-            "migrate_catalog_indexes: no _CatalogCompat found; skipping"
-        )
+        log.warning("migrate_catalog_indexes: no _CatalogCompat found; skipping")
         return
 
     state = compat.__dict__
@@ -555,6 +564,7 @@ def migrate_catalog_indexes(context):
             "creating empty _raw_indexes"
         )
         from persistent.mapping import PersistentMapping
+
         state["_raw_indexes"] = PersistentMapping()
         compat._p_changed = True
         return
@@ -563,8 +573,7 @@ def migrate_catalog_indexes(context):
     state["_raw_indexes"] = legacy
     compat._p_changed = True
     log.info(
-        "migrate_catalog_indexes: renamed 'indexes' → '_raw_indexes' "
-        "(%d entries)",
+        "migrate_catalog_indexes: renamed 'indexes' → '_raw_indexes' (%d entries)",
         len(legacy),
     )
 

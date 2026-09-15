@@ -216,7 +216,9 @@ Or via script:
 ```python
 catalog = portal.portal_catalog
 catalog.clearFindAndRebuild()
-import transaction; transaction.commit()
+import transaction
+
+transaction.commit()
 ```
 
 After the rebuild, the worker processes enqueued jobs.

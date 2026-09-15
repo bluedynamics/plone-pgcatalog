@@ -28,54 +28,53 @@
 Insert these new methods at the end of `TestSuggestIndexes` (after `test_gopip_skipped` at ~line 234).  These reproduce the two observed detection failures.
 
 ```python
-    def test_mixed_case_name_already_covered(self):
-        """Mixed-case field name should match existing lowercased PG index.
+def test_mixed_case_name_already_covered(self):
+    """Mixed-case field name should match existing lowercased PG index.
 
-        Regression for #119: `_check_covered` Check 1 was case-sensitive
-        but PostgreSQL folds unquoted identifiers to lowercase in
-        `pg_indexes.indexname`.
-        """
-        registry = _reg(Language=IndexType.FIELD)
-        # PG stores unquoted identifiers lowercased in pg_indexes.
-        existing = {
-            "idx_os_sug_language": (
-                "CREATE INDEX idx_os_sug_language ON public.object_state "
-                "USING btree (((idx ->> 'Language'::text))) "
-                "WHERE (idx IS NOT NULL)"
-            )
-        }
-        result = suggest_indexes(["Language"], registry, existing)
-        assert all(s["status"] == "already_covered" for s in result)
-
-    def test_composite_already_covered_by_pg_normalized_indexdef(self):
-        """Composite suggestion detects equivalent PG-stored indexdef.
-
-        Regression for #119: `_normalize_idx_expr` did not normalize
-        whitespace around `->>`, so the generated form and the
-        PG-stored form didn't compare as equal even after the existing
-        normalization passes.
-        """
-        registry = _reg(
-            Language=IndexType.FIELD,
-            portal_type=IndexType.FIELD,
-            end=IndexType.DATE,
+    Regression for #119: `_check_covered` Check 1 was case-sensitive
+    but PostgreSQL folds unquoted identifiers to lowercase in
+    `pg_indexes.indexname`.
+    """
+    registry = _reg(Language=IndexType.FIELD)
+    # PG stores unquoted identifiers lowercased in pg_indexes.
+    existing = {
+        "idx_os_sug_language": (
+            "CREATE INDEX idx_os_sug_language ON public.object_state "
+            "USING btree (((idx ->> 'Language'::text))) "
+            "WHERE (idx IS NOT NULL)"
         )
-        # Real indexdef text captured from pg_indexes after a successful
-        # apply of this exact composite suggestion.
-        existing = {
-            "idx_os_sug_language_portal_type_end": (
-                "CREATE INDEX idx_os_sug_language_portal_type_end "
-                "ON public.object_state USING btree ("
-                "((idx ->> 'Language'::text)), "
-                "((idx ->> 'portal_type'::text)), "
-                "pgcatalog_to_timestamptz((idx ->> 'end'::text))"
-                ") WHERE (idx IS NOT NULL)"
-            )
-        }
-        result = suggest_indexes(
-            ["Language", "portal_type", "end"], registry, existing
+    }
+    result = suggest_indexes(["Language"], registry, existing)
+    assert all(s["status"] == "already_covered" for s in result)
+
+
+def test_composite_already_covered_by_pg_normalized_indexdef(self):
+    """Composite suggestion detects equivalent PG-stored indexdef.
+
+    Regression for #119: `_normalize_idx_expr` did not normalize
+    whitespace around `->>`, so the generated form and the
+    PG-stored form didn't compare as equal even after the existing
+    normalization passes.
+    """
+    registry = _reg(
+        Language=IndexType.FIELD,
+        portal_type=IndexType.FIELD,
+        end=IndexType.DATE,
+    )
+    # Real indexdef text captured from pg_indexes after a successful
+    # apply of this exact composite suggestion.
+    existing = {
+        "idx_os_sug_language_portal_type_end": (
+            "CREATE INDEX idx_os_sug_language_portal_type_end "
+            "ON public.object_state USING btree ("
+            "((idx ->> 'Language'::text)), "
+            "((idx ->> 'portal_type'::text)), "
+            "pgcatalog_to_timestamptz((idx ->> 'end'::text))"
+            ") WHERE (idx IS NOT NULL)"
         )
-        assert all(s["status"] == "already_covered" for s in result)
+    }
+    result = suggest_indexes(["Language", "portal_type", "end"], registry, existing)
+    assert all(s["status"] == "already_covered" for s in result)
 ```
 
 Both tests exist to fail before the fix and pass after.
@@ -290,41 +289,39 @@ Locate this existing block:
 Replace it with:
 
 ```python
-        # Pre-flight: query pg_index for any index with this name.
-        # Three cases:
-        #   - valid index exists: idempotent success no-op (#119)
-        #   - INVALID index from aborted CIC: drop and retry
-        #   - no index: proceed to CREATE INDEX
-        # relname is always lowercase in pg_class; match case-insensitively.
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT i.indisvalid FROM pg_index i "
-                "JOIN pg_class c ON c.oid = i.indexrelid "
-                "WHERE c.relname = %s",
-                (idx_name.lower(),),
-            )
-            row = cur.fetchone()
-        if row is not None:
-            # psycopg returns dict_row or tuple_row depending on the
-            # caller's factory — handle both.
-            is_valid = (
-                row["indisvalid"] if hasattr(row, "keys") else row[0]
-            )
-            if is_valid:
-                log.info(
-                    "Index %s already exists and is valid — no-op",
-                    idx_name,
-                )
-                return (
-                    True,
-                    f"Index {idx_name} already exists (no-op)",
-                    0.0,
-                )
-            log.warning(
-                "Dropping INVALID index %s (aborted previous build)",
-                idx_name,
-            )
-            conn.execute(f"DROP INDEX CONCURRENTLY IF EXISTS {idx_name}")
+# Pre-flight: query pg_index for any index with this name.
+# Three cases:
+#   - valid index exists: idempotent success no-op (#119)
+#   - INVALID index from aborted CIC: drop and retry
+#   - no index: proceed to CREATE INDEX
+# relname is always lowercase in pg_class; match case-insensitively.
+with conn.cursor() as cur:
+    cur.execute(
+        "SELECT i.indisvalid FROM pg_index i "
+        "JOIN pg_class c ON c.oid = i.indexrelid "
+        "WHERE c.relname = %s",
+        (idx_name.lower(),),
+    )
+    row = cur.fetchone()
+if row is not None:
+    # psycopg returns dict_row or tuple_row depending on the
+    # caller's factory — handle both.
+    is_valid = row["indisvalid"] if hasattr(row, "keys") else row[0]
+    if is_valid:
+        log.info(
+            "Index %s already exists and is valid — no-op",
+            idx_name,
+        )
+        return (
+            True,
+            f"Index {idx_name} already exists (no-op)",
+            0.0,
+        )
+    log.warning(
+        "Dropping INVALID index %s (aborted previous build)",
+        idx_name,
+    )
+    conn.execute(f"DROP INDEX CONCURRENTLY IF EXISTS {idx_name}")
 ```
 
 - [ ] **Step 2: Add unit tests for `apply_index` pre-flight with a mock conn**
@@ -401,9 +398,7 @@ class TestApplyIndexPreflight:
         assert success is True
         executed_sqls = [c.args[0] for c in conn.execute.call_args_list]
         # No DROP, just CREATE
-        assert not any(
-            "DROP INDEX CONCURRENTLY IF EXISTS" in s for s in executed_sqls
-        )
+        assert not any("DROP INDEX CONCURRENTLY IF EXISTS" in s for s in executed_sqls)
         assert any("CREATE INDEX CONCURRENTLY" in s for s in executed_sqls)
 ```
 

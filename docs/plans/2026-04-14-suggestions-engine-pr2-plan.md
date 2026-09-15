@@ -170,9 +170,7 @@ In `tests/test_suggestions.py`, **add** (don't replace) this test inside `class 
 def test_pagination_meta_dropped(self):
     """b_size / b_start are pagination-meta — never appear in suggestions."""
     registry = _reg(portal_type=IndexType.FIELD)
-    result = suggest_indexes(
-        ["portal_type", "b_size", "b_start"], None, registry, {}
-    )
+    result = suggest_indexes(["portal_type", "b_size", "b_start"], None, registry, {})
     for s in result:
         assert "b_size" not in s["fields"]
         assert "b_start" not in s["fields"]
@@ -371,9 +369,7 @@ Add to `class TestSuggestIndexes`:
 def test_effective_range_expands_to_effective(self):
     """effectiveRange in query keys yields a composite mentioning effective."""
     registry = _reg(portal_type=IndexType.FIELD)
-    result = suggest_indexes(
-        ["portal_type", "effectiveRange"], None, registry, {}
-    )
+    result = suggest_indexes(["portal_type", "effectiveRange"], None, registry, {})
     new = [s for s in result if s["status"] == "new"]
     assert len(new) == 1
     # The composite should include the 'effective' DATE contributor
@@ -382,12 +378,11 @@ def test_effective_range_expands_to_effective(self):
     assert "effective" in new[0]["fields"]
     assert "pgcatalog_to_timestamptz(idx->>'effective')" in new[0]["ddl"]
 
+
 def test_effective_range_narrow_no_expires(self):
     """Narrow expansion — expires is NOT added to the composite."""
     registry = _reg(portal_type=IndexType.FIELD)
-    result = suggest_indexes(
-        ["portal_type", "effectiveRange"], None, registry, {}
-    )
+    result = suggest_indexes(["portal_type", "effectiveRange"], None, registry, {})
     for s in result:
         assert "expires" not in s["fields"]
         assert "'expires'" not in s["ddl"]
@@ -468,9 +463,9 @@ class TestExtractSortField:
         from plone.pgcatalog.suggestions import _extract_sort_field
 
         registry = _reg(getObjPositionInParent=IndexType.GOPIP)
-        assert _extract_sort_field(
-            {"sort_on": "getObjPositionInParent"}, registry
-        ) is None
+        assert (
+            _extract_sort_field({"sort_on": "getObjPositionInParent"}, registry) is None
+        )
 ```
 
 - [ ] **Step 2: Run to verify the tests fail**
@@ -572,9 +567,11 @@ def test_sort_on_appends_trailing_column(self):
     assert new[0]["fields"] == ["portal_type", "effective"]
     ddl = new[0]["ddl"]
     # The last expression in the composite must be the DATE cover column.
-    assert ddl.index("pgcatalog_to_timestamptz(idx->>'effective')") > \
-        ddl.index("(idx->>'portal_type')")
+    assert ddl.index("pgcatalog_to_timestamptz(idx->>'effective')") > ddl.index(
+        "(idx->>'portal_type')"
+    )
     assert "ORDER BY effective" in new[0]["reason"]
+
 
 def test_sort_on_deduped_when_already_leading(self):
     """Sort field already present as filter column — not appended twice."""
@@ -593,6 +590,7 @@ def test_sort_on_deduped_when_already_leading(self):
     # effective appears exactly once in the fields list
     assert new[0]["fields"].count("effective") == 1
 
+
 def test_sort_on_ignored_for_non_composite_type(self):
     """Sort on a TEXT field does not add a trailing column."""
     registry = _reg(
@@ -609,6 +607,7 @@ def test_sort_on_ignored_for_non_composite_type(self):
     # Only a single-column btree suggestion for portal_type — no Title.
     assert all("Title" not in s["fields"] for s in new)
 
+
 def test_sort_on_unknown_field_ignored(self):
     """Sort on an unregistered field produces no covering column, no crash."""
     registry = _reg(portal_type=IndexType.FIELD)
@@ -621,6 +620,7 @@ def test_sort_on_unknown_field_ignored(self):
     new = [s for s in result if s["status"] == "new"]
     assert len(new) == 1
     assert new[0]["fields"] == ["portal_type"]
+
 
 def test_composite_cap_includes_sort(self):
     """Three filter fields + sort → filter list truncated to 2, sort appended."""
@@ -641,6 +641,7 @@ def test_composite_cap_includes_sort(self):
     assert len(new[0]["fields"]) == 3
     # effective must be the trailing element.
     assert new[0]["fields"][-1] == "effective"
+
 
 def test_issue_122_pattern(self):
     """Regression for #122: portal_type + effectiveRange + sort_on=effective.
@@ -665,6 +666,7 @@ def test_issue_122_pattern(self):
     ddl = new[0]["ddl"]
     assert "(idx->>'portal_type')" in ddl
     assert "pgcatalog_to_timestamptz(idx->>'effective')" in ddl
+
 
 def test_params_none_behaves_as_before(self):
     """Passing params=None is equivalent to the pre-PR-2 behavior."""
@@ -711,7 +713,9 @@ def _add_btree_suggestions(btree_fields, sort_field, existing_indexes, suggestio
         suggestions: output list to append the resulting dict to.
     """
     # Sort filters by selectivity (most selective first).
-    btree_fields = sorted(btree_fields, key=lambda ft: _SELECTIVITY_ORDER.get(ft[1], 99))
+    btree_fields = sorted(
+        btree_fields, key=lambda ft: _SELECTIVITY_ORDER.get(ft[1], 99)
+    )
 
     # Reserve one slot for sort_field if present.  Cap stays 3 total.
     if sort_field is not None:
@@ -787,21 +791,19 @@ In `suggest_indexes`, replace the final block (currently:
 ) with:
 
 ```python
-    # Extract sort field for covering trailing column (if any).
-    sort_field = _extract_sort_field(params, registry)
+# Extract sort field for covering trailing column (if any).
+sort_field = _extract_sort_field(params, registry)
 
-    # Build composite from btree-eligible fields plus optional sort cover.
-    if btree_fields or sort_field is not None:
-        # When there are no filter columns but there IS a sort field,
-        # we do not emit a sort-only suggestion — a btree on sort alone
-        # does not accelerate a filter-less query in a meaningful way.
-        # Require at least one filter column.
-        if btree_fields:
-            _add_btree_suggestions(
-                btree_fields, sort_field, existing_indexes, suggestions
-            )
+# Build composite from btree-eligible fields plus optional sort cover.
+if btree_fields or sort_field is not None:
+    # When there are no filter columns but there IS a sort field,
+    # we do not emit a sort-only suggestion — a btree on sort alone
+    # does not accelerate a filter-less query in a meaningful way.
+    # Require at least one filter column.
+    if btree_fields:
+        _add_btree_suggestions(btree_fields, sort_field, existing_indexes, suggestions)
 
-    return suggestions
+return suggestions
 ```
 
 - [ ] **Step 6: Run the new and regression tests**

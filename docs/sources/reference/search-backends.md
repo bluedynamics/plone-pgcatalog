@@ -192,6 +192,6 @@ if `detect_and_set_backend()` has not been called.
 ```python
 from plone.pgcatalog.backends import set_backend, reset_backend
 
-set_backend(my_backend)   # Set a custom backend
-reset_backend()           # Reset to default (TsvectorBackend)
+set_backend(my_backend)  # Set a custom backend
+reset_backend()  # Reset to default (TsvectorBackend)
 ```

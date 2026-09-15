@@ -81,6 +81,7 @@ PATH_KEYS_IN_IDX = ("path", "path_parent", "path_depth")
 
 # ── 1. Writer side: idx must not contain the path keys ────────────────────
 
+
 class TestWriterDoesNotDuplicatePath:
     """After the cleanup, writers must NOT put path/path_parent/path_depth
     into idx JSONB.  Typed columns carry these values.
@@ -107,7 +108,9 @@ class TestWriterDoesNotDuplicatePath:
                 f"{key!r} must not be written to idx JSONB after cleanup"
             )
 
-    def test_pgcatalog_tool_set_pg_annotation_strips_path_keys(self, pg_conn, plone_obj):
+    def test_pgcatalog_tool_set_pg_annotation_strips_path_keys(
+        self, pg_conn, plone_obj
+    ):
         """PlonePGCatalogTool._set_pg_annotation must not write path keys to idx."""
         from plone.pgcatalog.catalog import PlonePGCatalogTool, ANNOTATION_KEY
 
@@ -137,6 +140,7 @@ class TestWriterDoesNotDuplicatePath:
 
 # ── 2. Bulk move (rename of subtree) keeps typed cols in sync, leaves idx alone ──
 
+
 class TestBulkMoveDoesNotTouchIdxPathKeys:
     def test_bulk_move_updates_typed_only(self, pg_conn, two_objects_at):
         """After bulk move SQL, typed cols reflect new path; idx still has no path keys."""
@@ -146,6 +150,7 @@ class TestBulkMoveDoesNotTouchIdxPathKeys:
         processor = CatalogStateProcessor()
         # Register a move /Plone/old → /Plone/new
         from plone.pgcatalog.move import register_move
+
         register_move("/Plone/old", "/Plone/new", depth_delta=0)
 
         cursor = pg_conn.cursor()
@@ -164,6 +169,7 @@ class TestBulkMoveDoesNotTouchIdxPathKeys:
 
 
 # ── 3. Query builder: built-in path index → typed cols, custom → JSONB ──
+
 
 class TestQueryBuilderDispatchesPathToTypedColumns:
     def _build(self, query):
@@ -193,35 +199,37 @@ class TestQueryBuilderDispatchesPathToTypedColumns:
 
     def test_custom_path_index_keeps_jsonb_keys(self):
         # tgpath (or any non-builtin path index): idx_key="tgpath", uses JSONB
-        sql, params = self._build(
-            {"tgpath": {"query": "/Plone/x", "depth": -1}}
-        )
+        sql, params = self._build({"tgpath": {"query": "/Plone/x", "depth": -1}})
         assert "idx->>'tgpath'" in sql
 
 
 # ── 4. Schema state: indexes + statistics on typed cols, JSONB versions gone ──
 
+
 class TestSchemaUsesTypedColumns:
     """Verify the resulting schema after migrations."""
 
     EXPECTED_TYPED_COL_INDEXES = {
-        "idx_os_cat_path",          # → btree(path)
+        "idx_os_cat_path",  # → btree(path)
         "idx_os_cat_path_pattern",  # → btree(path text_pattern_ops)
-        "idx_os_cat_path_parent",   # → btree(parent_path)
-        "idx_os_cat_path_depth",    # → btree(path_depth)
-        "idx_os_cat_parent_type",   # → btree(parent_path, idx->>'portal_type')
-        "idx_os_cat_path_type",     # → btree(path text_pattern_ops, idx->>'portal_type')
+        "idx_os_cat_path_parent",  # → btree(parent_path)
+        "idx_os_cat_path_depth",  # → btree(path_depth)
+        "idx_os_cat_parent_type",  # → btree(parent_path, idx->>'portal_type')
+        "idx_os_cat_path_type",  # → btree(path text_pattern_ops, idx->>'portal_type')
         "idx_os_cat_path_depth_type",
         "idx_os_cat_nav_visible",
     }
 
     def test_path_indexes_reference_typed_columns(self, pg_conn):
-        rows = pg_conn.execute("""
+        rows = pg_conn.execute(
+            """
             SELECT indexname, indexdef
             FROM pg_indexes
             WHERE tablename = 'object_state'
               AND indexname = ANY(%s)
-        """, (list(self.EXPECTED_TYPED_COL_INDEXES),)).fetchall()
+        """,
+            (list(self.EXPECTED_TYPED_COL_INDEXES),),
+        ).fetchall()
         for r in rows:
             # The path expression in any of these indexes must be the typed column,
             # not the JSONB extract.
@@ -248,6 +256,7 @@ class TestSchemaUsesTypedColumns:
 
 
 # ── 5. Migration: existing rows get their path keys stripped, idempotently ──
+
 
 class TestMigrationStripsPathKeys:
     def test_strip_removes_keys_idempotently(self, pg_conn, dirty_rows):
@@ -553,30 +562,31 @@ In `src/plone/pgcatalog/processor.py`, replace lines 227–240:
 with:
 
 ```python
-        # Normal catalog: extract registered extra idx columns
-        idx = pending.get("idx")
-        extra_values = extract_extra_idx_columns(idx)
+# Normal catalog: extract registered extra idx columns
+idx = pending.get("idx")
+extra_values = extract_extra_idx_columns(idx)
 
-        # Path data lives in typed columns only.  Compute parent/depth
-        # from the canonical `path` field — not from idx.
-        # See: docs/plans/2026-04-15-strip-path-from-idx-jsonb.md
-        path = pending.get("path")
-        if path:
-            from plone.pgcatalog.columns import compute_path_info
-            parent_path, path_depth = compute_path_info(path)
-        else:
-            parent_path, path_depth = None, None
+# Path data lives in typed columns only.  Compute parent/depth
+# from the canonical `path` field — not from idx.
+# See: docs/plans/2026-04-15-strip-path-from-idx-jsonb.md
+path = pending.get("path")
+if path:
+    from plone.pgcatalog.columns import compute_path_info
 
-        result = {
-            "path": path,
-            "parent_path": parent_path,
-            "path_depth": path_depth,
-            "idx": Json(idx) if idx else None,
-            "searchable_text": pending.get("searchable_text"),
-            **extra_values,
-        }
-        result.update(get_backend().process_search_data(pending))
-        return result
+    parent_path, path_depth = compute_path_info(path)
+else:
+    parent_path, path_depth = None, None
+
+result = {
+    "path": path,
+    "parent_path": parent_path,
+    "path_depth": path_depth,
+    "idx": Json(idx) if idx else None,
+    "searchable_text": pending.get("searchable_text"),
+    **extra_values,
+}
+result.update(get_backend().process_search_data(pending))
+return result
 ```
 
 (If `compute_path_info` is already imported at module level, drop the local import.)
@@ -899,10 +909,13 @@ def run(conn, batch_size: int = 5000) -> dict:
 
     while True:
         with conn.cursor() as cur:
-            cur.execute(_BATCH_SQL, {
-                "after_zoid": after_zoid,
-                "batch_size": batch_size,
-            })
+            cur.execute(
+                _BATCH_SQL,
+                {
+                    "after_zoid": after_zoid,
+                    "batch_size": batch_size,
+                },
+            )
             zoids = [r[0] for r in cur.fetchall()]
 
         if not zoids:
@@ -913,7 +926,10 @@ def run(conn, batch_size: int = 5000) -> dict:
         after_zoid = max(zoids)
         log.info(
             "strip_path_keys: batch %d, %d rows, last zoid=%d, total=%d",
-            batches, len(zoids), after_zoid, total,
+            batches,
+            len(zoids),
+            after_zoid,
+            total,
         )
 
     log.info("strip_path_keys: done. %d batches, %d rows updated.", batches, total)

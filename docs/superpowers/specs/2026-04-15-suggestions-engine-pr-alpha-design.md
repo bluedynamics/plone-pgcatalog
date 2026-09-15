@@ -114,21 +114,23 @@ from dataclasses import dataclass
 @dataclass(frozen=True)
 class BundleMember:
     """One index in a bundle."""
+
     ddl: str
     fields: list[str]
-    field_types: list[str]   # IndexType.name strings
-    status: str              # "new" | "already_covered"
-    role: str                # "btree_composite" | "plain_gin" | "partial_gin"
+    field_types: list[str]  # IndexType.name strings
+    status: str  # "new" | "already_covered"
+    role: str  # "btree_composite" | "plain_gin" | "partial_gin"
     reason: str
 
 
 @dataclass(frozen=True)
 class Bundle:
     """One or more indexes that together address a slow-query shape."""
-    name: str                            # deterministic: shape + sorted filter names
-    rationale: str                       # human-readable
-    shape_classification: str            # BTREE_ONLY | KEYWORD_ONLY | MIXED | TEXT_ONLY | UNKNOWN
-    members: list[BundleMember]          # 1..N indexes
+
+    name: str  # deterministic: shape + sorted filter names
+    rationale: str  # human-readable
+    shape_classification: str  # BTREE_ONLY | KEYWORD_ONLY | MIXED | TEXT_ONLY | UNKNOWN
+    members: list[BundleMember]  # 1..N indexes
 ```
 
 ### Backward-compat render in `manage_get_slow_query_stats`
@@ -144,14 +146,16 @@ Two keys per row (instead of today's single `suggestions`):
 def _dispatch_templates(filter_fields, sort_field, registry, probes, existing_indexes):
     shape = _classify_filter_shape(filter_fields)
     if shape == "BTREE_ONLY":
-        return [_bundle_btree_composite(filter_fields, sort_field, probes, existing_indexes)]
+        return [
+            _bundle_btree_composite(filter_fields, sort_field, probes, existing_indexes)
+        ]
     if shape == "KEYWORD_ONLY":
         return [_bundle_keyword_gin(filter_fields, probes, existing_indexes)]
     if shape == "MIXED":
         return [_bundle_hybrid(filter_fields, sort_field, probes, existing_indexes)]
     if shape == "TEXT_ONLY":
-        return []   # dedicated tsvector handles this; nothing for PR α to add
-    return []       # UNKNOWN — silent skip; PR β may still grade via EXPLAIN
+        return []  # dedicated tsvector handles this; nothing for PR α to add
+    return []  # UNKNOWN — silent skip; PR β may still grade via EXPLAIN
 ```
 
 ### Shape classification rules
@@ -185,8 +189,8 @@ def _dispatch_templates(filter_fields, sort_field, registry, probes, existing_in
 ### Probe algorithm
 
 ```python
-_request_cache: dict[tuple[str, str], float] = {}   # threaded, not module-global
-_pg_stats_cache: dict[str, Optional[dict]] = {}      # per-attname stats row
+_request_cache: dict[tuple[str, str], float] = {}  # threaded, not module-global
+_pg_stats_cache: dict[str, Optional[dict]] = {}  # per-attname stats row
 
 
 def _probe_selectivity(conn, key, value):
@@ -197,7 +201,11 @@ def _probe_selectivity(conn, key, value):
     # Step 1: MCV lookup (one fetch per distinct attname per request)
     attname = _derived_attname_for_key(key)
     stats = _pg_stats_cache.setdefault(attname, _fetch_pg_stats(conn, attname))
-    if stats and stats["most_common_vals"] is not None and value in stats["most_common_vals"]:
+    if (
+        stats
+        and stats["most_common_vals"] is not None
+        and value in stats["most_common_vals"]
+    ):
         idx = stats["most_common_vals"].index(value)
         sel = stats["most_common_freqs"][idx]
         _request_cache[cache_key] = sel
@@ -238,8 +246,8 @@ _PARTIAL_PREDICATE_SELECTIVITY_THRESHOLD = 0.1  # 10 %
 
 def _partial_where_terms(equality_filters, probes):
     terms = []
-    for (name, value) in equality_filters:
-        sel = probes.get((name, value), 1.0)   # missing probe = 1.0 = never qualifies
+    for name, value in equality_filters:
+        sel = probes.get((name, value), 1.0)  # missing probe = 1.0 = never qualifies
         if sel < _PARTIAL_PREDICATE_SELECTIVITY_THRESHOLD:
             # Quote escape: single-quote in value → doubled
             safe_value = value.replace("'", "''")

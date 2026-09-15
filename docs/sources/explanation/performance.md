@@ -340,9 +340,7 @@ controlled by a SQL expression registered via
 plone-pgcatalog registers the expression at startup:
 
 ```python
-storage.register_prefetch_refs_expr(
-    "CASE WHEN idx IS NOT NULL THEN refs END"
-)
+storage.register_prefetch_refs_expr("CASE WHEN idx IS NOT NULL THEN refs END")
 ```
 
 This `CASE WHEN idx IS NOT NULL THEN refs END` expression is the result of

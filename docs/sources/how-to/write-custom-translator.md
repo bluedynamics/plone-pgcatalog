@@ -20,8 +20,10 @@ Three methods:
 def extract(obj, index_name) -> dict:
     """Return key-value pairs to merge into idx JSONB."""
 
+
 def query(index_name, raw, spec) -> tuple[str, dict]:
     """Return (sql_fragment, params_dict) for WHERE clause."""
+
 
 def sort(index_name) -> str | None:
     """Return SQL expression for ORDER BY, or None."""
@@ -39,7 +41,6 @@ from zope.interface import implementer
 
 @implementer(IPGIndexTranslator)
 class PriorityIndexTranslator:
-
     def extract(self, obj, index_name):
         score = getattr(obj, "priority_score", None)
         if score is not None:

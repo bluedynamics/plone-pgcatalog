@@ -79,9 +79,7 @@ class TestResolveCatalog:
         tool = mock.Mock(name="tool-via-get-site")
         site = mock.Mock(portal_catalog=tool)
 
-        with mock.patch(
-            "plone.pgcatalog.maintenance.getSite", return_value=site
-        ):
+        with mock.patch("plone.pgcatalog.maintenance.getSite", return_value=site):
             assert _resolve_catalog(compat) is tool
 
     def test_raises_runtimeerror_when_all_three_fail(self):
@@ -201,9 +199,7 @@ class TestParentSelfHeal:
 
         compat._p_jar = _NoOpJar()
 
-        with mock.patch(
-            "plone.pgcatalog.maintenance.getSite", return_value=site
-        ):
+        with mock.patch("plone.pgcatalog.maintenance.getSite", return_value=site):
             _view = compat.indexes  # trigger property
 
         assert compat.__dict__.get("__parent__") is tool
@@ -216,9 +212,7 @@ class TestParentSelfHeal:
         compat.__dict__["_raw_indexes"] = PersistentMapping()
         # no __parent__, no site hook
 
-        with mock.patch(
-            "plone.pgcatalog.maintenance.getSite", return_value=None
-        ):
+        with mock.patch("plone.pgcatalog.maintenance.getSite", return_value=None):
             _view = compat.indexes  # must not raise
 
         assert "__parent__" not in compat.__dict__
@@ -234,9 +228,7 @@ class TestParentSelfHeal:
         compat.__dict__["_raw_indexes"] = PersistentMapping()
         compat.__dict__["__parent__"] = explicit
 
-        with mock.patch(
-            "plone.pgcatalog.maintenance.getSite", return_value=site
-        ):
+        with mock.patch("plone.pgcatalog.maintenance.getSite", return_value=site):
             _view = compat.indexes
 
         # Still the explicit parent — self-heal must only set when missing.
@@ -318,9 +310,7 @@ Append to `tests/test_catalog_indexes_view.py`:
 
 
 class TestGetIndexWithoutParent:
-    def test_finds_catalog_via_get_site_returns_wrapped(
-        self, pg_conn_with_catalog
-    ):
+    def test_finds_catalog_via_get_site_returns_wrapped(self, pg_conn_with_catalog):
         from plone.pgcatalog.catalog import PlonePGCatalogTool
         from plone.pgcatalog.maintenance import _CatalogCompat
         from plone.pgcatalog.pgindex import PGIndex
@@ -334,9 +324,7 @@ class TestGetIndexWithoutParent:
 
         # no __parent__, no acquisition — only getSite works
         site = mock.Mock(portal_catalog=tool)
-        with mock.patch(
-            "plone.pgcatalog.maintenance.getSite", return_value=site
-        ):
+        with mock.patch("plone.pgcatalog.maintenance.getSite", return_value=site):
             result = compat.getIndex("portal_type")
 
         assert isinstance(result, PGIndex)
@@ -452,14 +440,13 @@ class TestViewWithoutCatalog:
 
     def test_getitem_raises_when_no_catalog_reachable(self):
         import pytest
+
         compat = _fresh_compat()
         raw = mock.Mock(id="portal_type", meta_type="FieldIndex")
         compat._raw_indexes["portal_type"] = raw
 
         with (
-            mock.patch(
-                "plone.pgcatalog.maintenance.getSite", return_value=None
-            ),
+            mock.patch("plone.pgcatalog.maintenance.getSite", return_value=None),
             pytest.raises(RuntimeError, match="cannot find portal_catalog"),
         ):
             _ = compat.indexes["portal_type"]
@@ -499,17 +486,18 @@ Expected: 3 pass, 1 FAIL (`test_getitem_raises_when_no_catalog_reachable`).
 In `src/plone/pgcatalog/maintenance.py`, locate `_CatalogIndexesView.__getitem__` (≈ line 116) and replace:
 
 ```python
-    # read-through access → wrapped
-    def __getitem__(self, key):
-        raw_index = self._raw[key]  # raises KeyError
-        catalog = _resolve_catalog(self._compat)
-        return _maybe_wrap_index(catalog, key, raw_index)
+# read-through access → wrapped
+def __getitem__(self, key):
+    raw_index = self._raw[key]  # raises KeyError
+    catalog = _resolve_catalog(self._compat)
+    return _maybe_wrap_index(catalog, key, raw_index)
 
-    def get(self, key, default=None):
-        try:
-            return self[key]
-        except KeyError:
-            return default
+
+def get(self, key, default=None):
+    try:
+        return self[key]
+    except KeyError:
+        return default
 ```
 
 Note the `get` method's behavior: it catches only `KeyError` (missing key), **not** `RuntimeError`. An unreachable catalog is a configuration bug, not a missing key — the `RuntimeError` must propagate to the caller.
@@ -548,15 +536,14 @@ Append to `tests/test_pgindex.py`:
 
 
 class TestPGIndexMappingNewMethods:
-    def test_getitem_returns_zoid_for_existing_value(
-        self, pg_conn_with_catalog
-    ):
+    def test_getitem_returns_zoid_for_existing_value(self, pg_conn_with_catalog):
         _catalog_objects(pg_conn_with_catalog)
         mapping = _PGIndexMapping("UID", lambda: pg_conn_with_catalog)
         assert mapping["uid-aaa-100"] == 100
 
     def test_getitem_raises_keyerror_on_miss(self, pg_conn_with_catalog):
         import pytest
+
         _catalog_objects(pg_conn_with_catalog)
         mapping = _PGIndexMapping("UID", lambda: pg_conn_with_catalog)
         with pytest.raises(KeyError, match="nonexistent-uid"):
@@ -619,41 +606,43 @@ git commit -m "feat(pgindex): _PGIndexMapping.__getitem__ raises KeyError on mis
 Append to `TestPGIndexMappingNewMethods`:
 
 ```python
-    def test_len_scalar_index(self, pg_conn_with_catalog):
-        _catalog_objects(pg_conn_with_catalog)  # 2 Documents, 1 Folder
-        mapping = _PGIndexMapping(
-            "portal_type", lambda: pg_conn_with_catalog
-        )
-        assert len(mapping) == 2  # distinct values
+def test_len_scalar_index(self, pg_conn_with_catalog):
+    _catalog_objects(pg_conn_with_catalog)  # 2 Documents, 1 Folder
+    mapping = _PGIndexMapping("portal_type", lambda: pg_conn_with_catalog)
+    assert len(mapping) == 2  # distinct values
 
-    def test_len_keyword_index(self, pg_conn_with_catalog):
-        from plone.pgcatalog.columns import IndexType
-        _catalog_keyword_objects(pg_conn_with_catalog)
-        mapping = _PGIndexMapping(
-            "Subject",
-            lambda: pg_conn_with_catalog,
-            index_type=IndexType.KEYWORD,
-        )
-        # distinct keywords across the three fixture docs
-        assert len(mapping) == 4
 
-    def test_len_keyword_with_legacy_scalar_row(self, pg_conn_with_catalog):
-        from plone.pgcatalog.columns import IndexType
-        _catalog_keyword_objects(pg_conn_with_catalog)
-        insert_object(pg_conn_with_catalog, 299)
-        catalog_object(
-            pg_conn_with_catalog,
-            zoid=299,
-            path="/plone/legacy-scalar",
-            idx={"portal_type": "Document", "Subject": "Legacy"},
-        )
-        pg_conn_with_catalog.commit()
-        mapping = _PGIndexMapping(
-            "Subject",
-            lambda: pg_conn_with_catalog,
-            index_type=IndexType.KEYWORD,
-        )
-        assert len(mapping) == 5  # 4 array keywords + "Legacy" scalar
+def test_len_keyword_index(self, pg_conn_with_catalog):
+    from plone.pgcatalog.columns import IndexType
+
+    _catalog_keyword_objects(pg_conn_with_catalog)
+    mapping = _PGIndexMapping(
+        "Subject",
+        lambda: pg_conn_with_catalog,
+        index_type=IndexType.KEYWORD,
+    )
+    # distinct keywords across the three fixture docs
+    assert len(mapping) == 4
+
+
+def test_len_keyword_with_legacy_scalar_row(self, pg_conn_with_catalog):
+    from plone.pgcatalog.columns import IndexType
+
+    _catalog_keyword_objects(pg_conn_with_catalog)
+    insert_object(pg_conn_with_catalog, 299)
+    catalog_object(
+        pg_conn_with_catalog,
+        zoid=299,
+        path="/plone/legacy-scalar",
+        idx={"portal_type": "Document", "Subject": "Legacy"},
+    )
+    pg_conn_with_catalog.commit()
+    mapping = _PGIndexMapping(
+        "Subject",
+        lambda: pg_conn_with_catalog,
+        index_type=IndexType.KEYWORD,
+    )
+    assert len(mapping) == 5  # 4 array keywords + "Legacy" scalar
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -734,30 +723,29 @@ git commit -m "feat(pgindex): _PGIndexMapping.__len__ via COUNT DISTINCT (#146)"
 Append to `TestPGIndexMappingNewMethods`:
 
 ```python
-    def test_items_raises_notimplemented_with_guidance(
-        self, pg_conn_with_catalog
-    ):
-        import pytest
-        _catalog_objects(pg_conn_with_catalog)
-        mapping = _PGIndexMapping("UID", lambda: pg_conn_with_catalog)
-        with pytest.raises(NotImplementedError) as excinfo:
-            mapping.items()
-        msg = str(excinfo.value)
-        assert "items()" in msg
-        assert "uniqueValues" in msg
-        assert "_apply_index" in msg
-        assert "catalog(**query)" in msg
-        assert "https://github.com/bluedynamics/plone-pgcatalog/issues" in msg
+def test_items_raises_notimplemented_with_guidance(self, pg_conn_with_catalog):
+    import pytest
 
-    def test_values_raises_notimplemented_with_guidance(
-        self, pg_conn_with_catalog
-    ):
-        import pytest
-        _catalog_objects(pg_conn_with_catalog)
-        mapping = _PGIndexMapping("UID", lambda: pg_conn_with_catalog)
-        with pytest.raises(NotImplementedError) as excinfo:
-            mapping.values()
-        assert "values()" in str(excinfo.value)
+    _catalog_objects(pg_conn_with_catalog)
+    mapping = _PGIndexMapping("UID", lambda: pg_conn_with_catalog)
+    with pytest.raises(NotImplementedError) as excinfo:
+        mapping.items()
+    msg = str(excinfo.value)
+    assert "items()" in msg
+    assert "uniqueValues" in msg
+    assert "_apply_index" in msg
+    assert "catalog(**query)" in msg
+    assert "https://github.com/bluedynamics/plone-pgcatalog/issues" in msg
+
+
+def test_values_raises_notimplemented_with_guidance(self, pg_conn_with_catalog):
+    import pytest
+
+    _catalog_objects(pg_conn_with_catalog)
+    mapping = _PGIndexMapping("UID", lambda: pg_conn_with_catalog)
+    with pytest.raises(NotImplementedError) as excinfo:
+        mapping.values()
+    assert "values()" in str(excinfo.value)
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -790,15 +778,12 @@ _ITEMS_VALUES_NOT_IMPLEMENTED = (
 Insert into `_PGIndexMapping` after `__len__`:
 
 ```python
-    def items(self):
-        raise NotImplementedError(
-            _ITEMS_VALUES_NOT_IMPLEMENTED.format(method="items")
-        )
+def items(self):
+    raise NotImplementedError(_ITEMS_VALUES_NOT_IMPLEMENTED.format(method="items"))
 
-    def values(self):
-        raise NotImplementedError(
-            _ITEMS_VALUES_NOT_IMPLEMENTED.format(method="values")
-        )
+
+def values(self):
+    raise NotImplementedError(_ITEMS_VALUES_NOT_IMPLEMENTED.format(method="values"))
 ```
 
 - [ ] **Step 4: Run tests to verify they pass**
@@ -945,16 +930,12 @@ def _apply_pg_index(idx_key, index_type, pg_conn, request):
 
     wrapped = mock.Mock()
     wrapped.id = idx_key
-    pg_index = PGIndex(
-        wrapped, idx_key, lambda: pg_conn, index_type=index_type
-    )
+    pg_index = PGIndex(wrapped, idx_key, lambda: pg_conn, index_type=index_type)
     return pg_index._apply_index(request)
 
 
 class TestPGIndexApplyIndex:
-    def test_returns_empty_set_when_index_not_in_request(
-        self, pg_conn_with_catalog
-    ):
+    def test_returns_empty_set_when_index_not_in_request(self, pg_conn_with_catalog):
         from BTrees.IIBTree import IITreeSet
         from plone.pgcatalog.columns import IndexType
 
@@ -1074,46 +1055,47 @@ git commit -m "feat(pgindex): _apply_index scaffolding + FIELD dispatch (#146)"
 Append to `TestPGIndexApplyIndex`:
 
 ```python
-    def test_keyword_index_single_value(self, pg_conn_with_catalog):
-        from plone.pgcatalog.columns import IndexType
+def test_keyword_index_single_value(self, pg_conn_with_catalog):
+    from plone.pgcatalog.columns import IndexType
 
-        _catalog_keyword_objects(pg_conn_with_catalog)
-        # Fixture: 200={Werkvortrag, Tirol, Aktuelles}, 201={Tirol,
-        # AUSSCHREIBUNG}, 202={Aktuelles}
-        result, info = _apply_pg_index(
-            "Subject",
-            IndexType.KEYWORD,
-            pg_conn_with_catalog,
-            {"Subject": "Tirol"},
-        )
-        assert set(result) == {200, 201}
+    _catalog_keyword_objects(pg_conn_with_catalog)
+    # Fixture: 200={Werkvortrag, Tirol, Aktuelles}, 201={Tirol,
+    # AUSSCHREIBUNG}, 202={Aktuelles}
+    result, info = _apply_pg_index(
+        "Subject",
+        IndexType.KEYWORD,
+        pg_conn_with_catalog,
+        {"Subject": "Tirol"},
+    )
+    assert set(result) == {200, 201}
 
-    def test_keyword_index_or_operator(self, pg_conn_with_catalog):
-        from plone.pgcatalog.columns import IndexType
 
-        _catalog_keyword_objects(pg_conn_with_catalog)
-        result, info = _apply_pg_index(
-            "Subject",
-            IndexType.KEYWORD,
-            pg_conn_with_catalog,
-            {"Subject": {"query": ["Aktuelles", "AUSSCHREIBUNG"],
-                         "operator": "or"}},
-        )
-        assert set(result) == {200, 201, 202}
+def test_keyword_index_or_operator(self, pg_conn_with_catalog):
+    from plone.pgcatalog.columns import IndexType
 
-    def test_path_index_subtree(self, pg_conn_with_catalog):
-        from plone.pgcatalog.columns import IndexType
+    _catalog_keyword_objects(pg_conn_with_catalog)
+    result, info = _apply_pg_index(
+        "Subject",
+        IndexType.KEYWORD,
+        pg_conn_with_catalog,
+        {"Subject": {"query": ["Aktuelles", "AUSSCHREIBUNG"], "operator": "or"}},
+    )
+    assert set(result) == {200, 201, 202}
 
-        _catalog_objects(pg_conn_with_catalog)  # paths /plone/doc1, etc.
-        result, info = _apply_pg_index(
-            "path",
-            IndexType.PATH,
-            pg_conn_with_catalog,
-            {"path": {"query": "/plone", "depth": -1}},
-        )
-        assert 100 in result
-        assert 101 in result
-        assert 102 in result
+
+def test_path_index_subtree(self, pg_conn_with_catalog):
+    from plone.pgcatalog.columns import IndexType
+
+    _catalog_objects(pg_conn_with_catalog)  # paths /plone/doc1, etc.
+    result, info = _apply_pg_index(
+        "path",
+        IndexType.PATH,
+        pg_conn_with_catalog,
+        {"path": {"query": "/plone", "depth": -1}},
+    )
+    assert 100 in result
+    assert 101 in result
+    assert 102 in result
 ```
 
 Note: PATH index uses idx-key=None in the real registry; for unit tests we bypass the `_maybe_wrap_index` logic and instantiate `PGIndex` directly.  The builder's `_handle_path` uses the registered idx_key via the registry; make sure the `path` index is registered in the test's populated registry (check `conftest.py::populated_registry` — `path` is added as `(IndexType.PATH, None)`).
@@ -1140,75 +1122,76 @@ git commit -m "test(pgindex): regression tests for _apply_index KEYWORD/PATH (#1
 Append to `TestPGIndexApplyIndex`:
 
 ```python
-    def test_date_index_range_query(self, pg_conn_with_catalog):
-        from datetime import datetime, UTC
-        from plone.pgcatalog.columns import IndexType
+def test_date_index_range_query(self, pg_conn_with_catalog):
+    from datetime import datetime, UTC
+    from plone.pgcatalog.columns import IndexType
 
-        insert_object(pg_conn_with_catalog, 300)
-        catalog_object(
-            pg_conn_with_catalog,
-            zoid=300,
-            path="/plone/event-2025",
-            idx={"portal_type": "Event", "start": "2025-06-15T10:00:00+00:00"},
-        )
-        insert_object(pg_conn_with_catalog, 301)
-        catalog_object(
-            pg_conn_with_catalog,
-            zoid=301,
-            path="/plone/event-2026",
-            idx={"portal_type": "Event", "start": "2026-03-15T10:00:00+00:00"},
-        )
-        pg_conn_with_catalog.commit()
+    insert_object(pg_conn_with_catalog, 300)
+    catalog_object(
+        pg_conn_with_catalog,
+        zoid=300,
+        path="/plone/event-2025",
+        idx={"portal_type": "Event", "start": "2025-06-15T10:00:00+00:00"},
+    )
+    insert_object(pg_conn_with_catalog, 301)
+    catalog_object(
+        pg_conn_with_catalog,
+        zoid=301,
+        path="/plone/event-2026",
+        idx={"portal_type": "Event", "start": "2026-03-15T10:00:00+00:00"},
+    )
+    pg_conn_with_catalog.commit()
 
-        result, info = _apply_pg_index(
-            "start",
-            IndexType.DATE,
-            pg_conn_with_catalog,
-            {"start": {"query": datetime(2026, 1, 1, tzinfo=UTC),
-                       "range": "min"}},
-        )
-        assert 301 in result
-        assert 300 not in result
+    result, info = _apply_pg_index(
+        "start",
+        IndexType.DATE,
+        pg_conn_with_catalog,
+        {"start": {"query": datetime(2026, 1, 1, tzinfo=UTC), "range": "min"}},
+    )
+    assert 301 in result
+    assert 300 not in result
 
-    def test_boolean_index(self, pg_conn_with_catalog):
-        from plone.pgcatalog.columns import IndexType
 
-        insert_object(pg_conn_with_catalog, 400)
-        catalog_object(
-            pg_conn_with_catalog,
-            zoid=400,
-            path="/plone/default",
-            idx={"portal_type": "Document", "is_default_page": True},
-        )
-        insert_object(pg_conn_with_catalog, 401)
-        catalog_object(
-            pg_conn_with_catalog,
-            zoid=401,
-            path="/plone/non-default",
-            idx={"portal_type": "Document", "is_default_page": False},
-        )
-        pg_conn_with_catalog.commit()
+def test_boolean_index(self, pg_conn_with_catalog):
+    from plone.pgcatalog.columns import IndexType
 
-        result, info = _apply_pg_index(
-            "is_default_page",
-            IndexType.BOOLEAN,
-            pg_conn_with_catalog,
-            {"is_default_page": True},
-        )
-        assert 400 in result
-        assert 401 not in result
+    insert_object(pg_conn_with_catalog, 400)
+    catalog_object(
+        pg_conn_with_catalog,
+        zoid=400,
+        path="/plone/default",
+        idx={"portal_type": "Document", "is_default_page": True},
+    )
+    insert_object(pg_conn_with_catalog, 401)
+    catalog_object(
+        pg_conn_with_catalog,
+        zoid=401,
+        path="/plone/non-default",
+        idx={"portal_type": "Document", "is_default_page": False},
+    )
+    pg_conn_with_catalog.commit()
 
-    def test_uuid_index(self, pg_conn_with_catalog):
-        from plone.pgcatalog.columns import IndexType
+    result, info = _apply_pg_index(
+        "is_default_page",
+        IndexType.BOOLEAN,
+        pg_conn_with_catalog,
+        {"is_default_page": True},
+    )
+    assert 400 in result
+    assert 401 not in result
 
-        _catalog_objects(pg_conn_with_catalog)
-        result, info = _apply_pg_index(
-            "UID",
-            IndexType.UUID,
-            pg_conn_with_catalog,
-            {"UID": "uid-aaa-100"},
-        )
-        assert set(result) == {100}
+
+def test_uuid_index(self, pg_conn_with_catalog):
+    from plone.pgcatalog.columns import IndexType
+
+    _catalog_objects(pg_conn_with_catalog)
+    result, info = _apply_pg_index(
+        "UID",
+        IndexType.UUID,
+        pg_conn_with_catalog,
+        {"UID": "uid-aaa-100"},
+    )
+    assert set(result) == {100}
 ```
 
 - [ ] **Step 2: Run tests — expect all PASS (builder reuse dividend)**
@@ -1233,84 +1216,85 @@ git commit -m "test(pgindex): smoke _apply_index for DATE/BOOLEAN/UUID (#146)"
 Append to `TestPGIndexApplyIndex`:
 
 ```python
-    def test_no_implicit_security_filter(self, pg_conn_with_catalog):
-        """_apply_index must NOT auto-inject allowed_roles — matches
-        ZCatalog semantics.  Object restricted to Managers still shows
-        up in the result set.
-        """
-        from plone.pgcatalog.columns import IndexType
+def test_no_implicit_security_filter(self, pg_conn_with_catalog):
+    """_apply_index must NOT auto-inject allowed_roles — matches
+    ZCatalog semantics.  Object restricted to Managers still shows
+    up in the result set.
+    """
+    from plone.pgcatalog.columns import IndexType
 
-        insert_object(pg_conn_with_catalog, 500)
-        catalog_object(
-            pg_conn_with_catalog,
-            zoid=500,
-            path="/plone/private-event",
-            idx={
-                "portal_type": "Event",
-                "allowedRolesAndUsers": ["Manager"],
-            },
-        )
-        pg_conn_with_catalog.commit()
+    insert_object(pg_conn_with_catalog, 500)
+    catalog_object(
+        pg_conn_with_catalog,
+        zoid=500,
+        path="/plone/private-event",
+        idx={
+            "portal_type": "Event",
+            "allowedRolesAndUsers": ["Manager"],
+        },
+    )
+    pg_conn_with_catalog.commit()
 
-        result, info = _apply_pg_index(
+    result, info = _apply_pg_index(
+        "portal_type",
+        IndexType.FIELD,
+        pg_conn_with_catalog,
+        {"portal_type": "Event"},
+    )
+    assert 500 in result
+
+
+def test_resultset_parameter_ignored(self, pg_conn_with_catalog):
+    """The resultset kwarg is accepted but not yet wired to SQL."""
+    from BTrees.IIBTree import IITreeSet
+    from plone.pgcatalog.columns import IndexType
+    from plone.pgcatalog.pgindex import PGIndex
+
+    _catalog_objects(pg_conn_with_catalog)
+    wrapped = mock.Mock()
+    wrapped.id = "portal_type"
+    idx = PGIndex(
+        wrapped,
+        "portal_type",
+        lambda: pg_conn_with_catalog,
+        index_type=IndexType.FIELD,
+    )
+    base, _ = idx._apply_index({"portal_type": "Document"})
+    with_rs, _ = idx._apply_index(
+        {"portal_type": "Document"},
+        resultset=IITreeSet([100]),  # intentionally wrong
+    )
+    assert set(base) == set(with_rs)  # resultset ignored
+
+
+def test_emits_deprecation_warning(self, pg_conn_with_catalog):
+    import pytest
+    from plone.pgcatalog.columns import IndexType
+
+    _catalog_objects(pg_conn_with_catalog)
+    with pytest.warns(DeprecationWarning, match="_apply_index"):
+        _apply_pg_index(
             "portal_type",
             IndexType.FIELD,
             pg_conn_with_catalog,
-            {"portal_type": "Event"},
-        )
-        assert 500 in result
-
-    def test_resultset_parameter_ignored(self, pg_conn_with_catalog):
-        """The resultset kwarg is accepted but not yet wired to SQL."""
-        from BTrees.IIBTree import IITreeSet
-        from plone.pgcatalog.columns import IndexType
-        from plone.pgcatalog.pgindex import PGIndex
-
-        _catalog_objects(pg_conn_with_catalog)
-        wrapped = mock.Mock()
-        wrapped.id = "portal_type"
-        idx = PGIndex(
-            wrapped,
-            "portal_type",
-            lambda: pg_conn_with_catalog,
-            index_type=IndexType.FIELD,
-        )
-        base, _ = idx._apply_index({"portal_type": "Document"})
-        with_rs, _ = idx._apply_index(
             {"portal_type": "Document"},
-            resultset=IITreeSet([100]),  # intentionally wrong
         )
-        assert set(base) == set(with_rs)  # resultset ignored
 
-    def test_emits_deprecation_warning(self, pg_conn_with_catalog):
-        import pytest
-        from plone.pgcatalog.columns import IndexType
 
-        _catalog_objects(pg_conn_with_catalog)
-        with pytest.warns(DeprecationWarning, match="_apply_index"):
-            _apply_pg_index(
-                "portal_type",
-                IndexType.FIELD,
-                pg_conn_with_catalog,
-                {"portal_type": "Document"},
-            )
+def test_handles_connection_error_returns_empty_set(self):
+    from BTrees.IIBTree import IITreeSet
+    from plone.pgcatalog.columns import IndexType
+    from plone.pgcatalog.pgindex import PGIndex
 
-    def test_handles_connection_error_returns_empty_set(self):
-        from BTrees.IIBTree import IITreeSet
-        from plone.pgcatalog.columns import IndexType
-        from plone.pgcatalog.pgindex import PGIndex
+    def bad_conn():
+        raise RuntimeError("no conn")
 
-        def bad_conn():
-            raise RuntimeError("no conn")
-
-        wrapped = mock.Mock()
-        wrapped.id = "portal_type"
-        idx = PGIndex(
-            wrapped, "portal_type", bad_conn, index_type=IndexType.FIELD
-        )
-        result, info = idx._apply_index({"portal_type": "Document"})
-        assert isinstance(result, IITreeSet)
-        assert list(result) == []
+    wrapped = mock.Mock()
+    wrapped.id = "portal_type"
+    idx = PGIndex(wrapped, "portal_type", bad_conn, index_type=IndexType.FIELD)
+    result, info = idx._apply_index({"portal_type": "Document"})
+    assert isinstance(result, IITreeSet)
+    assert list(result) == []
 ```
 
 - [ ] **Step 2: Run tests — all should PASS**
@@ -1349,9 +1333,7 @@ class TestKeywordsVocabulary:
     """Regression for #146: typing into the tag/Schlagwort autocomplete
     offers individual keywords, not serialized JSON arrays or nothing."""
 
-    def test_keywords_vocabulary_returns_individual_keywords(
-        self, pgcatalog_layer
-    ):
+    def test_keywords_vocabulary_returns_individual_keywords(self, pgcatalog_layer):
         from plone.app.testing import setRoles
         from plone.app.testing import TEST_USER_ID
         from plone.app.vocabularies.catalog import KeywordsVocabularyFactory
@@ -1361,24 +1343,29 @@ class TestKeywordsVocabulary:
 
         # Create two Documents with distinct Subject keywords.
         doc1 = portal.invokeFactory(
-            "Document", "doc1", title="D1", subject=("alpha", "beta"),
+            "Document",
+            "doc1",
+            title="D1",
+            subject=("alpha", "beta"),
         )
         doc2 = portal.invokeFactory(
-            "Document", "doc2", title="D2", subject=("beta", "gamma"),
+            "Document",
+            "doc2",
+            title="D2",
+            subject=("beta", "gamma"),
         )
         portal[doc1].reindexObject()
         portal[doc2].reindexObject()
 
         import transaction
+
         transaction.commit()
 
         vocab = KeywordsVocabularyFactory(portal)
         tokens = {term.value for term in vocab}
         assert tokens == {"alpha", "beta", "gamma"}
 
-    def test_keywords_vocabulary_survives_missing_parent(
-        self, pgcatalog_layer
-    ):
+    def test_keywords_vocabulary_survives_missing_parent(self, pgcatalog_layer):
         """Regression guard for the __parent__-missing production case:
         clear __parent__ on the compat, fetch vocabulary — ``getIndex``
         still finds the tool via ``_resolve_catalog``'s ``getSite``
@@ -1399,7 +1386,10 @@ class TestKeywordsVocabulary:
         setRoles(portal, TEST_USER_ID, ["Manager"])
 
         doc_id = portal.invokeFactory(
-            "Document", "doc-x", title="X", subject=("AT26",),
+            "Document",
+            "doc-x",
+            title="X",
+            subject=("AT26",),
         )
         portal[doc_id].reindexObject()
         transaction.commit()

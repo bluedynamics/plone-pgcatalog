@@ -87,26 +87,30 @@ Change `CatalogStateProcessor.get_extra_columns()`:
 
 From:
 ```python
-ExtraColumn(
-    "searchable_text",
-    "to_tsvector("
-    "pgcatalog_lang_to_regconfig(%(idx)s::jsonb->>'Language')"
-    "::regconfig, %(searchable_text)s)",
-),
+(
+    ExtraColumn(
+        "searchable_text",
+        "to_tsvector("
+        "pgcatalog_lang_to_regconfig(%(idx)s::jsonb->>'Language')"
+        "::regconfig, %(searchable_text)s)",
+    ),
+)
 ```
 
 To:
 ```python
-ExtraColumn(
-    "searchable_text",
-    "setweight(to_tsvector('simple'::regconfig, "
-    "COALESCE(%(idx)s::jsonb->>'Title', '')), 'A') || "
-    "setweight(to_tsvector('simple'::regconfig, "
-    "COALESCE(%(idx)s::jsonb->>'Description', '')), 'B') || "
-    "setweight(to_tsvector("
-    "pgcatalog_lang_to_regconfig(%(idx)s::jsonb->>'Language')"
-    "::regconfig, %(searchable_text)s), 'D')",
-),
+(
+    ExtraColumn(
+        "searchable_text",
+        "setweight(to_tsvector('simple'::regconfig, "
+        "COALESCE(%(idx)s::jsonb->>'Title', '')), 'A') || "
+        "setweight(to_tsvector('simple'::regconfig, "
+        "COALESCE(%(idx)s::jsonb->>'Description', '')), 'B') || "
+        "setweight(to_tsvector("
+        "pgcatalog_lang_to_regconfig(%(idx)s::jsonb->>'Language')"
+        "::regconfig, %(searchable_text)s), 'D')",
+    ),
+)
 ```
 
 This is the production write path (ZODB → CatalogStateProcessor → _batch_write_objects).

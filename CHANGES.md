@@ -1,6 +1,32 @@
 # Changelog
 
-## 1.0.0b73 (2026-08-31)
+## 1.0.0rc1 (unreleased)
+
+### Changed
+
+- Raise the trove classifier from "Development Status :: 3 - Alpha" to
+  "Development Status :: 5 - Production/Stable". After 73 betas hardened by
+  months of production use the package enters the release-candidate phase
+  for 1.0.0.
+
+### Documentation
+
+- Document in the install guide that no uninstall profile exists: the
+  install replaces `portal_catalog` and rebuilds it in PostgreSQL, so
+  reverting would mean restoring the complete previous ZCatalog state.
+  Deferred past 1.0 in #27.
+
+- Fix vale style errors (spaced em dashes, informal spellings) in the
+  resolve-relations-by-zoid how-to, which had never been vale-checked
+  because the hook only runs on changed files.
+
+### Internal
+
+- Pin ruff to 0.16.7 in the QA workflow and the ruff-pre-commit rev
+  (was 0.15.0), realigning CI with what plain `uvx ruff` resolves locally,
+  including the one-time mechanical fallout: ruff 0.16 now formats Python
+  code blocks inside Markdown, reformatting 32 Markdown files (docs, plans,
+  CHANGES). No Python source changes. #217
 
 ### Fixed
 
@@ -671,6 +697,7 @@ Closes #146.
 
   ```python
   from plone.pgcatalog.migrations.strip_path_keys import run
+
   run(conn, batch_size=5000)
   ```
 
@@ -705,7 +732,12 @@ Closes #146.
 
   ```python
   catalog = portal.portal_catalog
-  class _Extra: pass
+
+
+  class _Extra:
+      pass
+
+
   extra = _Extra()
   extra.recurdef = "recurrence"
   extra.until = ""

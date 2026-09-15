@@ -22,6 +22,7 @@ Two-part refactoring of `PlonePGCatalogTool`:
 from OFS.SimpleItem import SimpleItem
 from Products.CMFCore.utils import UniqueObject
 
+
 @implementer(IPGCatalogTool, IPloneCatalogTool)
 class PlonePGCatalogTool(UniqueObject, SimpleItem):
     id = "portal_catalog"
@@ -140,6 +141,7 @@ catalog data is committed, matching original CatalogTool semantics.
 (same as ZCatalog.addIndex):
 ```python
 from Products.PluginIndexes.interfaces import IPluggableIndex
+
 if IPluggableIndex.providedBy(index_type):
     self._catalog.indexes[name] = index_type
 else:
@@ -156,7 +158,8 @@ def clearFindAndRebuild(self):
         clear_catalog_data(conn)
     portal = aq_parent(aq_inner(self))
     portal.ZopeFindAndApply(
-        portal, search_sub=True,
+        portal,
+        search_sub=True,
         apply_func=lambda obj, path: self.catalog_object(obj, path),
     )
 ```
@@ -272,9 +275,9 @@ firing). Only overrides `apply_index()`.
 from eea.facetednavigation.search.catalog import FacetedCatalog
 from eea.facetednavigation.search.interfaces import IFacetedCatalog
 
+
 @implementer(IFacetedCatalog)
 class PGFacetedCatalog(FacetedCatalog):
-
     def apply_index(self, context, index, value):
         catalog = getToolByName(context, "portal_catalog")
         if not IPGCatalogTool.providedBy(catalog):

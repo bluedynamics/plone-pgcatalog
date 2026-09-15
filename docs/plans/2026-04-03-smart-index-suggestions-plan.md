@@ -149,18 +149,14 @@ class TestSuggestIndexes:
 
     def test_non_idx_fields_filtered(self):
         registry = _reg(portal_type=IndexType.FIELD)
-        result = suggest_indexes(
-            ["portal_type", "sort_on", "b_size"], registry, {}
-        )
+        result = suggest_indexes(["portal_type", "sort_on", "b_size"], registry, {})
         for s in result:
             assert "sort_on" not in s["fields"]
             assert "b_size" not in s["fields"]
 
     def test_unknown_field_skipped(self):
         registry = _reg(portal_type=IndexType.FIELD)
-        result = suggest_indexes(
-            ["portal_type", "unknown_field"], registry, {}
-        )
+        result = suggest_indexes(["portal_type", "unknown_field"], registry, {})
         for s in result:
             assert "unknown_field" not in s["fields"]
 
@@ -216,9 +212,7 @@ class TestSuggestIndexes:
     def test_date_range_excluded(self):
         """DATE_RANGE (effectiveRange) should be filtered by _NON_IDX_FIELDS."""
         registry = _reg(portal_type=IndexType.FIELD)
-        result = suggest_indexes(
-            ["portal_type", "effectiveRange"], registry, {}
-        )
+        result = suggest_indexes(["portal_type", "effectiveRange"], registry, {})
         for s in result:
             assert "effectiveRange" not in s["fields"]
 
@@ -359,9 +353,11 @@ def suggest_indexes(query_keys, registry, existing_indexes):
             suggestions.append(
                 {
                     "fields": [key],
-                    "field_types": [reg_lookup.get(key, "KEYWORD").name
-                                   if isinstance(reg_lookup.get(key), IndexType)
-                                   else "KEYWORD"],
+                    "field_types": [
+                        reg_lookup.get(key, "KEYWORD").name
+                        if isinstance(reg_lookup.get(key), IndexType)
+                        else "KEYWORD"
+                    ],
                     "ddl": "",
                     "status": "already_covered",
                     "reason": f"Dedicated column: {_DEDICATED_COLUMNS[key]}",
@@ -378,9 +374,7 @@ def suggest_indexes(query_keys, registry, existing_indexes):
 
         if idx_type in _NON_COMPOSITE_TYPES:
             # KEYWORD / TEXT get their own suggestion
-            _add_standalone_suggestion(
-                key, idx_type, existing_indexes, suggestions
-            )
+            _add_standalone_suggestion(key, idx_type, existing_indexes, suggestions)
         else:
             btree_fields.append((key, idx_type))
 
@@ -854,86 +848,82 @@ Add after `manage_get_slow_query_stats`:
 - [ ] **Step 4: Add `manage_explain_slow_query()` method**
 
 ```python
-    def manage_explain_slow_query(self, query_id, REQUEST=None):
-        """ZMI action: run EXPLAIN on a slow query and return the plan."""
-        from plone.pgcatalog.suggestions import explain_query
+def manage_explain_slow_query(self, query_id, REQUEST=None):
+    """ZMI action: run EXPLAIN on a slow query and return the plan."""
+    from plone.pgcatalog.suggestions import explain_query
 
+    try:
+        pool = get_pool(self)
+        pg_conn = pool.getconn()
         try:
-            pool = get_pool(self)
-            pg_conn = pool.getconn()
-            try:
-                with pg_conn.cursor() as cur:
-                    cur.execute(
-                        "SELECT query_text, params FROM pgcatalog_slow_queries "
-                        "WHERE id = %(id)s",
-                        {"id": int(query_id)},
-                    )
-                    row = cur.fetchone()
-                if row and row["query_text"]:
-                    return explain_query(
-                        pg_conn, row["query_text"], row["params"]
-                    )
-            finally:
-                pool.putconn(pg_conn)
-        except Exception as exc:
-            return {"error": str(exc)}
-        return {"error": "Query not found"}
+            with pg_conn.cursor() as cur:
+                cur.execute(
+                    "SELECT query_text, params FROM pgcatalog_slow_queries "
+                    "WHERE id = %(id)s",
+                    {"id": int(query_id)},
+                )
+                row = cur.fetchone()
+            if row and row["query_text"]:
+                return explain_query(pg_conn, row["query_text"], row["params"])
+        finally:
+            pool.putconn(pg_conn)
+    except Exception as exc:
+        return {"error": str(exc)}
+    return {"error": "Query not found"}
 ```
 
 - [ ] **Step 5: Add `manage_apply_index()` method**
 
 ```python
-    def manage_apply_index(self, ddl, REQUEST=None):
-        """ZMI action: create a suggested index."""
-        from plone.pgcatalog.suggestions import apply_index
+def manage_apply_index(self, ddl, REQUEST=None):
+    """ZMI action: create a suggested index."""
+    from plone.pgcatalog.suggestions import apply_index
 
-        msg = "No action taken"
+    msg = "No action taken"
+    try:
+        pool = get_pool(self)
+        pg_conn = pool.getconn()
         try:
-            pool = get_pool(self)
-            pg_conn = pool.getconn()
-            try:
-                success, msg, _duration = apply_index(pg_conn, ddl)
-            finally:
-                pool.putconn(pg_conn)
-        except Exception as exc:
-            msg = f"Error: {exc}"
+            success, msg, _duration = apply_index(pg_conn, ddl)
+        finally:
+            pool.putconn(pg_conn)
+    except Exception as exc:
+        msg = f"Error: {exc}"
 
-        if REQUEST is not None:
-            from urllib.parse import quote
+    if REQUEST is not None:
+        from urllib.parse import quote
 
-            REQUEST.RESPONSE.redirect(
-                f"{self.absolute_url()}/manage_slowQueries"
-                f"?manage_tabs_message={quote(msg)}"
-            )
-        return msg
+        REQUEST.RESPONSE.redirect(
+            f"{self.absolute_url()}/manage_slowQueries?manage_tabs_message={quote(msg)}"
+        )
+    return msg
 ```
 
 - [ ] **Step 6: Add `manage_drop_index()` method**
 
 ```python
-    def manage_drop_index(self, index_name, REQUEST=None):
-        """ZMI action: drop a suggestion-system index."""
-        from plone.pgcatalog.suggestions import drop_index
+def manage_drop_index(self, index_name, REQUEST=None):
+    """ZMI action: drop a suggestion-system index."""
+    from plone.pgcatalog.suggestions import drop_index
 
-        msg = "No action taken"
+    msg = "No action taken"
+    try:
+        pool = get_pool(self)
+        pg_conn = pool.getconn()
         try:
-            pool = get_pool(self)
-            pg_conn = pool.getconn()
-            try:
-                success, msg, _duration = drop_index(pg_conn, index_name)
-            finally:
-                pool.putconn(pg_conn)
-        except Exception as exc:
-            msg = f"Error: {exc}"
+            success, msg, _duration = drop_index(pg_conn, index_name)
+        finally:
+            pool.putconn(pg_conn)
+    except Exception as exc:
+        msg = f"Error: {exc}"
 
-        if REQUEST is not None:
-            from urllib.parse import quote
+    if REQUEST is not None:
+        from urllib.parse import quote
 
-            REQUEST.RESPONSE.redirect(
-                f"{self.absolute_url()}/manage_slowQueries"
-                f"?manage_tabs_message={quote(msg)}"
-            )
-        return msg
+        REQUEST.RESPONSE.redirect(
+            f"{self.absolute_url()}/manage_slowQueries?manage_tabs_message={quote(msg)}"
+        )
+    return msg
 ```
 
 - [ ] **Step 7: Add security declarations for new methods**
