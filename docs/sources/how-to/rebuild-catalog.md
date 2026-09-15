@@ -28,7 +28,9 @@ Via script:
 ```python
 catalog = portal.portal_catalog
 catalog.clearFindAndRebuild()
-import transaction; transaction.commit()
+import transaction
+
+transaction.commit()
 ```
 
 Expected timing: approximately 15 ms per object.
@@ -39,7 +41,9 @@ Re-extracts a single index from all ZODB objects:
 
 ```python
 catalog.reindexIndex("review_state")
-import transaction; transaction.commit()
+import transaction
+
+transaction.commit()
 ```
 
 Useful after changing an indexer or adding a new index.

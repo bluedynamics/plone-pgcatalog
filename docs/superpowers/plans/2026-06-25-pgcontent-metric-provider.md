@@ -83,25 +83,43 @@ class TestAggregate:
         from plone.pgcatalog.observability import _aggregate
 
         conn = pg_conn_with_catalog
-        catalog_object(conn, zoid=1, path="/sitea/d1",
-                       idx={"portal_type": "Document", "review_state": "published"})
-        catalog_object(conn, zoid=2, path="/sitea/d2",
-                       idx={"portal_type": "Document", "review_state": "private"})
-        catalog_object(conn, zoid=3, path="/sitea/n1",
-                       idx={"portal_type": "News Item", "review_state": "published"})
-        catalog_object(conn, zoid=4, path="/siteb/d3",
-                       idx={"portal_type": "Document", "review_state": "published"})
+        catalog_object(
+            conn,
+            zoid=1,
+            path="/sitea/d1",
+            idx={"portal_type": "Document", "review_state": "published"},
+        )
+        catalog_object(
+            conn,
+            zoid=2,
+            path="/sitea/d2",
+            idx={"portal_type": "Document", "review_state": "private"},
+        )
+        catalog_object(
+            conn,
+            zoid=3,
+            path="/sitea/n1",
+            idx={"portal_type": "News Item", "review_state": "published"},
+        )
+        catalog_object(
+            conn,
+            zoid=4,
+            path="/siteb/d3",
+            idx={"portal_type": "Document", "review_state": "published"},
+        )
         conn.commit()
 
         metrics = _aggregate(conn, ["sitea"])
 
         totals = {
             (m.labels["portal_type"], m.labels["site"]): m.value
-            for m in metrics if m.name == "plone_content_total"
+            for m in metrics
+            if m.name == "plone_content_total"
         }
         states = {
             (m.labels["state"], m.labels["site"]): m.value
-            for m in metrics if m.name == "plone_content_by_state"
+            for m in metrics
+            if m.name == "plone_content_by_state"
         }
         assert totals == {("Document", "sitea"): 2, ("News Item", "sitea"): 1}
         assert states == {("published", "sitea"): 2, ("private", "sitea"): 1}
@@ -115,8 +133,12 @@ class TestAggregate:
         # no portal_type / review_state in idx → excluded
         catalog_object(conn, zoid=10, path="/sitea/x", idx={"Title": "no type"})
         # different site → excluded by the site filter
-        catalog_object(conn, zoid=11, path="/siteb/y",
-                       idx={"portal_type": "Document", "review_state": "published"})
+        catalog_object(
+            conn,
+            zoid=11,
+            path="/siteb/y",
+            idx={"portal_type": "Document", "review_state": "published"},
+        )
         conn.commit()
 
         assert _aggregate(conn, ["sitea"]) == []
@@ -317,17 +339,25 @@ class TestCollect:
         from plone.observability.metric import Metric
 
         calls = {"n": 0}
-        sample = [Metric(name="plone_content_total", value=1, type="gauge",
-                         scope="global", help="h", labels={"portal_type": "Document",
-                                                            "site": "sitea"})]
+        sample = [
+            Metric(
+                name="plone_content_total",
+                value=1,
+                type="gauge",
+                scope="global",
+                help="h",
+                labels={"portal_type": "Document", "site": "sitea"},
+            )
+        ]
 
         def fake_aggregate(conn, site_ids):
             calls["n"] += 1
             return sample
 
         monkeypatch.setattr(observability, "_pg_site_ids", lambda ctx: ["sitea"])
-        monkeypatch.setattr(observability, "get_pool",
-                            lambda ctx: _SpyPool(conn=object()))
+        monkeypatch.setattr(
+            observability, "get_pool", lambda ctx: _SpyPool(conn=object())
+        )
         monkeypatch.setattr(observability, "_aggregate", fake_aggregate)
         monkeypatch.setenv("PLONE_OBSERVABILITY_METRICS_CACHE_TTL", "300")
 

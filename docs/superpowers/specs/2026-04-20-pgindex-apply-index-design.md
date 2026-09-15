@@ -66,6 +66,7 @@ def _resolve_catalog(compat):
         return via_aq
     # 3) zope.component.hooks.getSite() â€” works during request handling
     from zope.component.hooks import getSite
+
     site = getSite()
     if site is not None:
         tool = getattr(site, "portal_catalog", None)
@@ -100,6 +101,7 @@ def indexes(self):
     # NEW: also heal missing __parent__ when we can find the tool.
     if state.get("__parent__") is None:
         from zope.component.hooks import getSite
+
         site = getSite()
         tool = getattr(site, "portal_catalog", None) if site else None
         if tool is not None:
@@ -117,6 +119,7 @@ Exact ZCatalog signature. Reuses `QueryBuilder._process_index` from `query.py` â
 ```python
 from BTrees.IIBTree import IITreeSet
 import warnings
+
 
 def _apply_index(self, request, resultset=None):
     """Low-level ZCatalog-compatible query entry point.

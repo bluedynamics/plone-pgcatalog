@@ -123,10 +123,13 @@ class BM25Backend(SearchBackend):
 ```python
 _active_backend: SearchBackend | None = None
 
+
 def get_backend() -> SearchBackend:
     """Returns active backend (defaults to TsvectorBackend)."""
 
+
 def set_backend(backend: SearchBackend) -> None: ...
+
 
 def detect_and_set_backend(dsn: str | None) -> SearchBackend:
     """Called at startup. Tries BM25Backend.detect(), falls back to Tsvector."""
@@ -154,6 +157,7 @@ Before registering the processor, detect and set the backend:
 
 ```python
 from plone.pgcatalog.backends import detect_and_set_backend
+
 dsn = getattr(storage, "_dsn", None)
 detect_and_set_backend(dsn)
 ```
@@ -164,6 +168,7 @@ detect_and_set_backend(dsn)
 def get_extra_columns(self):
     from plone.pgcatalog.backends import get_backend
     from zodb_pgjsonb import ExtraColumn
+
     return [
         ExtraColumn("path", "%(path)s"),
         ExtraColumn("idx", "%(idx)s"),
@@ -195,6 +200,7 @@ Replace hardcoded tsvector SQL with backend delegation:
 ```python
 if idx_key is None:
     from plone.pgcatalog.backends import get_backend
+
     lang_val = self._query.get("Language")
     if isinstance(lang_val, dict):
         lang_val = lang_val.get("query", "")
@@ -218,6 +224,7 @@ Replace the hardcoded `DESC` with backend-aware direction:
 ```python
 if self.order_by is None and hasattr(self, "_text_rank_expr"):
     from plone.pgcatalog.backends import get_backend
+
     direction = "ASC" if get_backend().rank_ascending else "DESC"
     self.order_by = f"{self._text_rank_expr} {direction}"
 ```

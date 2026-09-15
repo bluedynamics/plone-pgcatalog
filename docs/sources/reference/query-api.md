@@ -52,7 +52,12 @@ catalog(modified={"query": DateTime("2025-01-01"), "range": "min"})
 catalog(modified={"query": DateTime("2025-12-31"), "range": "max"})
 
 # Range: between (inclusive)
-catalog(modified={"query": [DateTime("2025-01-01"), DateTime("2025-12-31")], "range": "min:max"})
+catalog(
+    modified={
+        "query": [DateTime("2025-01-01"), DateTime("2025-12-31")],
+        "range": "min:max",
+    }
+)
 ```
 
 ### KeywordIndex
@@ -86,7 +91,12 @@ catalog(created={"query": DateTime("2025-01-01"), "range": "min"})
 catalog(effective={"query": DateTime(), "range": "max"})
 
 # Between (inclusive)
-catalog(created={"query": [DateTime("2025-01-01"), DateTime("2025-12-31")], "range": "min:max"})
+catalog(
+    created={
+        "query": [DateTime("2025-01-01"), DateTime("2025-12-31")],
+        "range": "min:max",
+    }
+)
 ```
 
 Both Zope `DateTime` objects and Python `datetime` objects are accepted.
@@ -206,7 +216,12 @@ PL/pgSQL functions.
 
 ```python
 # Range: events occurring between two dates
-catalog(start={"query": [DateTime("2025-03-01"), DateTime("2025-03-31")], "range": "min:max"})
+catalog(
+    start={
+        "query": [DateTime("2025-03-01"), DateTime("2025-03-31")],
+        "range": "min:max",
+    }
+)
 
 # Min: events occurring on or after a date
 catalog(start={"query": DateTime("2025-03-01"), "range": "min"})

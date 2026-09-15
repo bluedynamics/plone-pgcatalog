@@ -24,7 +24,7 @@ SQL injection regardless of the value's content.
 # Correct: parameterized (used throughout plone.pgcatalog)
 cur.execute(
     "SELECT zoid FROM object_state WHERE idx @> %(val)s::jsonb",
-    {"val": Json({"portal_type": user_input})}
+    {"val": Json({"portal_type": user_input})},
 )
 
 # Never done: string formatting

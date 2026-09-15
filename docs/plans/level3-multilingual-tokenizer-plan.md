@@ -165,12 +165,10 @@ LANG_TOKENIZER_MAP = {
     "ta": {"stemmer": "tamil"},
     "tr": {"stemmer": "turkish"},
     "yi": {"stemmer": "yiddish"},
-
     # ── CJK languages with dedicated segmenters ───────────
     "zh": {"pre_tokenizer": "jieba"},
     "ja": {"pre_tokenizer": "lindera"},
     "ko": {"pre_tokenizer": "lindera"},
-
     # ── Languages without stemmers (BM25 IDF/saturation still helps) ──
     # These use unicode_segmentation + no stemmer (same as fallback)
     # Not listed here — they use the fallback column automatically
@@ -273,8 +271,7 @@ class BM25Backend(SearchBackend):
         self.languages = languages or ["en"]
         # Normalize: "pt-br" → "pt", "zh-cn" → "zh"
         self.languages = [
-            lang.lower().split("-")[0].split("_")[0]
-            for lang in self.languages
+            lang.lower().split("-")[0].split("_")[0] for lang in self.languages
         ]
         # Deduplicate (nb/nn/no → all map to "norwegian" stemmer, but keep separate columns)
         self.languages = list(dict.fromkeys(self.languages))
@@ -285,26 +282,31 @@ class BM25Backend(SearchBackend):
 ```python
 def get_extra_columns(self):
     from zodb_pgjsonb import ExtraColumn
+
     cols = [ExtraColumn("searchable_text", _WEIGHTED_TSVECTOR_EXPR)]
 
     # Per-language columns
     for lang in self.languages:
         tok_name = f"{self.tokenizer_prefix}_{lang}"
         col_name = f"search_bm25_{lang}"
-        cols.append(ExtraColumn(
-            col_name,
-            f"CASE WHEN %({col_name})s::text IS NOT NULL "
-            f"THEN tokenize(%({col_name})s::text, '{tok_name}') "
-            f"ELSE NULL END",
-        ))
+        cols.append(
+            ExtraColumn(
+                col_name,
+                f"CASE WHEN %({col_name})s::text IS NOT NULL "
+                f"THEN tokenize(%({col_name})s::text, '{tok_name}') "
+                f"ELSE NULL END",
+            )
+        )
 
     # Fallback column (multilingual, no stemmer)
-    cols.append(ExtraColumn(
-        "search_bm25",
-        f"CASE WHEN %(search_bm25)s::text IS NOT NULL "
-        f"THEN tokenize(%(search_bm25)s::text, '{self.tokenizer_prefix}_default') "
-        f"ELSE NULL END",
-    ))
+    cols.append(
+        ExtraColumn(
+            "search_bm25",
+            f"CASE WHEN %(search_bm25)s::text IS NOT NULL "
+            f"THEN tokenize(%(search_bm25)s::text, '{self.tokenizer_prefix}_default') "
+            f"ELSE NULL END",
+        )
+    )
     return cols
 ```
 
@@ -323,8 +325,7 @@ def install_schema(self, conn):
         toml_cfg = _build_tokenizer_toml(lang)
 
         conn.execute(
-            f"ALTER TABLE object_state "
-            f"ADD COLUMN IF NOT EXISTS {col_name} bm25vector"
+            f"ALTER TABLE object_state ADD COLUMN IF NOT EXISTS {col_name} bm25vector"
         )
         conn.execute(
             f"DO $$ BEGIN "
@@ -339,8 +340,7 @@ def install_schema(self, conn):
     # Fallback tokenizer + column + index
     fallback_toml = _build_tokenizer_toml(None)  # no stemmer
     conn.execute(
-        "ALTER TABLE object_state "
-        "ADD COLUMN IF NOT EXISTS search_bm25 bm25vector"
+        "ALTER TABLE object_state ADD COLUMN IF NOT EXISTS search_bm25 bm25vector"
     )
     conn.execute(
         f"DO $$ BEGIN "
@@ -405,11 +405,7 @@ def build_search_clause(self, query_val, lang_val, pname_func):
         idx = "idx_os_search_bm25"
         tok = f"{self.tokenizer_prefix}_default"
 
-    rank = (
-        f"{col} <&> to_bm25query("
-        f"'{idx}', "
-        f"tokenize(%({p_bm25q})s, '{tok}'))"
-    )
+    rank = f"{col} <&> to_bm25query('{idx}', tokenize(%({p_bm25q})s, '{tok}'))"
 
     params = {
         p_text: str(query_val),
@@ -435,6 +431,7 @@ def uncatalog_extra(self):
 
 ```python
 import os
+
 
 def _get_bm25_languages():
     """Read configured BM25 languages from environment."""
@@ -466,10 +463,7 @@ def detect_and_set_backend(dsn, languages=None):
     if BM25Backend.detect(dsn):
         backend = BM25Backend(languages=languages)
         set_backend(backend)
-        log.info(
-            "BM25 search backend activated "
-            f"(languages={backend.languages})"
-        )
+        log.info(f"BM25 search backend activated (languages={backend.languages})")
         return backend
     # ... fallback to TsvectorBackend ...
 ```
@@ -529,6 +523,7 @@ Rate limiting: 200ms delay between requests.
 ```python
 from plone.app.multilingual.browser.setup import SetupMultilingualSite
 
+
 def setup_multilingual(site):
     lang_tool = site.portal_languages
     lang_tool.supported_langs = ["en", "de", "zh"]
@@ -546,6 +541,7 @@ def setup_multilingual(site):
 
 ```python
 from plone.app.multilingual.interfaces import ITranslationManager
+
 
 def import_multilingual_content(site, seed_data):
     for article in seed_data:

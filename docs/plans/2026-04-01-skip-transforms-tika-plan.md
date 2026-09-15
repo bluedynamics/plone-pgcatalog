@@ -147,7 +147,9 @@ full transform pipeline runs as before.
 """
 
 from plone.app.contenttypes.indexers import SearchableText
-from plone.app.contenttypes.indexers import SearchableText_file as _original_searchable_text_file
+from plone.app.contenttypes.indexers import (
+    SearchableText_file as _original_searchable_text_file,
+)
 from plone.app.contenttypes.interfaces import IFile
 from plone.indexer import indexer
 

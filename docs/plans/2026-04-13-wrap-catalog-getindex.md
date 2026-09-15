@@ -93,10 +93,12 @@ class PGCatalogIndexes(ZCatalogIndexes):
             return index
 
         from plone.pgcatalog.interfaces import IPGCatalogTool
+
         if not IPGCatalogTool.providedBy(catalog):
             return index
 
         from plone.pgcatalog.columns import get_registry
+
         registry = get_registry()
         entry = registry.get(id)
         if entry is not None:
@@ -281,102 +283,106 @@ Add to `tests/test_clean_break.py` (after the existing `TestCatalogCompat` class
 Replace:
 
 ```python
-    def test_get_index(self, tool):
-        # Add an index object, verify getIndex works
-        tool._catalog.indexes["test_idx"] = object()
-        result = tool._catalog.getIndex("test_idx")
-        assert result is tool._catalog.indexes["test_idx"]
+def test_get_index(self, tool):
+    # Add an index object, verify getIndex works
+    tool._catalog.indexes["test_idx"] = object()
+    result = tool._catalog.getIndex("test_idx")
+    assert result is tool._catalog.indexes["test_idx"]
 
-    def test_get_index_missing_raises(self, tool):
-        with pytest.raises(KeyError):
-            tool._catalog.getIndex("nonexistent")
+
+def test_get_index_missing_raises(self, tool):
+    with pytest.raises(KeyError):
+        tool._catalog.getIndex("nonexistent")
 ```
 
 with:
 
 ```python
-    def test_get_index_missing_raises(self, tool):
-        with pytest.raises(KeyError):
-            tool._catalog.getIndex("nonexistent")
+def test_get_index_missing_raises(self, tool):
+    with pytest.raises(KeyError):
+        tool._catalog.getIndex("nonexistent")
 
-    def test_get_index_returns_pgindex_for_field(self, tool):
-        """getIndex wraps field indexes with PGIndex.
 
-        Plone code such as ``plone.app.vocabularies.KeywordsVocabulary``
-        and ``Products.CMFPlone.browser.search`` accesses indexes via
-        ``catalog._catalog.getIndex(name)`` — this path must return a
-        PG-backed wrapper, otherwise ``index._index`` and
-        ``index.uniqueValues()`` read empty ZCatalog BTrees.
-        """
-        from unittest import mock
+def test_get_index_returns_pgindex_for_field(self, tool):
+    """getIndex wraps field indexes with PGIndex.
 
-        raw = mock.Mock()
-        raw.id = "portal_type"
-        raw.meta_type = "FieldIndex"
-        tool._catalog.indexes["portal_type"] = raw
-        # Register portal_type so _maybe_wrap_index finds an idx_key.
-        from plone.pgcatalog.columns import IndexType, get_registry
+    Plone code such as ``plone.app.vocabularies.KeywordsVocabulary``
+    and ``Products.CMFPlone.browser.search`` accesses indexes via
+    ``catalog._catalog.getIndex(name)`` — this path must return a
+    PG-backed wrapper, otherwise ``index._index`` and
+    ``index.uniqueValues()`` read empty ZCatalog BTrees.
+    """
+    from unittest import mock
 
-        get_registry().register(
-            name="portal_type",
-            idx_type=IndexType.FIELD,
-            idx_key="portal_type",
-            source_attrs=["portal_type"],
-        )
+    raw = mock.Mock()
+    raw.id = "portal_type"
+    raw.meta_type = "FieldIndex"
+    tool._catalog.indexes["portal_type"] = raw
+    # Register portal_type so _maybe_wrap_index finds an idx_key.
+    from plone.pgcatalog.columns import IndexType, get_registry
 
-        from plone.pgcatalog.pgindex import PGIndex
+    get_registry().register(
+        name="portal_type",
+        idx_type=IndexType.FIELD,
+        idx_key="portal_type",
+        source_attrs=["portal_type"],
+    )
 
-        result = tool._catalog.getIndex("portal_type")
-        assert isinstance(result, PGIndex)
+    from plone.pgcatalog.pgindex import PGIndex
 
-    def test_get_index_delegates_meta_type(self, tool):
-        """Wrapped index delegates attribute access to the raw index.
+    result = tool._catalog.getIndex("portal_type")
+    assert isinstance(result, PGIndex)
 
-        plone.app.event's setuphandlers reads ``index.meta_type`` to
-        detect outdated DateIndex definitions — this must still work
-        through the wrapper.
-        """
-        from unittest import mock
 
-        raw = mock.Mock()
-        raw.id = "start"
-        raw.meta_type = "DateRecurringIndex"
-        tool._catalog.indexes["start"] = raw
-        from plone.pgcatalog.columns import IndexType, get_registry
+def test_get_index_delegates_meta_type(self, tool):
+    """Wrapped index delegates attribute access to the raw index.
 
-        get_registry().register(
-            name="start",
-            idx_type=IndexType.DATE,
-            idx_key="start",
-            source_attrs=["start"],
-        )
+    plone.app.event's setuphandlers reads ``index.meta_type`` to
+    detect outdated DateIndex definitions — this must still work
+    through the wrapper.
+    """
+    from unittest import mock
 
-        result = tool._catalog.getIndex("start")
-        assert result.meta_type == "DateRecurringIndex"
+    raw = mock.Mock()
+    raw.id = "start"
+    raw.meta_type = "DateRecurringIndex"
+    tool._catalog.indexes["start"] = raw
+    from plone.pgcatalog.columns import IndexType, get_registry
 
-    def test_get_index_special_index_unwrapped(self, tool):
-        """Special indexes (SearchableText, effectiveRange, path) with
-        ``idx_key=None`` return the raw index unchanged — they use
-        dedicated PG columns, not JSONB ->> access.
-        """
-        from unittest import mock
+    get_registry().register(
+        name="start",
+        idx_type=IndexType.DATE,
+        idx_key="start",
+        source_attrs=["start"],
+    )
 
-        raw = mock.Mock()
-        raw.id = "SearchableText"
-        raw.meta_type = "ZCTextIndex"
-        tool._catalog.indexes["SearchableText"] = raw
-        from plone.pgcatalog.columns import IndexType, get_registry
+    result = tool._catalog.getIndex("start")
+    assert result.meta_type == "DateRecurringIndex"
 
-        get_registry().register(
-            name="SearchableText",
-            idx_type=IndexType.TEXT,
-            idx_key=None,
-            source_attrs=[],
-        )
 
-        result = tool._catalog.getIndex("SearchableText")
-        # Special index → not wrapped
-        assert result is raw
+def test_get_index_special_index_unwrapped(self, tool):
+    """Special indexes (SearchableText, effectiveRange, path) with
+    ``idx_key=None`` return the raw index unchanged — they use
+    dedicated PG columns, not JSONB ->> access.
+    """
+    from unittest import mock
+
+    raw = mock.Mock()
+    raw.id = "SearchableText"
+    raw.meta_type = "ZCTextIndex"
+    tool._catalog.indexes["SearchableText"] = raw
+    from plone.pgcatalog.columns import IndexType, get_registry
+
+    get_registry().register(
+        name="SearchableText",
+        idx_type=IndexType.TEXT,
+        idx_key=None,
+        source_attrs=[],
+    )
+
+    result = tool._catalog.getIndex("SearchableText")
+    # Special index → not wrapped
+    assert result is raw
 ```
 
 Note: the original `test_get_index` test is removed because its expectation was incorrect — it codified the bug behavior ("return raw index"). The `test_get_index_missing_raises` is kept as-is.
@@ -442,7 +448,7 @@ git commit -m "fix: _CatalogCompat.getIndex returns PGIndex wrapper (fixes empty
 
 ```python
 index = catalog._catalog.getIndex("Subject")
-list(index._index.keys())   # or index.uniqueValues()
+list(index._index.keys())  # or index.uniqueValues()
 ```
 
 **Files:**
@@ -457,44 +463,42 @@ Grep in `tests/test_pgindex.py` for `_catalog_objects` to see how fixtures popul
 Add to `tests/test_pgindex.py` at the end of `TestCatalogIndexesWrapper`:
 
 ```python
-    def test_catalog_getindex_keywords_vocabulary_flow(
-        self, pg_conn_with_catalog
-    ):
-        """End-to-end: simulate the KeywordsVocabulary code path.
+def test_catalog_getindex_keywords_vocabulary_flow(self, pg_conn_with_catalog):
+    """End-to-end: simulate the KeywordsVocabulary code path.
 
-        plone.app.vocabularies.catalog.KeywordsVocabulary.all_keywords()::
+    plone.app.vocabularies.catalog.KeywordsVocabulary.all_keywords()::
 
-            index = self.catalog._catalog.getIndex(self.keyword_index)
-            return safe_simplevocabulary_from_values(index._index, ...)
+        index = self.catalog._catalog.getIndex(self.keyword_index)
+        return safe_simplevocabulary_from_values(index._index, ...)
 
-        The ``index._index`` lookup must return PG-backed data, not the
-        empty ZCatalog BTree.  Regression test for empty Subjects/Tags
-        dropdowns.
-        """
-        _catalog_objects(pg_conn_with_catalog)
-        catalog = self._make_catalog_with_indexes(pg_conn_with_catalog)
+    The ``index._index`` lookup must return PG-backed data, not the
+    empty ZCatalog BTree.  Regression test for empty Subjects/Tags
+    dropdowns.
+    """
+    _catalog_objects(pg_conn_with_catalog)
+    catalog = self._make_catalog_with_indexes(pg_conn_with_catalog)
 
-        # Register portal_type in the IndexRegistry so the wrapper knows
-        # which JSONB key to query.
-        from plone.pgcatalog.columns import IndexType, get_registry
+    # Register portal_type in the IndexRegistry so the wrapper knows
+    # which JSONB key to query.
+    from plone.pgcatalog.columns import IndexType, get_registry
 
-        get_registry().register(
-            name="portal_type",
-            idx_type=IndexType.FIELD,
-            idx_key="portal_type",
-            source_attrs=["portal_type"],
-        )
+    get_registry().register(
+        name="portal_type",
+        idx_type=IndexType.FIELD,
+        idx_key="portal_type",
+        source_attrs=["portal_type"],
+    )
 
-        # This is the exact line KeywordsVocabulary runs
-        index = catalog._catalog.getIndex("portal_type")
+    # This is the exact line KeywordsVocabulary runs
+    index = catalog._catalog.getIndex("portal_type")
 
-        # Access as KeywordsVocabulary does: index._index
-        assert index._index is not None
-        # And uniqueValues() as CMFPlone.browser.search does
-        values = list(index.uniqueValues())
-        # _catalog_objects creates Document and Folder rows
-        assert "Document" in values
-        assert "Folder" in values
+    # Access as KeywordsVocabulary does: index._index
+    assert index._index is not None
+    # And uniqueValues() as CMFPlone.browser.search does
+    values = list(index.uniqueValues())
+    # _catalog_objects creates Document and Folder rows
+    assert "Document" in values
+    assert "Folder" in values
 ```
 
 - [ ] **Step 3: Run the test**

@@ -49,6 +49,13 @@ The install step automatically:
 - Applies DDL schema to PostgreSQL (columns, functions, indexes)
 - **Rebuilds the catalog** by running `clearFindAndRebuild()` to index all existing content into PostgreSQL
 
+```{warning}
+There is no uninstall profile.
+Installation replaces `portal_catalog` with the PG-backed tool and rebuilds it in PostgreSQL, so reverting would require restoring the complete previous ZCatalog state, which no automated step provides.
+Treat the installation as one-way and take a full backup of your ZODB before you install.
+See [issue #27](https://github.com/bluedynamics/plone-pgcatalog/issues/27) for the state of an uninstall profile.
+```
+
 ## Verify installation
 
 - Visit ZMI > portal_catalog -- the class should show `PlonePGCatalogTool` and the meta type `PG Catalog Tool`.

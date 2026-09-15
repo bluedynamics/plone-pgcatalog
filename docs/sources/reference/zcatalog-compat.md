@@ -83,8 +83,8 @@ index by name returns a `PGIndex` proxy:
 
 ```python
 index = catalog.Indexes["portal_type"]
-index.uniqueValues()           # SELECT DISTINCT from PostgreSQL
-index._index.get("Document")   # PG query returning matching ZOIDs
+index.uniqueValues()  # SELECT DISTINCT from PostgreSQL
+index._index.get("Document")  # PG query returning matching ZOIDs
 ```
 
 `PGIndex._index` is a `_PGIndexMapping` that translates dict-style

@@ -76,7 +76,8 @@ Enable INFO level logging for the search module:
 
 ```python
 import logging
-logging.getLogger('plone.pgcatalog.search').setLevel(logging.INFO)
+
+logging.getLogger("plone.pgcatalog.search").setLevel(logging.INFO)
 ```
 
 Or in your `zope.conf`:
@@ -94,8 +95,7 @@ Execute the catalog search that's causing issues:
 ```python
 # In Python/debug console
 results = portal.portal_catalog.searchResults(
-    portal_type='Document',
-    review_state='published'
+    portal_type="Document", review_state="published"
 )
 ```
 

@@ -57,10 +57,12 @@ results = catalog(Title="quick fox")  # word-level match (finds "The Quick Brown
 results = catalog(path={"query": "/plone/folder", "depth": 1})
 
 # Recurring events (DateRecurringIndex)
-results = catalog(start={
-    "query": [DateTime("2025-03-01"), DateTime("2025-03-31")],
-    "range": "min:max",
-})
+results = catalog(
+    start={
+        "query": [DateTime("2025-03-01"), DateTime("2025-03-31")],
+        "range": "min:max",
+    }
+)
 ```
 
 ## Migrating an Existing Site

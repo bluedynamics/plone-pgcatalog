@@ -80,7 +80,9 @@ Or via script:
 ```python
 catalog = portal.portal_catalog
 catalog.clearFindAndRebuild()
-import transaction; transaction.commit()
+import transaction
+
+transaction.commit()
 ```
 
 ## Switching back to Tsvector

@@ -72,11 +72,12 @@ Instead of hardcoding `object_provides` and `@meta` extraction, introduce a decl
 @dataclasses.dataclass
 class ExtraIdxColumn:
     """Declare an idx key to extract into a dedicated PG column."""
-    idx_key: str          # key in the idx dict (e.g. "object_provides", "@meta")
-    column_name: str      # PG column name (e.g. "object_provides", "meta")
-    column_type: str      # PG type (e.g. "JSONB", "TEXT[]")
-    value_expr: str       # SQL value expression for INSERT (e.g. "%(object_provides)s")
-    gin_index: bool       # whether to create a GIN index
+
+    idx_key: str  # key in the idx dict (e.g. "object_provides", "@meta")
+    column_name: str  # PG column name (e.g. "object_provides", "meta")
+    column_type: str  # PG type (e.g. "JSONB", "TEXT[]")
+    value_expr: str  # SQL value expression for INSERT (e.g. "%(object_provides)s")
+    gin_index: bool  # whether to create a GIN index
 ```
 
 This allows future extractions (e.g. `allowedRolesAndUsers`) without code changes.
@@ -165,6 +166,7 @@ class TestExtraIdxColumn:
     def test_register_and_retrieve(self):
         # Clear registry for test isolation
         from plone.pgcatalog import columns
+
         old = columns._extra_idx_columns.copy()
         columns._extra_idx_columns.clear()
         try:
@@ -185,6 +187,7 @@ class TestExtraIdxColumn:
     def test_lookup_by_idx_key(self):
         from plone.pgcatalog.columns import get_extra_idx_column_for_key
         from plone.pgcatalog import columns
+
         old = columns._extra_idx_columns.copy()
         columns._extra_idx_columns.clear()
         try:
@@ -223,10 +226,11 @@ class ExtraIdxColumn:
     and stored in its own column.  Queries and brain attribute access
     are redirected transparently.
     """
-    idx_key: str        # key in the idx dict (e.g. "object_provides")
-    column_name: str    # PG column name
-    column_type: str    # PG type (e.g. "TEXT[]", "JSONB")
-    value_expr: str     # SQL value expression for psycopg (e.g. "%(object_provides)s")
+
+    idx_key: str  # key in the idx dict (e.g. "object_provides")
+    column_name: str  # PG column name
+    column_type: str  # PG type (e.g. "TEXT[]", "JSONB")
+    value_expr: str  # SQL value expression for psycopg (e.g. "%(object_provides)s")
     gin_index: bool = False
 
 
@@ -255,10 +259,10 @@ def get_extra_idx_column_for_key(idx_key):
 Also add to `__all__`:
 
 ```python
-"ExtraIdxColumn",
-"register_extra_idx_column",
-"get_extra_idx_columns",
-"get_extra_idx_column_for_key",
+("ExtraIdxColumn",)
+("register_extra_idx_column",)
+("get_extra_idx_columns",)
+("get_extra_idx_column_for_key",)
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
@@ -287,9 +291,11 @@ git commit -m "feat: add ExtraIdxColumn dataclass and registry"
 ```python
 # tests/test_extra_idx_columns.py — add to file
 
+
 class TestDefaultRegistrations:
     def test_meta_column_registered(self):
         from plone.pgcatalog.columns import get_extra_idx_column_for_key
+
         col = get_extra_idx_column_for_key("@meta")
         assert col is not None
         assert col.column_name == "meta"
@@ -297,6 +303,7 @@ class TestDefaultRegistrations:
 
     def test_object_provides_column_registered(self):
         from plone.pgcatalog.columns import get_extra_idx_column_for_key
+
         col = get_extra_idx_column_for_key("object_provides")
         assert col is not None
         assert col.column_name == "object_provides"
@@ -305,6 +312,7 @@ class TestDefaultRegistrations:
 
     def test_allowed_roles_column_registered(self):
         from plone.pgcatalog.columns import get_extra_idx_column_for_key
+
         col = get_extra_idx_column_for_key("allowedRolesAndUsers")
         assert col is not None
         assert col.column_name == "allowed_roles"
@@ -378,14 +386,17 @@ git commit -m "feat: register @meta and object_provides as default extra idx col
 class TestSchema:
     def test_catalog_columns_includes_meta(self):
         from plone.pgcatalog.schema import CATALOG_COLUMNS
+
         assert "ADD COLUMN IF NOT EXISTS meta JSONB" in CATALOG_COLUMNS
 
     def test_catalog_columns_includes_object_provides(self):
         from plone.pgcatalog.schema import CATALOG_COLUMNS
+
         assert "ADD COLUMN IF NOT EXISTS object_provides TEXT[]" in CATALOG_COLUMNS
 
     def test_catalog_indexes_includes_object_provides_gin(self):
         from plone.pgcatalog.schema import CATALOG_INDEXES
+
         assert "idx_os_object_provides" in CATALOG_INDEXES
         assert "gin (object_provides)" in CATALOG_INDEXES
 ```
@@ -532,7 +543,10 @@ In `CatalogStateProcessor.get_extra_columns()`, replace the hardcoded `allowed_r
 ```python
 def get_extra_columns(self):
     from plone.pgcatalog.columns import get_extra_idx_columns
-    extra = [ExtraColumn(col.column_name, col.value_expr) for col in get_extra_idx_columns()]
+
+    extra = [
+        ExtraColumn(col.column_name, col.value_expr) for col in get_extra_idx_columns()
+    ]
     return [
         ExtraColumn("path", "%(path)s"),
         ExtraColumn("parent_path", "%(parent_path)s"),
@@ -632,6 +646,7 @@ class TestQueryRedirection:
         """object_provides query should use the dedicated column, not idx JSONB."""
         from plone.pgcatalog.query import build_query
         from plone.pgcatalog.columns import get_registry, IndexType
+
         registry = get_registry()
         if "object_provides" not in registry:
             registry.register(
@@ -641,21 +656,27 @@ class TestQueryRedirection:
                 ["object_provides"],
             )
 
-        result = build_query({
-            "object_provides": {
-                "query": ["IFolderish", "IContentish"],
-                "operator": "or",
+        result = build_query(
+            {
+                "object_provides": {
+                    "query": ["IFolderish", "IContentish"],
+                    "operator": "or",
+                }
             }
-        })
+        )
 
         # Should query the column directly, not idx->'object_provides'
-        assert "object_provides &&" in result["where"] or "object_provides ?|" in result["where"]
+        assert (
+            "object_provides &&" in result["where"]
+            or "object_provides ?|" in result["where"]
+        )
         assert "idx->'object_provides'" not in result["where"]
 
     def test_allowed_roles_queries_column_not_idx(self):
         """allowedRolesAndUsers should use dedicated column via generic mechanism."""
         from plone.pgcatalog.query import build_query
         from plone.pgcatalog.columns import get_registry, IndexType
+
         registry = get_registry()
         if "allowedRolesAndUsers" not in registry:
             registry.register(
@@ -665,12 +686,14 @@ class TestQueryRedirection:
                 ["allowedRolesAndUsers"],
             )
 
-        result = build_query({
-            "allowedRolesAndUsers": {
-                "query": ["Anonymous"],
-                "operator": "or",
+        result = build_query(
+            {
+                "allowedRolesAndUsers": {
+                    "query": ["Anonymous"],
+                    "operator": "or",
+                }
             }
-        })
+        )
 
         # Should query allowed_roles column, not idx->'allowedRolesAndUsers'
         assert "allowed_roles" in result["where"]
@@ -679,6 +702,7 @@ class TestQueryRedirection:
     def test_keyword_and_operator_on_dedicated_column(self):
         from plone.pgcatalog.query import build_query
         from plone.pgcatalog.columns import get_registry, IndexType
+
         registry = get_registry()
         if "object_provides" not in registry:
             registry.register(
@@ -688,12 +712,14 @@ class TestQueryRedirection:
                 ["object_provides"],
             )
 
-        result = build_query({
-            "object_provides": {
-                "query": ["IFolderish", "IContentish"],
-                "operator": "and",
+        result = build_query(
+            {
+                "object_provides": {
+                    "query": ["IFolderish", "IContentish"],
+                    "operator": "and",
+                }
             }
-        })
+        )
 
         # AND: column @> ARRAY[...]
         assert "object_provides @>" in result["where"]
@@ -719,6 +745,7 @@ def _handle_keyword(self, name, idx_key, spec):
 
     # Check for dedicated TEXT[] column (generic mechanism)
     from plone.pgcatalog.columns import get_extra_idx_column_for_key
+
     extra_col = get_extra_idx_column_for_key(idx_key)
 
     if extra_col is not None and extra_col.column_type == "TEXT[]":
@@ -1075,6 +1102,7 @@ The `CATALOG_COLUMNS` and `CATALOG_INDEXES` strings in `schema.py` (modified in 
 class TestProcessorDDL:
     def test_schema_sql_includes_meta_column(self):
         from plone.pgcatalog.processor import CatalogStateProcessor
+
         processor = CatalogStateProcessor()
         ddl = processor.get_schema_sql()
         assert "meta JSONB" in ddl
@@ -1149,9 +1177,9 @@ class TestIntegration:
         catalog_object(pg_conn, zoid=200, path="/plone/integration", idx=idx)
 
         # Query by object_provides
-        qr = build_query({
-            "object_provides": {"query": ["IFolderish"], "operator": "or"}
-        })
+        qr = build_query(
+            {"object_provides": {"query": ["IFolderish"], "operator": "or"}}
+        )
         row = pg_conn.execute(
             f"SELECT zoid, path, idx, meta, object_provides, allowed_roles "
             f"FROM object_state WHERE {qr['where']}",
@@ -1182,9 +1210,9 @@ class TestIntegration:
         }
         catalog_object(pg_conn, zoid=201, path="/plone/secure", idx=idx)
 
-        qr = build_query({
-            "allowedRolesAndUsers": {"query": ["user:editor"], "operator": "or"}
-        })
+        qr = build_query(
+            {"allowedRolesAndUsers": {"query": ["user:editor"], "operator": "or"}}
+        )
         row = pg_conn.execute(
             f"SELECT zoid FROM object_state WHERE {qr['where']}",
             qr["params"],
@@ -1205,6 +1233,7 @@ class TestIntegration:
         )
         # Brain should fall back to idx["@meta"] when meta column is NULL
         from plone.pgcatalog.brain import PGCatalogBrain
+
         row_data = pg_conn.execute(
             "SELECT zoid, path, idx, meta FROM object_state WHERE zoid = 202"
         ).fetchone()

@@ -4,9 +4,9 @@
 
 ## Problem
 
-You hold a set of ZODB object ids — typically from `zc.relation` /
+You hold a set of ZODB object ids, typically from `zc.relation` /
 `zope.intid` (a `RelationList` field, or back-references from
-`catalog.findRelations(...)`) — and you want the catalog **brains** for
+`catalog.findRelations(...)`), and you want the catalog **brains** for
 those objects: their metadata, filtered by the current user's `View`
 permission.
 
@@ -27,8 +27,8 @@ hundreds of ZODB loads.
 
 ## Solution
 
-pgcatalog stores every record in `object_state` keyed by its `zoid` (the
-BIGINT primary key — the catalog `rid` *is* the zoid). The built-in
+plone.pgcatalog stores every record in `object_state` keyed by its `zoid`
+(the BIGINT primary key; the catalog `rid` *is* the zoid). The built-in
 `zoid` / `oid` query operator lets you fetch the security-filtered brains
 for a set of object ids directly, **without waking the objects**:
 
@@ -36,7 +36,7 @@ for a set of object ids directly, **without waking the objects**:
 brains = catalog(zoid=[123, 456, 789])
 ```
 
-Getting the zoids from relations is wake-free — the intid utility's
+Getting the zoids from relations is wake-free: the intid utility's
 `KeyReferenceToPersistent` already stores the object's oid, and
 `oid → zoid` is just `int.from_bytes(...)`:
 
@@ -56,8 +56,8 @@ for intid in relation_intids:
 brains = catalog(zoid=zoids)  # security-filtered, no wakes
 ```
 
-If you happen to hold raw 8-byte ZODB oids instead of ints, pass them to
-`oid=` and pgcatalog converts them for you:
+If you happen to hold raw 8-byte ZODB oids instead of integers, pass them
+to `oid=` and plone.pgcatalog converts them for you:
 
 ```python
 brains = catalog(oid=[obj._p_oid for obj in ...])
@@ -71,6 +71,7 @@ from zc.relation.interfaces import ICatalog
 from zope.component import getUtility
 from zope.intid.interfaces import IIntIds
 
+
 def related_brains(context, catalog):
     intids = getUtility(IIntIds)
     relcat = getUtility(ICatalog)
@@ -81,22 +82,24 @@ def related_brains(context, catalog):
     tids += [
         rel.from_id
         for rel in relcat.findRelations(
-            {"to_id": intids.getId(aq_inner(context)),
-             "from_attribute": "related_items"}
+            {
+                "to_id": intids.getId(aq_inner(context)),
+                "from_attribute": "related_items",
+            }
         )
     ]
 
     zoids = []
-    for tid in dict.fromkeys(tids):          # de-dup, keep order
+    for tid in dict.fromkeys(tids):  # de-dup, keep order
         kr = refs.get(tid)
         if kr is not None:
             zoids.append(int.from_bytes(kr.oid, "big"))
 
-    return catalog(zoid=zoids)               # brains, view-filtered, no wakes
+    return catalog(zoid=zoids)  # brains, view-filtered, no wakes
 ```
 
 To preserve the relation order, build a `{brain zoid: brain}` map and
-iterate your `zoids` list — a plain SQL `IN`/`ANY` does not guarantee
+iterate your `zoids` list, because a plain SQL `IN`/`ANY` does not guarantee
 row order.
 
 ## Notes
@@ -109,8 +112,8 @@ row order.
   column; there is nothing to index and no migration for existing sites.
 - **Empty set matches nothing.** `catalog(zoid=[])` returns no rows (it
   never degrades to "match the whole table").
-- **Accepted values.** `zoid` takes ints or digit strings; `oid` takes raw
-  8-byte oids; both accept a scalar or a list. Non-coercible values are
+- **Accepted values.** `zoid` takes integers or digit strings; `oid` takes
+  raw 8-byte oids; both accept a scalar or a list. Non-coercible values are
   dropped (ZCatalog-lenient).
-- **Composes.** `catalog(zoid=[...], portal_type="Document")` ANDs the two
-  filters like any other query.
+- **Composes.** `catalog(zoid=[...], portal_type="Document")` combines the
+  two filters with `AND` like any other query.
