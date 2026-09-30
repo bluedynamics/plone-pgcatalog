@@ -50,6 +50,10 @@ _MAX_OFFSET = 1000000
 # Maximum search text length (characters) to prevent resource exhaustion.
 _MAX_SEARCH_LENGTH = 1000
 
+# Maximum number of text search configurations a tsquery is OR-ed over
+# (DoS prevention).
+_MAX_SEARCH_LANGS = 4
+
 # Maximum number of zoids/oids in a single zoid query (DoS prevention). Generous
 # because a popular object can carry hundreds of back-references; well above any
 # real relation set, but bounds a hostile `zoid=[...]` from @search.
@@ -82,6 +86,69 @@ def _bool_to_lower_str(value):
     if isinstance(value, bool):
         return "true" if value else "false"
     return str(value)
+
+
+def language_codes(value):
+    """Normalize a ``Language`` query value into a list of language codes.
+
+    ZCatalog passes ``Language`` as a bare string, as a record with a
+    ``query`` key, or — on multilingual sites — as a list such as
+    ``["de", "de-at"]``.  Only the codes matter here: they pick the
+    PostgreSQL text search configurations the tsquery is built for.
+
+    Codes are reduced to their root (``de-at`` → ``de``) and deduplicated,
+    because ``pgcatalog_lang_to_regconfig`` maps a code and its region
+    variants to the same configuration.  Stringifying the list instead
+    produced ``"['de']"``, which mapped to ``simple`` and made stemmed
+    body text unreachable (#225).
+    """
+    if isinstance(value, dict):
+        value = value.get("query", "")
+    values = (
+        list(value) if isinstance(value, list | tuple | set | frozenset) else [value]
+    )
+
+    codes = []
+    for raw in values:
+        if not raw:
+            continue
+        root = _bool_to_lower_str(raw).strip().lower().split("-")[0].split("_")[0]
+        if root and root not in codes:
+            codes.append(root)
+    return codes[:_MAX_SEARCH_LANGS]
+
+
+def build_tsquery_sql(query_val, lang_codes, pname_func, params):
+    """Build the tsquery SQL expression for a ZCTextIndex-style query.
+
+    The expression is OR-ed over every text search configuration in play.
+    ``'simple'`` is always one of them: Title and Description are indexed
+    with it (weights A and B) while the body text uses the document's own
+    language configuration (weight D), so a tsquery built for a single
+    configuration can never match both halves of the weighted vector.
+    OR-ing them folds into one tsquery and still uses the GIN index.
+
+    Args:
+        query_val: the search text
+        lang_codes: language codes from :func:`language_codes`
+        pname_func: callable(prefix) -> unique param name
+        params: dict updated in place with the query parameters
+
+    Returns:
+        a SQL expression of type ``tsquery``
+    """
+    configs = []
+    for code in lang_codes:
+        p_lang = pname_func("lang")
+        params[p_lang] = code
+        configs.append(f"pgcatalog_lang_to_regconfig(%({p_lang})s)::regconfig")
+    configs.append("'simple'::regconfig")
+
+    p_text = pname_func("text")
+    params[p_text] = _bool_to_lower_str(query_val)
+    parts = [f"plainto_tsquery({config}, %({p_text})s)" for config in configs]
+
+    return "(" + " || ".join(parts) + ")"
 
 
 #: Plone-native indexes with dedicated pgcatalog handling that isn't
@@ -695,19 +762,13 @@ class _QueryBuilder:
             # SearchableText → delegate to active search backend.
             from plone.pgcatalog.backends import get_backend
 
-            lang_val = self._query.get("Language")
-            if isinstance(lang_val, dict):
-                lang_val = lang_val.get("query", "")
-            if not lang_val:
+            lang_codes = language_codes(self._query.get("Language"))
+            if not lang_codes:
                 # Try getting the current language from the environment
-                current_language = get_current_language()
-                if current_language is not None:
-                    lang_val = current_language
-
-            lang_val = _bool_to_lower_str(lang_val) if lang_val else ""
+                lang_codes = language_codes(get_current_language())
 
             clause, params, rank_expr = get_backend().build_search_clause(
-                query_val, lang_val, self._pname
+                query_val, lang_codes, self._pname
             )
             self.clauses.append(clause)
             self.params.update(params)

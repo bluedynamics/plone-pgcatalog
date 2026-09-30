@@ -656,3 +656,95 @@ class TestLangToRegconfigFunction:
         with conn.cursor() as cur:
             cur.execute("SELECT pgcatalog_lang_to_regconfig(NULL)")
             assert cur.fetchone()["pgcatalog_lang_to_regconfig"] == "simple"
+
+
+# ---------------------------------------------------------------------------
+# Language passed as a list (#225)
+# ---------------------------------------------------------------------------
+
+
+def _german_doc(conn, zoid, title, body):
+    """Catalog a document indexed with the 'german' text search config."""
+    insert_object(conn, zoid=zoid)
+    catalog_object(
+        conn,
+        zoid=zoid,
+        path=f"/plone/de/doc{zoid}",
+        idx={"portal_type": "Document", "Language": "de", "Title": title},
+        searchable_text=body,
+        language="german",
+    )
+
+
+class TestLanguageListRegconfig:
+    """A list-valued Language must still select the language config (#225).
+
+    ZCatalog passes ``Language`` as a list on multilingual sites.  Stringifying
+    it yielded ``"['de']"``, which ``pgcatalog_lang_to_regconfig`` mapped to
+    ``simple`` — so stemmed body text became unreachable.
+    """
+
+    def test_language_as_list(self, pg_conn_with_catalog):
+        conn = pg_conn_with_catalog
+        _german_doc(conn, 900, "Irgendein Titel", "Die Staufer regierten Schwaben")
+        conn.commit()
+
+        # The body holds only the german stem 'stauf'; a 'simple' tsquery
+        # looks for 'staufer' and finds nothing.
+        zoids = _query_zoids(conn, {"SearchableText": "Staufer", "Language": ["de"]})
+        assert zoids == [900]
+
+    def test_language_as_list_with_region_variants(self, pg_conn_with_catalog):
+        conn = pg_conn_with_catalog
+        _german_doc(conn, 901, "Irgendein Titel", "Die Staufer regierten Schwaben")
+        conn.commit()
+
+        zoids = _query_zoids(
+            conn, {"SearchableText": "Staufer", "Language": ["de", "de-at"]}
+        )
+        assert zoids == [901]
+
+    def test_language_as_record_holding_a_list(self, pg_conn_with_catalog):
+        conn = pg_conn_with_catalog
+        _german_doc(conn, 902, "Irgendein Titel", "Die Staufer regierten Schwaben")
+        conn.commit()
+
+        zoids = _query_zoids(
+            conn,
+            {"SearchableText": "Staufer", "Language": {"query": ["de", "de-at"]}},
+        )
+        assert zoids == [902]
+
+    def test_language_as_tuple(self, pg_conn_with_catalog):
+        conn = pg_conn_with_catalog
+        _german_doc(conn, 903, "Irgendein Titel", "Die Staufer regierten Schwaben")
+        conn.commit()
+
+        zoids = _query_zoids(conn, {"SearchableText": "Staufer", "Language": ("de",)})
+        assert zoids == [903]
+
+
+class TestMixedConfigVector:
+    """Title/Description use 'simple', the body the document language.
+
+    A tsquery built for one config alone can never match both halves of the
+    weighted vector, so the clause ORs the language config with 'simple'.
+    """
+
+    def test_list_language_matches_both_title_and_body(self, pg_conn_with_catalog):
+        conn = pg_conn_with_catalog
+        _german_doc(conn, 910, "Die Staufer", "Voellig anderer Inhalt")
+        _german_doc(conn, 911, "Irgendein Titel", "Die Staufer regierten")
+        conn.commit()
+
+        zoids = _query_zoids(conn, {"SearchableText": "Staufer", "Language": ["de"]})
+        assert zoids == [910, 911]
+
+    def test_scalar_language_matches_both_title_and_body(self, pg_conn_with_catalog):
+        conn = pg_conn_with_catalog
+        _german_doc(conn, 912, "Die Staufer", "Voellig anderer Inhalt")
+        _german_doc(conn, 913, "Irgendein Titel", "Die Staufer regierten")
+        conn.commit()
+
+        zoids = _query_zoids(conn, {"SearchableText": "Staufer", "Language": "de"})
+        assert zoids == [912, 913]

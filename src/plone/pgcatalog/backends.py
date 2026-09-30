@@ -11,7 +11,8 @@ segmenter).  A fallback column handles unconfigured languages.
 """
 
 from plone.pgcatalog.columns import validate_identifier
-from plone.pgcatalog.query import _bool_to_lower_str
+from plone.pgcatalog.query import build_tsquery_sql
+from plone.pgcatalog.query import language_codes
 from psycopg import sql as pgsql
 
 import abc
@@ -163,8 +164,12 @@ class SearchBackend(abc.ABC):
         """Build SQL clause for SearchableText filtering and ranking.
 
         Args:
-            query_val: search query string
-            lang_val: language code string (may be empty)
+            query_val: search query string; a trailing ``*`` on a term is
+                honoured as a ZCTextIndex prefix glob
+            lang_val: language code string (may be empty), or a list of
+                codes — a multilingual query sends ``["de", "de-at"]``.
+                Each distinct code contributes a text search configuration
+                to the tsquery.
             pname_func: callable(prefix) -> unique param name
 
         Returns:
@@ -230,28 +235,19 @@ class TsvectorBackend(SearchBackend):
         return {}
 
     def build_search_clause(self, query_val, lang_val, pname_func):
-        p_text = pname_func("text")
-        p_lang = pname_func("lang")
-
-        where = (
-            f"searchable_text @@ plainto_tsquery("
-            f"pgcatalog_lang_to_regconfig(%({p_lang})s)::regconfig, "
-            f"%({p_text})s)"
+        params = {}
+        tsquery = build_tsquery_sql(
+            query_val, language_codes(lang_val), pname_func, params
         )
+
+        where = f"searchable_text @@ {tsquery}"
 
         rank = (
             f"ts_rank_cd("
             f"'{{0.1, 0.2, 0.4, 1.0}}'::float4[], "
             f"searchable_text, "
-            f"plainto_tsquery("
-            f"pgcatalog_lang_to_regconfig(%({p_lang})s)::regconfig, "
-            f"%({p_text})s))"
+            f"{tsquery})"
         )
-
-        params = {
-            p_text: _bool_to_lower_str(query_val),
-            p_lang: _bool_to_lower_str(lang_val) if lang_val else "",
-        }
 
         return where, params, rank
 
@@ -522,19 +518,19 @@ $$ LANGUAGE plpgsql;
         return result
 
     def build_search_clause(self, query_val, lang_val, pname_func):
-        p_text = pname_func("text")
-        p_lang = pname_func("lang")
-        p_bm25q = pname_func("bm25q")
+        lang_codes = language_codes(lang_val)
+        params = {}
 
         # GIN pre-filter: same tsvector clause as TsvectorBackend
-        where = (
-            f"searchable_text @@ plainto_tsquery("
-            f"pgcatalog_lang_to_regconfig(%({p_lang})s)::regconfig, "
-            f"%({p_text})s)"
-        )
+        tsquery = build_tsquery_sql(query_val, lang_codes, pname_func, params)
+        where = f"searchable_text @@ {tsquery}"
 
-        # Determine BM25 ranking column based on search language
-        lang = _normalize_lang(lang_val)
+        p_bm25q = pname_func("bm25q")
+
+        # Determine BM25 ranking column based on search language.  A
+        # multilingual query carries several codes; the first one picks the
+        # tokenizer, while the tsvector clause above does the filtering.
+        lang = _normalize_lang(lang_codes[0] if lang_codes else "")
         if lang and lang in self.languages:
             col = self._col_name(lang)
             idx = self._idx_name(lang)
@@ -550,11 +546,7 @@ $$ LANGUAGE plpgsql;
         # BM25 ranking via <&> operator
         rank = f"{col} <&> to_bm25query('{idx}', tokenize(%({p_bm25q})s, '{tok}'))"
 
-        params = {
-            p_text: str(query_val),
-            p_lang: str(lang_val) if lang_val else "",
-            p_bm25q: str(query_val),
-        }
+        params[p_bm25q] = str(query_val)
 
         return where, params, rank
 

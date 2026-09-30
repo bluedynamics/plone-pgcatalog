@@ -3,7 +3,9 @@
 from datetime import datetime
 from datetime import UTC
 from plone.pgcatalog.query import _bool_to_lower_str
+from plone.pgcatalog.query import _MAX_SEARCH_LANGS
 from plone.pgcatalog.query import build_query
+from plone.pgcatalog.query import language_codes
 from psycopg.types.json import Json
 from unittest import mock
 
@@ -318,17 +320,18 @@ class TestUUIDIndex:
 
 class TestSearchableText:
     def test_full_text_search(self):
-        qr = build_query({"SearchableText": "quick fox"})
-        assert "searchable_text @@ plainto_tsquery" in qr["where"]
+        qr = build_query({"SearchableText": "quick fox", "Language": "de"})
+        assert "searchable_text @@ " in qr["where"]
+        assert "plainto_tsquery" in qr["where"]
         assert "pgcatalog_lang_to_regconfig" in qr["where"]
         assert "::regconfig" in qr["where"]
 
     def test_searchable_text_without_language(self):
-        """Without Language in query, empty string → 'simple' via SQL function."""
+        """Without Language in query the tsquery uses 'simple' only."""
         qr = build_query({"SearchableText": "hello"})
-        # Language param should be empty string (function maps to 'simple')
-        lang_params = [v for v in qr["params"].values() if v == ""]
-        assert lang_params
+        assert "'simple'::regconfig" in qr["where"]
+        # Nothing to look up: no language code reaches the SQL function.
+        assert "pgcatalog_lang_to_regconfig" not in qr["where"]
 
     def test_searchable_text_with_language_filter(self):
         """When Language is in query dict, it's passed to the SQL function."""
@@ -1510,12 +1513,13 @@ class TestSearchableTextCurrentLanguage:
         assert not [v for v in qr["params"].values() if v == "de"], qr["params"]
 
     def test_no_request_falls_back_to_simple(self, monkeypatch):
-        """No current language available → empty string ('simple' config)."""
+        """No current language available → 'simple' config only."""
         import plone.pgcatalog.query as q
 
         monkeypatch.setattr(q, "get_current_language", lambda *a, **k: None)
         qr = build_query({"SearchableText": "hello"})
-        assert [v for v in qr["params"].values() if v == ""], qr["params"]
+        assert "'simple'::regconfig" in qr["where"]
+        assert "pgcatalog_lang_to_regconfig" not in qr["where"]
 
 
 class TestGetCurrentLanguage:
@@ -1608,3 +1612,60 @@ class TestZoidIndex:
         assert "zoid" in cleaned
         assert "oid" in cleaned
         assert "bogus" not in cleaned
+
+
+# ---------------------------------------------------------------------------
+# Language value normalization (#225)
+# ---------------------------------------------------------------------------
+
+
+class TestLanguageCodes:
+    def test_plain_string(self):
+        assert language_codes("de") == ["de"]
+
+    def test_uppercase_is_lowercased(self):
+        assert language_codes("DE") == ["de"]
+
+    def test_region_variant_reduced_to_root(self):
+        assert language_codes("de-at") == ["de"]
+
+    def test_underscore_variant_reduced_to_root(self):
+        assert language_codes("de_AT") == ["de"]
+
+    def test_list(self):
+        assert language_codes(["de"]) == ["de"]
+
+    def test_tuple(self):
+        assert language_codes(("de",)) == ["de"]
+
+    def test_list_of_variants_deduplicates(self):
+        """de and de-at share a regconfig — one entry is enough."""
+        assert language_codes(["de", "de-at"]) == ["de"]
+
+    def test_list_of_distinct_languages_keeps_order(self):
+        assert language_codes(["de", "en"]) == ["de", "en"]
+
+    def test_record_holding_a_string(self):
+        assert language_codes({"query": "fr"}) == ["fr"]
+
+    def test_record_holding_a_list(self):
+        assert language_codes({"query": ["de", "de-at"]}) == ["de"]
+
+    def test_none(self):
+        assert language_codes(None) == []
+
+    def test_empty_string(self):
+        assert language_codes("") == []
+
+    def test_empty_list(self):
+        assert language_codes([]) == []
+
+    def test_record_without_query_key(self):
+        assert language_codes({}) == []
+
+    def test_empty_entries_are_dropped(self):
+        assert language_codes(["", None, "de"]) == ["de"]
+
+    def test_capped(self):
+        many = ["de", "en", "fr", "it", "es", "nl", "pt"]
+        assert len(language_codes(many)) == _MAX_SEARCH_LANGS

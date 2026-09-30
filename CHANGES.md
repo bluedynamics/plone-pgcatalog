@@ -1,5 +1,31 @@
 # Changelog
 
+## 1.0.0rc2 (unreleased)
+
+### Fixed
+
+- `SearchableText` no longer falls back to the `simple` text search
+  configuration when `Language` is a list. ZCatalog passes `Language` as a
+  list on multilingual sites (`["de", "de-at"]`, or a record holding one),
+  and stringifying it yielded `"['de']"`, which
+  `pgcatalog_lang_to_regconfig` mapped to `simple`. The query side then ran
+  `plainto_tsquery('simple', 'staufer')` against a vector built with the
+  `german` configuration (`'stauf'`), so stemmed body text never matched and
+  only Title/Description hits came back — a site-wide search returned 3
+  results where ZCTextIndex returned 6. List, tuple and record values are
+  now reduced to their language roots (`de-at` → `de`) and deduplicated.
+  #225
+
+- The `SearchableText` tsquery is now OR-ed across the `simple`
+  configuration and the query's language configurations, so a search can
+  reach the whole weighted vector. Title and Description are indexed with
+  `simple` (weights A and B) while the body text uses the document's own
+  language configuration (weight D), so a tsquery built for one
+  configuration alone could never match both halves: with a language set,
+  title-only hits were silently missed, and without one, stemmed body hits
+  were. The combined tsquery folds into a single `@@` operand and still
+  resolves through one GIN bitmap index scan. #225
+
 ## 1.0.0rc1 (2026-09-15)
 
 ### Changed
