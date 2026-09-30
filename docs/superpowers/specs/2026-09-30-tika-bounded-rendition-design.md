@@ -318,14 +318,20 @@ fixable rather than merely absent.
 Because of the three absence paths in component 1, a missing derivative
 usually means "not yet" rather than "never": pgthumbor recorded a
 `REASON_RETRY`, or an operator has the kill switch on during an import.
-So the row gets `not_before = now() + PGCATALOG_TIKA_DERIVATIVE_GRACE`,
-default 900 seconds, and its `deferrals` counter incremented. Only after
-`PGCATALOG_TIKA_MAX_DEFERRALS`, default 4, does it become `skipped`. That
-gives pgthumbor's backfill an hour to produce the derivative before
-anything is given up on.
+So the row is re-queued with `not_before` in the future, and only once the
+row's **age** exceeds `PGCATALOG_TIKA_RENDITION_GRACE`, default 3600
+seconds, does it become `skipped`.
 
-The deferral reuses the `not_before` and `deferrals` machinery from
-component 6, which is why the two components ship in that order.
+The budget is deliberately measured as age from `created_at` and **not**
+as a count of deferrals. An earlier draft counted deferrals, which is
+wrong because component 6 already uses that counter for transport backoff:
+two connection errors plus two rendition waits would have exhausted the
+budget and marked the row `skipped` for a reason that never occurred. Age
+is also the more honest expression of the intent, which is "give
+pgthumbor's backfill an hour", not "give it four tries".
+
+The deferral reuses the `not_before` machinery from component 6, which is
+why the two components ship in that order.
 
 Two things follow from the measurements and deserve stating plainly.
 
@@ -343,9 +349,8 @@ not depend on pgcatalog knowing anything.
 `skipped` is a new terminal status, distinct from `failed`. It is not an
 error and must not be swept up by a reset of failed rows. The reason goes
 into `error` as a stable machine-readable token, `skipped: pixels
-165000000 > cap 16000000, no derivative after 4 deferrals`, so an operator
-can find and re-run these rows after raising the cap or configuring
-Thumbor.
+165000000 > cap 16000000, no derivative after 3600s`, so an operator can
+find and re-run these rows after raising the cap or configuring Thumbor.
 
 #### The recall cost of this component is not measured
 
