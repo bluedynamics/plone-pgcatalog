@@ -368,18 +368,62 @@ invalidate a component.
   incident. It needs its own issue.
 - **Tesseract tuning**, languages and preprocessing. Server-side
   configuration, already documented.
+- **Audio and video.** Worth its own issue, and the measurements are
+  recorded below because they sharpen this design's central argument.
 - **Reworking the default content type list** beyond what the OCR probe
   implies. The list stays, normalisation of the incoming MIME type is
   handled below as a separate small fix.
+
+## The cost axis depends on the content class
+
+A note for whoever picks up audio and video, because it reframes the
+pixel-versus-byte argument above rather than merely extending it.
+
+Tika does not ignore them. The **stock** image claims 30 `audio/*` and
+`video/*` types across 11 parsers, including `Mp3Parser`, `MP4Parser`,
+`OggParser`, `FlacParser` and `FLVParser`. What ignores them is
+pgcatalog's `_DEFAULT_CONTENT_TYPES`, which lists none of them.
+
+And unlike images, they yield body text through the endpoint the worker
+*already* uses. Measured on the stock image, `PUT /tika` with
+`Accept: text/plain` returned 151 characters for an MP3 and 95 for an MP4,
+because `Mp3Parser` and `MP4Parser` write the tags into the content stream
+where the image parsers emit nothing. Enabling them is a content-type list
+change, not a code change.
+
+The reason it still needs its own issue is that **the cost sits somewhere
+else**. For images the transfer is cheap and the decode is expensive, and
+only with OCR. For audio and video the parse is trivial and the *transfer*
+is the cost: the worker streams the entire blob, so a 2 GB video means 2 GB
+of S3 egress and 2 GB spooled to Tika's temp disk to read a few hundred
+bytes of tags.
+
+**So for this content class a byte ceiling is the right axis**, which
+partially rehabilitates proposal 2 of #222. It was the wrong instrument for
+images, as measured. It is the correct instrument here.
+
+A prefix fetch is a viable optimisation for audio and not for video. A
+64 KiB prefix of a 5 MB MP3 returned 150 of the 151 characters, the missing
+one being a digit of the computed duration, because ID3v2 sits at the front.
+An MP4 written by ffmpeg with default settings puts `moov` at offset 19234
+of 22463, that is at the **end**, so a prefix misses the metadata entirely
+and the atom's position cannot be known without parsing.
 
 ## Adjacent fix worth carrying
 
 `_should_extract` matches the MIME type against a set by exact string
 (`src/plone/pgcatalog/processor.py:64-68`). A value of
 `text/plain; charset=utf-8` or `APPLICATION/PDF` therefore never matches,
-although both are shapes Plone can hold. Normalising to lowercase with
-parameters stripped before the lookup is a two-line correctness fix in the
-same function this change already touches.
+although both are shapes Plone can hold.
+
+Normalising is not quite the one-liner it looks like, though. Tika's own
+supported-type set contains parameterised entries, `audio/ogg; codecs=opus`
+and `audio/ogg; codecs=speex` among them, so blanket parameter stripping
+changes what matches what. The fix is therefore: lowercase and collapse
+whitespace, look up the full normalised string first, and fall back to the
+bare type before the parameters. That keeps a parameterised configuration
+entry meaningful while making `text/plain; charset=utf-8` match
+`text/plain`.
 
 ## Testing
 
