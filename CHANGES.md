@@ -1,5 +1,57 @@
 # Changelog
 
+## 1.0.0rc2 (unreleased)
+
+### Fixed
+
+- `SearchableText` no longer falls back to the `simple` text search
+  configuration when `Language` is a list. ZCatalog passes `Language` as a
+  list on multilingual sites (`["de", "de-at"]`, or a record holding one),
+  and stringifying it yielded `"['de']"`, which
+  `pgcatalog_lang_to_regconfig` mapped to `simple`. The query side then ran
+  `plainto_tsquery('simple', 'staufer')` against a vector built with the
+  `german` configuration (`'stauf'`), so stemmed body text never matched and
+  only Title/Description hits came back — a site-wide search returned 3
+  results where ZCTextIndex returned 6. List, tuple and record values are
+  now reduced to their language roots (`de-at` → `de`) and deduplicated.
+  #225
+
+- The `SearchableText` tsquery is now OR-ed across the `simple`
+  configuration and the query's language configurations, so a search can
+  reach the whole weighted vector. Title and Description are indexed with
+  `simple` (weights A and B) while the body text uses the document's own
+  language configuration (weight D), so a tsquery built for one
+  configuration alone could never match both halves: with a language set,
+  title-only hits were silently missed, and without one, stemmed body hits
+  were. The combined tsquery folds into a single `@@` operand and still
+  resolves through one GIN bitmap index scan. #225
+
+- A trailing `*` on a `SearchableText`, `Title` or `Description` term is
+  honoured again as a ZCTextIndex prefix glob. `plainto_tsquery` treats the
+  `*` as punctuation and drops it, so `archit*` degraded to an exact match
+  on the truncated lexeme `'archit'` and returned nothing where ZCTextIndex
+  returned 2630 hits. Live and typeahead searches built for ZCTextIndex send
+  `"<term>*"`, so this affected every add-on following that convention,
+  Plone's own livesearch among them. Glob queries are now built with
+  `to_tsquery` and a `term:*` operand per prefixed term, terms `AND`-ed as
+  ZCTextIndex ANDs them. Each lexeme is wrapped in SQL `quote_literal()`, so
+  PostgreSQL performs the escaping and raw input never reaches the tsquery
+  parser — passing user text to `to_tsquery` directly is a syntax error for
+  something as ordinary as `foo bar`. Queries without a `*` keep going
+  through `plainto_tsquery`, leaving stop word and punctuation handling
+  untouched. A leading `*` (suffix glob) still has no tsquery equivalent and
+  is ignored. #226
+
+### Documentation
+
+- Describe the query-time text search behavior accurately in the full-text
+  search deep dive. The page stated that a query runs a single
+  `plainto_tsquery(pgcatalog_lang_to_regconfig(Language), search_text)`,
+  which no longer holds: the tsquery is OR-ed across `simple` and the
+  query's language configurations. Add sections on why the query mixes
+  configurations and on prefix globs, and document list-valued `Language`
+  and the `*` glob in the query API reference. #225 #226
+
 ## 1.0.0rc1 (2026-09-15)
 
 ### Changed

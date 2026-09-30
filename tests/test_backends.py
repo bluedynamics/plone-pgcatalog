@@ -85,15 +85,17 @@ class TestTsvectorBackend:
         assert params[lang_key] == "en"
 
     def test_build_search_clause_empty_lang(self):
+        """No language → 'simple' config only, no language lookup."""
         counter = [0]
 
         def pname(prefix):
             counter[0] += 1
             return f"p_{prefix}_{counter[0]}"
 
-        _, params, _ = self.backend.build_search_clause("test", "", pname)
-        lang_key = next(k for k in params if "lang" in k)
-        assert params[lang_key] == ""
+        where, params, _ = self.backend.build_search_clause("test", "", pname)
+        assert "'simple'::regconfig" in where
+        assert "pgcatalog_lang_to_regconfig" not in where
+        assert not [k for k in params if "lang" in k]
 
 
 # ── Language normalization ────────────────────────────────────────────

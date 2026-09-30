@@ -247,7 +247,11 @@ applies the corresponding language configuration:
 
 - At tsvector write time: `to_tsvector(pgcatalog_lang_to_regconfig(Language), text)`
 - At BM25 write time: routes to the correct `search_bm25_{lang}` column
-- At query time: `plainto_tsquery(pgcatalog_lang_to_regconfig(Language), search_text)`
+- At query time: one `plainto_tsquery()` operand per configuration the query asks for, OR-ed with `simple`
+
+A query carries `Language` either as a single code or as a list.
+On multilingual sites ZCatalog passes a list, such as `["de", "de-at"]`.
+plone.pgcatalog reduces each entry to its language root and adds one operand per distinct configuration.
 
 If the `Language` field in the query differs from the object's language, the stemmer
 mismatch may produce suboptimal results.
@@ -255,6 +259,42 @@ This is inherent to language-specific
 stemming -- searching for German words with an English stemmer produces poor matches.
 The BM25 fallback column (no stemmer, basic tokenization) provides a safety net for
 cross-language searches.
+
+(fulltext-mixed-configurations)=
+
+### Why the query mixes configurations
+
+The stored vector is not written with a single text search configuration.
+`Title` and `Description` use `simple` (weights A and B), while the body text uses the object's own language configuration (weight D).
+
+A tsquery built for one configuration alone can therefore never match the whole vector.
+Searching a German site for `Staufer` shows both halves of the problem.
+The `german` configuration reduces the term to the stem `stauf`, which matches the body text but not the `staufer` stored for the title.
+The `simple` configuration does the opposite.
+
+For this reason plone.pgcatalog combines the tsquery with `OR` across `simple` and every language configuration the query asks for.
+The result is a single `@@` operand, so PostgreSQL still resolves it through one GIN bitmap index scan.
+
+(fulltext-prefix-globs)=
+
+## Prefix globs
+
+ZCTextIndex reads a trailing `*` on a term as a prefix glob, so searches that run while you type send `"<term>*"`.
+Plone's own live search followed that convention for years, and the syntax still reaches the catalog from a good deal of existing add-on code.
+
+PostgreSQL expresses the same idea as `to_tsquery('german', 'archit:*')`, but `plainto_tsquery()` treats the `*` as punctuation and discards it.
+A prefix search would otherwise degrade into an exact match on a truncated word, which usually matches nothing at all.
+plone.pgcatalog therefore builds glob queries with `to_tsquery()` and one `term:*` operand per prefixed term.
+
+Queries without a `*` keep going through `plainto_tsquery()`, which leaves their stop word and punctuation handling untouched.
+This split matters because `to_tsquery()` parses its argument as a tsquery expression: handing it raw search text is a syntax error for input as ordinary as `foo bar`.
+plone.pgcatalog wraps each lexeme in the SQL function `quote_literal()`, so PostgreSQL performs the escaping and user input never reaches the tsquery parser.
+
+Wrapping also preserves stemming, and stemming the prefix is what makes it match.
+The German-stemmed `verwalt:*` finds the indexed stem `verwalt`, while `verwaltung:*` from the `simple` configuration misses it.
+
+A leading `*` is a suffix glob.
+PostgreSQL text search has no equivalent, so plone.pgcatalog ignores it.
 
 ## Relevance ranking
 
