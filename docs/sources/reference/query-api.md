@@ -143,12 +143,29 @@ catalog(SearchableText="my search term")
 # Language-aware stemming (e.g., German stemming for "Katzen" → "Katz")
 catalog(SearchableText="Katzen", Language="de")
 
+# Language also accepts a list, the form multilingual sites pass
+catalog(SearchableText="Katzen", Language=["de", "de-at"])
+
+# A trailing '*' is a prefix glob, as in ZCTextIndex
+catalog(SearchableText="architek*")
+
 # Title: word-level match (uses 'simple' regconfig)
 catalog(Title="Quick Fox")
 
 # Description: word-level match (uses 'simple' regconfig)
 catalog(Description="introduction")
 ```
+
+`Language` accepts a string, a list, a tuple, or a record with a `query` key.
+Each entry is reduced to its language root, so `de-at` and `de` select the same
+text search configuration.
+The tsquery is OR-ed across those configurations and `simple`.
+At most four distinct configurations are used.
+
+A term ending in `*` matches by prefix, on `SearchableText`, `Title`,
+`Description`, and addon `ZCTextIndex` fields alike.
+Terms are combined with AND.
+A leading `*` has no equivalent in PostgreSQL text search and is ignored.
 
 Relevance ranking is autoapplied when `SearchableText` is queried
 without an explicit `sort_on`.

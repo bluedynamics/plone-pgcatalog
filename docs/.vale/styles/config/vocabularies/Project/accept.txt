@@ -111,6 +111,7 @@ uv
 
 # Technical terms
 tsvector
+tsquery
 regconfig
 autocommit
 queryable

@@ -42,6 +42,16 @@
   untouched. A leading `*` (suffix glob) still has no tsquery equivalent and
   is ignored. #226
 
+### Documentation
+
+- Describe the query-time text search behavior accurately in the full-text
+  search deep dive. The page stated that a query runs a single
+  `plainto_tsquery(pgcatalog_lang_to_regconfig(Language), search_text)`,
+  which no longer holds: the tsquery is OR-ed across `simple` and the
+  query's language configurations. Add sections on why the query mixes
+  configurations and on prefix globs, and document list-valued `Language`
+  and the `*` glob in the query API reference. #225 #226
+
 ## 1.0.0rc1 (2026-09-15)
 
 ### Changed
