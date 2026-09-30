@@ -119,11 +119,11 @@ installed is enqueued **twice** today, once for the original and once for
 the derivative, with the original being the row that can take Tika down.
 Verifying this is step 0 below.
 
-The new rule is uniform and needs no special case for the common path:
+The rule is:
 
-> Enqueue the **bounded rendition**: the derivative when one exists, and
-> the original otherwise, because an image without a derivative is already
-> under pgthumbor's cap by construction.
+> Extract the **bounded rendition**: the derivative when one exists, and
+> the original otherwise, because an image without a derivative is either
+> already under pgthumbor's cap or pgthumbor never got to it.
 
 pgthumbor creates a derivative exactly when the longest edge exceeds the
 cap, or the colour space is not sRGB, or the image is palette-plus-alpha
@@ -135,6 +135,76 @@ headroom in a 1 GiB container.
 
 This component also removes the double enqueue, which is a correctness fix
 independent of everything else in this design.
+
+#### Resolution happens at dequeue, not at enqueue
+
+An earlier draft of this design resolved the derivative in the processor,
+at enqueue. That is wrong, and the reason is worth spelling out because it
+is the single largest trap in this change.
+
+`generate_source_derivatives` is a synchronous subscriber on
+`IObjectAddedEvent` and `IObjectModifiedEvent`, so in the uncontended case
+the derivative *is* in the state before the state processor runs at
+`tpc_vote`. But there are three independent ways for it to be absent, and
+all three are normal operation rather than edge cases:
+
+1. **The decode semaphore.** `_DECODE_SEMAPHORE` is a process-wide
+   `BoundedSemaphore(1)` with `DECODE_TIMEOUT = 2.0`, and a thread that
+   cannot get in "records a retry and gives up rather than queueing"
+   (`plone/pgthumbor/subscribers.py:154`). Under any concurrency the
+   derivative is simply not created in that transaction.
+2. **The kill switch.** `max_edge <= 0` disables generation, and
+   pgthumbor's own comment calls it "the documented kill switch, the thing
+   an operator reaches for **during a bulk import** or an incident".
+3. **Thumbor not configured.** `_configured_max_edge()` returns 0 when
+   there is no Thumbor config, so no derivative is ever produced, and
+   nothing is recorded either.
+
+Case 1 and case 2 are exactly the mass-import scenario that #222 reports,
+139k objects with many large photos. Resolving at enqueue would therefore
+have skipped precisely the workload this design exists to make safe, and
+case 3 would have made extraction quality depend silently on whether
+Thumbor is configured. That is an unacceptable coupling between two
+packages that are meant to be independently useful.
+
+So the worker resolves the rendition at dequeue, against the *current*
+state, by which time pgthumbor's retry or its backfill has usually run. The
+processor's job shrinks to enqueuing one row per content object and image
+field, pointing at the **original** blob, and recording what it knows in
+`source_info`.
+
+Two consequences to handle deliberately:
+
+- **`blob_zoid` and `tid` stay the dedup key, not the work order.** The row
+  identifies "make `searchable_text` current for this content version", and
+  `UNIQUE(blob_zoid, tid)` keeps its meaning. Which blob is actually sent
+  is decided at run time, and the blob that was used is written back into
+  `source_info` for auditing.
+- **A missing derivative is a deferral, not a terminal skip.** See
+  component 4.
+
+#### `_collect_ref_oids` has to learn structure
+
+`_collect_ref_oids` flattens the state into an unordered list of zoids
+(`src/plone/pgcatalog/processor.py:69-106`). It cannot say which ref came
+from `_pgthumbor_source` and which is the field's own blob, and it cannot
+pair an original with its derivative when an object has several image
+fields, such as a lead image plus an attachment.
+
+Pairing therefore needs a structure-aware walk that returns
+`(field_path, blob_zoid)` rather than bare zoids. The existing flat
+function stays for its current callers; the new one lives beside it and is
+shared with the worker. This is real work, not a rename, and the plan
+treats it as its own task.
+
+#### The derivative's content type differs from the original's
+
+pgthumbor's `_encode` picks the output format from the image, so a TIFF or
+a CMYK JPEG original can have a PNG or sRGB JPEG derivative. Sending the
+derivative under the *original's* MIME type would hand Tika a wrong hint.
+The rendition's own content type has to travel with it, which means
+`source_info` records it and the worker uses it for the `Content-Type`
+header rather than the queue row's `content_type`.
 
 ### Component 2: source facts travel with the queue row
 
@@ -227,19 +297,35 @@ Evaluated by the worker after dequeue and before any blob fetch.
 `cap` is `PGCATALOG_TIKA_MAX_IMAGE_PIXELS`, default 16_000_000, chosen to
 match a 4000 px square and therefore pgthumbor's default cap.
 
-| OCR available | Dimensions known | Pixels vs cap | Action |
+| OCR available | Rendition | Pixels vs cap | Action |
 |---|---|---|---|
 | no | either | either | extract, no guard |
-| yes | no | unknown | extract, no guard |
-| yes | yes | `<=` cap | extract |
-| yes | yes | `>` cap | **skip**, status `skipped` |
+| yes | any | unknown | extract, no guard |
+| yes | any | `<=` cap | extract |
+| yes | derivative | `>` cap | extract, and warn |
+| yes | original, oversized | `>` cap | **defer**, then `skipped` |
 
-Components 1 and 4 are not redundant, they are layered. Component 1 means
-the row usually already points at a bounded blob, so the guard is expected
-to fire only where no derivative exists, which is either pgthumbor not
-being installed or an image it excludes. If the guard fires often in
-practice, that is a signal that derivative coverage is incomplete, and the
-`skipped` rows are where to look.
+The last two rows are where the care is.
+
+**A derivative that is still over the cap is extracted anyway.** This
+happens when pgthumbor's cap is set above ours, up to its 8000 px ceiling
+which is 64 MP. Refusing it would mean two packages silently disagreeing
+about a threshold and content vanishing in the gap. The worker extracts and
+logs a warning naming both numbers, so the misconfiguration is visible and
+fixable rather than merely absent.
+
+**An oversized original with no derivative is deferred, not dropped.**
+Because of the three absence paths in component 1, a missing derivative
+usually means "not yet" rather than "never": pgthumbor recorded a
+`REASON_RETRY`, or an operator has the kill switch on during an import.
+So the row gets `not_before = now() + PGCATALOG_TIKA_DERIVATIVE_GRACE`,
+default 900 seconds, and its `deferrals` counter incremented. Only after
+`PGCATALOG_TIKA_MAX_DEFERRALS`, default 4, does it become `skipped`. That
+gives pgthumbor's backfill an hour to produce the derivative before
+anything is given up on.
+
+The deferral reuses the `not_before` and `deferrals` machinery from
+component 6, which is why the two components ship in that order.
 
 Two things follow from the measurements and deserve stating plainly.
 
@@ -257,8 +343,26 @@ not depend on pgcatalog knowing anything.
 `skipped` is a new terminal status, distinct from `failed`. It is not an
 error and must not be swept up by a reset of failed rows. The reason goes
 into `error` as a stable machine-readable token, `skipped: pixels
-165000000 > cap 16000000`, so an operator can find and re-run these rows
-after raising the cap or installing pgthumbor.
+165000000 > cap 16000000, no derivative after 4 deferrals`, so an operator
+can find and re-run these rows after raising the cap or configuring
+Thumbor.
+
+#### The recall cost of this component is not measured
+
+The design trades OCR recall for safety, and honesty requires saying that
+the size of that trade is unknown. A derivative is downscaled and
+re-encoded, so OCR on it is strictly worse than OCR on the original. For a
+165 MP photograph that is irrelevant, since there is no text. For a large
+document **stored as an image rather than as a PDF**, an A0 plan or a
+newspaper page scanned at 300 dpi, 4000 px on the longest edge may well be
+below the resolution Tesseract needs, and the text would quietly get worse
+rather than disappear, which is harder to notice.
+
+I measured memory and latency, not accuracy. The plan's first phase
+measures it: OCR a text-bearing scan at full resolution and at 4000 px and
+compare the character output. If the loss is severe, the honest response is
+to raise the default cap and the Tika memory limit together rather than to
+pretend the derivative is equivalent.
 
 ### Component 5: metadata harvesting
 
@@ -284,13 +388,27 @@ first and embedded documents after it. Extraction becomes:
 The merge function takes a single text argument, so no schema or SQL
 function change is needed.
 
+**Concatenation does not double-count, which was worth checking.** Measured
+on a ZIP holding two text files, the container entry's `X-TIKA:content` was
+`'vertrag.txt\n\n\nanhang.txt'`, the file *names* only, and the two child
+entries held the actual text. So the embedded text appears exactly once and
+concatenating all entries reproduces what `PUT /tika` returns today.
+
+What does change is **word order**. `/tika` interleaves each name with its
+content, while concatenating rmeta entries yields all names first and then
+all contents. For a `tsvector` that is a bag of words and irrelevant, but
+it shifts adjacency, so any phrase search over `searchable_text` would see
+different proximity. Acceptable, and worth a changelog note rather than
+silence.
+
 Two risks to handle in implementation. A document with many embedded
-resources produces a large JSON response, so the worker needs a response
-size ceiling and should cap embedded resources via Tika's own header rather
-than parsing an unbounded body. And a metadata value that repeats the body
-text inflates term frequency in the BM25 columns; the whitelist is
-deliberately small for that reason, and de-duplication is a follow-up if it
-proves to matter.
+resources produces one JSON entry per resource, three for a two-file ZIP,
+so a 500-page PDF full of images becomes a very large response. The worker
+needs a response size ceiling and should cap embedded resources via Tika's
+own header rather than parsing an unbounded body. And a metadata value that
+repeats the body text inflates term frequency in the BM25 columns; the
+whitelist is deliberately small for that reason, and de-duplication is a
+follow-up if it proves to matter.
 
 ### Component 6: retry that can bridge a restart
 
@@ -447,19 +565,29 @@ entry meaningful while making `text/plain; charset=utf-8` match
 ## PR decomposition
 
 Sequenced so each PR is independently reviewable and shippable, with the
-correctness fixes first.
+correctness fixes first. The order changed once component 4 grew a
+deferral: the `not_before` machinery now has to land **before** the
+decision matrix that uses it, so retry moved from fifth to third.
 
-1. Step 0 verification plus the MIME normalisation fix and the double
-   enqueue fix. No new configuration.
-2. The `source_info` column, dimensions written at enqueue, bounded blob
-   selection.
-3. OCR probe and the decision matrix, including the `skipped` status.
-4. `/rmeta/text` and metadata harvesting.
-5. Retry backoff and `not_before`.
+1. Step 0 verification, plus the MIME normalisation fix and the double
+   enqueue fix. No new configuration, no new columns.
+2. The `source_info` column, the structure-aware ref walk, dimensions and
+   rendition pairing written at enqueue.
+3. Retry backoff, `not_before` and `deferrals`. Fixes proposal 3 of #222
+   on its own and provides the machinery component 4 needs.
+4. OCR probe, the decision matrix, dequeue-time rendition resolution, and
+   the `skipped` status.
+5. `/rmeta/text` and metadata harvesting.
 6. Documentation for the Tika side, and the reference page for the new
    environment variables.
 
+PRs 1 and 3 each fix something real on their own and do not depend on the
+rest, so they can ship while the accuracy question in component 4 is still
+being measured.
+
 Each PR carries its own `CHANGES.md` entry.
+
+Out of scope and tracked separately: audio and video, in #223.
 
 ## Appendix: reproducing the measurements
 
