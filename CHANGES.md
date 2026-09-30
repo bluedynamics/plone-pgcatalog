@@ -26,6 +26,22 @@
   were. The combined tsquery folds into a single `@@` operand and still
   resolves through one GIN bitmap index scan. #225
 
+- A trailing `*` on a `SearchableText`, `Title` or `Description` term is
+  honoured again as a ZCTextIndex prefix glob. `plainto_tsquery` treats the
+  `*` as punctuation and drops it, so `archit*` degraded to an exact match
+  on the truncated lexeme `'archit'` and returned nothing where ZCTextIndex
+  returned 2630 hits. Live and typeahead searches built for ZCTextIndex send
+  `"<term>*"`, so this affected every add-on following that convention,
+  Plone's own livesearch among them. Glob queries are now built with
+  `to_tsquery` and a `term:*` operand per prefixed term, terms `AND`-ed as
+  ZCTextIndex ANDs them. Each lexeme is wrapped in SQL `quote_literal()`, so
+  PostgreSQL performs the escaping and raw input never reaches the tsquery
+  parser — passing user text to `to_tsquery` directly is a syntax error for
+  something as ordinary as `foo bar`. Queries without a `*` keep going
+  through `plainto_tsquery`, leaving stop word and punctuation handling
+  untouched. A leading `*` (suffix glob) still has no tsquery equivalent and
+  is ignored. #226
+
 ## 1.0.0rc1 (2026-09-15)
 
 ### Changed

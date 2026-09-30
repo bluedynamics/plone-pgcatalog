@@ -13,6 +13,7 @@ segmenter).  A fallback column handles unconfigured languages.
 from plone.pgcatalog.columns import validate_identifier
 from plone.pgcatalog.query import build_tsquery_sql
 from plone.pgcatalog.query import language_codes
+from plone.pgcatalog.query import parse_search_terms
 from psycopg import sql as pgsql
 
 import abc
@@ -546,7 +547,9 @@ $$ LANGUAGE plpgsql;
         # BM25 ranking via <&> operator
         rank = f"{col} <&> to_bm25query('{idx}', tokenize(%({p_bm25q})s, '{tok}'))"
 
-        params[p_bm25q] = str(query_val)
+        # ``tokenize()`` has no prefix syntax, so rank on the terms with the
+        # globs stripped — the tsvector clause above already filtered.
+        params[p_bm25q] = " ".join(term for term, _ in parse_search_terms(query_val))
 
         return where, params, rank
 

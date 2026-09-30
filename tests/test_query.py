@@ -4,8 +4,10 @@ from datetime import datetime
 from datetime import UTC
 from plone.pgcatalog.query import _bool_to_lower_str
 from plone.pgcatalog.query import _MAX_SEARCH_LANGS
+from plone.pgcatalog.query import _MAX_SEARCH_TERMS
 from plone.pgcatalog.query import build_query
 from plone.pgcatalog.query import language_codes
+from plone.pgcatalog.query import parse_search_terms
 from psycopg.types.json import Json
 from unittest import mock
 
@@ -1669,3 +1671,46 @@ class TestLanguageCodes:
     def test_capped(self):
         many = ["de", "en", "fr", "it", "es", "nl", "pt"]
         assert len(language_codes(many)) == _MAX_SEARCH_LANGS
+
+
+# ---------------------------------------------------------------------------
+# ZCTextIndex glob parsing (#226)
+# ---------------------------------------------------------------------------
+
+
+class TestParseSearchTerms:
+    def test_plain_term(self):
+        assert parse_search_terms("architektur") == [("architektur", False)]
+
+    def test_prefix_glob(self):
+        assert parse_search_terms("archit*") == [("archit", True)]
+
+    def test_multiple_terms(self):
+        assert parse_search_terms("quick fox") == [("quick", False), ("fox", False)]
+
+    def test_mixed_glob_and_plain(self):
+        assert parse_search_terms("staufer* regierten") == [
+            ("staufer", True),
+            ("regierten", False),
+        ]
+
+    def test_leading_glob_is_not_a_prefix_match(self):
+        """A suffix glob has no tsquery equivalent — the '*' is dropped."""
+        assert parse_search_terms("*foo") == [("foo", False)]
+
+    def test_surrounding_globs_keep_the_prefix_match(self):
+        assert parse_search_terms("*foo*") == [("foo", True)]
+
+    def test_bare_globs_are_dropped(self):
+        assert parse_search_terms("**") == []
+        assert parse_search_terms("*") == []
+
+    def test_empty(self):
+        assert parse_search_terms("") == []
+
+    def test_whitespace_is_collapsed(self):
+        assert parse_search_terms("  a   b  ") == [("a", False), ("b", False)]
+
+    def test_capped(self):
+        many = " ".join(f"term{i}" for i in range(_MAX_SEARCH_TERMS + 10))
+        assert len(parse_search_terms(many)) == _MAX_SEARCH_TERMS

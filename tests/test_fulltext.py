@@ -748,3 +748,134 @@ class TestMixedConfigVector:
 
         zoids = _query_zoids(conn, {"SearchableText": "Staufer", "Language": "de"})
         assert zoids == [912, 913]
+
+
+# ---------------------------------------------------------------------------
+# ZCTextIndex prefix globs (#226)
+# ---------------------------------------------------------------------------
+
+
+class TestPrefixGlobSearch:
+    """A trailing ``*`` is a ZCTextIndex prefix glob (#226).
+
+    ``plainto_tsquery`` drops it as punctuation, degrading the search to an
+    exact match on a truncated word.
+    """
+
+    def test_prefix_glob_matches_longer_word(self, pg_conn_with_catalog):
+        conn = pg_conn_with_catalog
+        _german_doc(conn, 920, "Irgendein Titel", "Architektur und Baukunst")
+        conn.commit()
+
+        zoids = _query_zoids(conn, {"SearchableText": "archit*", "Language": ["de"]})
+        assert zoids == [920]
+
+    def test_plain_term_stays_an_exact_match(self, pg_conn_with_catalog):
+        """Without the ``*`` a truncated word must still not match."""
+        conn = pg_conn_with_catalog
+        _german_doc(conn, 921, "Irgendein Titel", "Architektur und Baukunst")
+        conn.commit()
+
+        zoids = _query_zoids(conn, {"SearchableText": "archit", "Language": ["de"]})
+        assert zoids == []
+
+    def test_prefix_glob_combined_with_plain_term(self, pg_conn_with_catalog):
+        conn = pg_conn_with_catalog
+        _german_doc(conn, 922, "Irgendein Titel", "Die Staufer regierten Schwaben")
+        _german_doc(conn, 923, "Irgendein Titel", "Die Staufer bauten Burgen")
+        conn.commit()
+
+        # Both terms must match: 'staufer*' as a prefix, 'regierten' exactly.
+        zoids = _query_zoids(
+            conn, {"SearchableText": "staufer* regierten", "Language": ["de"]}
+        )
+        assert zoids == [922]
+
+    def test_prefix_glob_without_language(self, pg_conn_with_catalog):
+        conn = pg_conn_with_catalog
+        insert_object(conn, zoid=924)
+        catalog_object(
+            conn,
+            zoid=924,
+            path="/plone/doc924",
+            idx={"portal_type": "Document"},
+            searchable_text="Architecture and construction",
+        )
+        conn.commit()
+
+        zoids = _query_zoids(conn, {"SearchableText": "architec*"})
+        assert zoids == [924]
+
+    def test_leading_glob_is_ignored(self, pg_conn_with_catalog):
+        """A leading ``*`` (suffix glob) has no tsquery equivalent."""
+        conn = pg_conn_with_catalog
+        _german_doc(conn, 925, "Irgendein Titel", "Architektur und Baukunst")
+        conn.commit()
+
+        zoids = _query_zoids(
+            conn, {"SearchableText": "*architektur", "Language": ["de"]}
+        )
+        assert zoids == [925]
+
+    def test_glob_with_tsquery_operators_is_safe(self, pg_conn_with_catalog):
+        """Raw input must never reach the tsquery parser."""
+        conn = pg_conn_with_catalog
+        _german_doc(conn, 926, "Irgendein Titel", "Architektur und Baukunst")
+        conn.commit()
+
+        for text in (
+            "foo (bar*",
+            "foo)*",
+            "a & b | !c*",
+            "quo:vadis*",
+            "'*",
+            "!*",
+            "*",
+        ):
+            # No SQL error, and nothing matches these.
+            assert (
+                _query_zoids(conn, {"SearchableText": text, "Language": ["de"]}) == []
+            )
+
+    def test_glob_on_apostrophe_term_is_safe(self, pg_conn_with_catalog):
+        conn = pg_conn_with_catalog
+        insert_object(conn, zoid=927)
+        catalog_object(
+            conn,
+            zoid=927,
+            path="/plone/doc927",
+            idx={"portal_type": "Document"},
+            searchable_text="O'Brien wrote this",
+        )
+        conn.commit()
+
+        zoids = _query_zoids(conn, {"SearchableText": "o'brie*"})
+        assert zoids == [927]
+
+    def test_title_prefix_glob(self, pg_conn_with_catalog):
+        """Title is a ZCTextIndex too — livesearch sends Title='foo*'."""
+        conn = pg_conn_with_catalog
+        insert_object(conn, zoid=928)
+        catalog_object(
+            conn,
+            zoid=928,
+            path="/plone/doc928",
+            idx={"portal_type": "Document", "Title": "Architektur der Staufer"},
+        )
+        conn.commit()
+
+        assert _query_zoids(conn, {"Title": "architek*"}) == [928]
+        assert _query_zoids(conn, {"Title": "architek"}) == []
+
+    def test_description_prefix_glob(self, pg_conn_with_catalog):
+        conn = pg_conn_with_catalog
+        insert_object(conn, zoid=929)
+        catalog_object(
+            conn,
+            zoid=929,
+            path="/plone/doc929",
+            idx={"portal_type": "Document", "Description": "Eine Baukunst Uebersicht"},
+        )
+        conn.commit()
+
+        assert _query_zoids(conn, {"Description": "bauku*"}) == [929]
