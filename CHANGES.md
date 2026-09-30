@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.0.0rc3 (unreleased)
+
+### Internal
+
+- Correct the release process documentation. `RELEASE.md` claimed that pushing
+  the tag triggers the release workflow and publishes to PyPI, and that
+  pre-release tags go to Test PyPI instead. Neither is true: no trigger in
+  `release.yaml` matches a tag push, publishing to PyPI happens on the
+  `release: published` event, and Test PyPI receives a dev version from every
+  successful CI run on `main`. Following the old text would leave a tag pushed
+  and nothing on PyPI. Also document the `Release <version>` commit that dates
+  the changelog section, which the process always had but the document never
+  mentioned, and add a table of what each workflow trigger publishes where.
+
 ## 1.0.0rc2 (2026-09-30)
 
 ### Fixed
