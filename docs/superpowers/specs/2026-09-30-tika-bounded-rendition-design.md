@@ -136,13 +136,19 @@ headroom in a 1 GiB container.
 This component also removes the double enqueue, which is a correctness fix
 independent of everything else in this design.
 
-### Component 2: dimensions travel with the queue row
+### Component 2: source facts travel with the queue row
 
-Two nullable columns are added to `text_extraction_queue`:
+One nullable JSONB column is added to `text_extraction_queue`:
 
 ```sql
-ALTER TABLE text_extraction_queue ADD COLUMN IF NOT EXISTS width  INTEGER;
-ALTER TABLE text_extraction_queue ADD COLUMN IF NOT EXISTS height INTEGER;
+ALTER TABLE text_extraction_queue
+    ADD COLUMN IF NOT EXISTS source_info JSONB;
+```
+
+Initial shape, written by the processor at enqueue:
+
+```json
+{"width": 15000, "height": 11000}
 ```
 
 `plone.namedfile` computes `_width` and `_height` when the field data is
@@ -150,9 +156,52 @@ set, so the values are expected to be present in the object state that the
 processor already parses. No blob read and no image decode is needed to
 populate them. Confirming the exact state shape is step 0 below.
 
-Both columns stay nullable on purpose. Rows written before this change,
-and content types where dimensions are meaningless, carry NULL, and NULL
-means "no pixel guard applies".
+**Why JSONB and not two typed columns.** This follows the house pattern
+rather than inventing one: `idx` is JSONB and `ExtraIdxColumn` /
+`register_extra_idx_column` in `columns.py` exist to promote a key to a
+typed column once something needs to query it. The pixel guard is
+evaluated by the worker in Python after dequeue, so nothing queries these
+values in SQL, and they stay in JSONB. Were we to add a page count for
+scanned PDFs, or a colour mode, or a DPI, none of them would need DDL.
+
+Note that the usual argument for this is wrong and is not the reason here:
+`ALTER TABLE ... ADD COLUMN x INTEGER` with no default is metadata-only in
+PostgreSQL, instant and without a table rewrite, so adding columns later is
+cheap. The reason is that a job queue should not accumulate one column per
+fact we happen to learn about blobs.
+
+**What `source_info` is for, and what it is not.** It holds facts about the
+*source blob* that are known *before* extraction and are used to route the
+job. It is explicitly **not** a home for extraction results. The metadata
+that component 5 harvests from Tika goes into `searchable_text` through
+`pgcatalog_merge_extracted_text`, and outcomes live in `status` and
+`error`. Naming the column `source_info` rather than `metadata` is
+deliberate, because a generic name on a queue table invites exactly that
+drift.
+
+**The promotion path, if it is ever needed.** #132 moved `path` out of
+`idx` into typed columns because seven indexes and the query builder needed
+it, and that lesson applies here too the moment anything filters on these
+values in SQL. A plausible future case is a separate worker pool for large
+jobs, dequeuing with a predicate on pixel count. That wants either an
+expression index,
+
+```sql
+CREATE INDEX idx_teq_pixels ON text_extraction_queue
+    (((source_info->>'width')::bigint * (source_info->>'height')::bigint));
+```
+
+or a promoted typed column. Either is a small, local change at that point,
+and naming it here means it gets decided deliberately rather than
+discovered.
+
+The column stays nullable. Rows written before this change, and content
+types where dimensions are meaningless, carry NULL, and a missing or NULL
+`width`/`height` means "no pixel guard applies".
+
+**By contrast, `not_before` in component 6 is a typed column**, because the
+dequeue predicate and the partial index both read it. That is the same rule
+being applied, not an inconsistency.
 
 ### Component 3: the OCR probe
 
@@ -358,7 +407,8 @@ correctness fixes first.
 
 1. Step 0 verification plus the MIME normalisation fix and the double
    enqueue fix. No new configuration.
-2. Schema columns, dimensions on the queue row, bounded blob selection.
+2. The `source_info` column, dimensions written at enqueue, bounded blob
+   selection.
 3. OCR probe and the decision matrix, including the `skipped` status.
 4. `/rmeta/text` and metadata harvesting.
 5. Retry backoff and `not_before`.
