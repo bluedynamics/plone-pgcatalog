@@ -363,11 +363,19 @@ newspaper page scanned at 300 dpi, 4000 px on the longest edge may well be
 below the resolution Tesseract needs, and the text would quietly get worse
 rather than disappear, which is harder to notice.
 
-I measured memory and latency, not accuracy. The plan's first phase
-measures it: OCR a text-bearing scan at full resolution and at 4000 px and
-compare the character output. If the loss is severe, the honest response is
-to raise the default cap and the Tika memory limit together rather than to
-pretend the derivative is equivalent.
+**Measured 2026-10-01, see `benchmarks/tika_ocr_downscale.md`.** On a
+dense A0 page at 300 dpi, pgthumbor's default 4000 px cap costs 3
+percentage points of phrase recall and 1.4 of word recall against the
+original. Small, and worth not being OOM-killed, so the default stands.
+
+Two things that measurement changed. Resolution is **not monotonic**:
+pgthumbor's 8000 px ceiling scored 76.0% where its 4000 px default scored
+97.0%, reproduced twice in the 24-25 px glyph band. So an earlier draft of
+this section was wrong to suggest raising the cap as the remedy for poor
+recall; raising it can make OCR worse while costing four times the pixels.
+And the collapse is governed by **glyph height**, not image size, so the
+cap bounds memory but cannot promise recall: the same 4000 px that costs
+3% here would destroy a plan sheet whose annotations render half as large.
 
 ### Component 5: metadata harvesting
 
