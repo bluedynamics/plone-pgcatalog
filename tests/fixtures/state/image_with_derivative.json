@@ -1,0 +1,77 @@
+{
+  "_provenance": "Captured 2026-10-01 from a real ZODB round trip: plone.namedfile 8.x NamedBlobImage written through zodb-pgjsonb PGJsonbStorage, with plone.pgthumbor set_source_derivative(max_edge=4000) applied. See tests/fixtures/state/README.md.",
+  "blob_zoids": [
+    11,
+    13
+  ],
+  "content_zoid": 1,
+  "objects": {
+    "1": {
+      "image": {
+        "@ref": [
+          "000000000000000a",
+          "plone.namedfile.file.NamedBlobImage"
+        ]
+      }
+    },
+    "10": {
+      "_blob": {
+        "@ref": [
+          "000000000000000b",
+          "ZODB.blob.Blob"
+        ]
+      },
+      "_height": 11000,
+      "_modified": 1790857445841,
+      "_pgthumbor_source": {
+        "@ref": [
+          "000000000000000c",
+          "plone.namedfile.file.NamedBlobImage"
+        ]
+      },
+      "_pgthumbor_source_info": {
+        "max_edge": 4000,
+        "reason": "generated",
+        "source_ids": {
+          "@t": [
+            11,
+            291620480267928900
+          ]
+        }
+      },
+      "_width": 15000,
+      "contentType": "image/jpeg",
+      "exif": {
+        "0th": {},
+        "1st": {},
+        "Exif": {},
+        "GPS": {},
+        "Interop": {},
+        "thumbnail": null
+      },
+      "filename": "image-15000x11000.jpg"
+    },
+    "12": {
+      "_blob": {
+        "@ref": [
+          "000000000000000d",
+          "ZODB.blob.Blob"
+        ]
+      },
+      "_height": 2933,
+      "_modified": 1790857448345,
+      "_pgthumbor_is_source": true,
+      "_width": 4000,
+      "contentType": "image/jpeg",
+      "exif": {
+        "0th": {},
+        "1st": {},
+        "Exif": {},
+        "GPS": {},
+        "Interop": {},
+        "thumbnail": null
+      },
+      "filename": "image-15000x11000-pgthumbor-source.jpeg"
+    }
+  }
+}
