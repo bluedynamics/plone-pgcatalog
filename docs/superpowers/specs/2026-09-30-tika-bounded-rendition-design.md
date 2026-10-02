@@ -109,15 +109,19 @@ Three forks were settled before writing this document.
 
 ### Component 1: bounded blob selection
 
-`CatalogStateProcessor._enqueue_candidate` currently inserts a queue row
-for *every* resolvable blob ref of a candidate
-(`src/plone/pgcatalog/processor.py:423-448`). pgthumbor stores its
-derivative as `_pgthumbor_source` on the field value, and that derivative
-holds its own ZODB blob. Both blobs are therefore reachable from the same
-object state, and the expectation is that a large image with pgthumbor
-installed is enqueued **twice** today, once for the original and once for
-the derivative, with the original being the row that can take Tika down.
-Verifying this is step 0 below.
+`CatalogStateProcessor._enqueue_candidate` inserts a queue row for every
+resolvable blob ref of a candidate
+(`src/plone/pgcatalog/processor.py:423-448`). An earlier draft of this
+section expected that to double-enqueue any image carrying a pgthumbor
+derivative. **Measured 2026-10-01, it does not**, and the reason matters
+for everything below: `_resolve_wrappers` goes exactly one level deep,
+content state to wrapper state to blob, while a derivative's blob is two
+levels down. The derivative is reached as an inner ref, found absent from
+`blob_state`, and correctly dropped. Two image fields give two rows, one
+per field. Evidence in `tests/fixtures/state/README.md`.
+
+So the derivative is not mis-selected today, it is **unreachable**, and
+this component is a pure addition rather than a correction.
 
 The rule is:
 
@@ -133,8 +137,6 @@ bounded at 16 MP by default and 64 MP at the ceiling. The measured 16 MP
 worst case OCRs in 0.7 s at 390 MiB, which leaves a factor of 2.6 of
 headroom in a 1 GiB container.
 
-This component also removes the double enqueue, which is a correctness fix
-independent of everything else in this design.
 
 #### Resolution happens at dequeue, not at enqueue
 
@@ -183,19 +185,41 @@ Two consequences to handle deliberately:
 - **A missing derivative is a deferral, not a terminal skip.** See
   component 4.
 
-#### `_collect_ref_oids` has to learn structure
+#### Three persistent hops, so walk then fetch
 
-`_collect_ref_oids` flattens the state into an unordered list of zoids
-(`src/plone/pgcatalog/processor.py:69-106`). It cannot say which ref came
-from `_pgthumbor_source` and which is the field's own blob, and it cannot
-pair an original with its derivative when an object has several image
-fields, such as a lead image plus an attachment.
+Measured, not assumed. A `NamedBlobImage` is **not** stored inline in the
+content object's state: it is its own persistent object, and a pgthumbor
+derivative is a second one hanging off it.
 
-Pairing therefore needs a structure-aware walk that returns
-`(field_path, blob_zoid)` rather than bare zoids. The existing flat
-function stays for its current callers; the new one lives beside it and is
-shared with the worker. This is real work, not a rename, and the plan
-treats it as its own task.
+```
+Content            zoid 3   image -> @ref zoid 4
+NamedBlobImage     zoid 4   _blob -> @ref zoid 7   (Blob, the original)
+                            _width 15000, _height 11000, contentType
+                            _pgthumbor_source -> @ref zoid 14
+NamedBlobImage     zoid 14  _blob -> @ref zoid 15  (Blob, the derivative)
+                            _width 4000, _height 2933, _pgthumbor_is_source
+```
+
+`_collect_ref_oids` flattens a state into bare zoids
+(`src/plone/pgcatalog/processor.py:69-106`), so it cannot say which ref
+came from `_pgthumbor_source`, and no function over a *single* state can
+pair an original with its derivative at all, because the derivative's
+dimensions and blob are one `object_state` row further away.
+
+The resolution is **walk then fetch**: a pure walk that returns
+`(path, zoid, class_name)` per ref, plus a pure reader for one wrapper
+state, with the caller doing the fetching between them. The alternative, a
+resolver callback inside the pairing function, was rejected because it
+would put I/O into the one part of this design that can otherwise be unit
+tested without a database.
+
+One gift from the measurement: the `@ref` marker uses the two-element
+form, `["<hex oid>", "<dotted class name>"]`, so a `NamedBlobImage` ref is
+distinguishable from a `ZODB.blob.Blob` ref **without loading either
+object**. The walk is therefore cheap, and the second fetch is one extra
+batched query per transaction rather than per object.
+
+`_collect_ref_oids` stays where it is for its other callers.
 
 #### The derivative's content type differs from the original's
 
@@ -469,27 +493,39 @@ A matching change to `setups/production-like/compose.yml` lives in the
 cloudbrine workspace repository and is a cross-repo follow-up, not part of
 this change.
 
-## Step 0: verify before implementing
+## Step 0: done, and two of three came back different
 
-Three assumptions in this design were inferred from reading code, not
-measured. They belong at the front of the implementation, and each one can
-invalidate a component.
+The three assumptions this design inferred from reading code were measured
+on 2026-10-01. Evidence: `tests/fixtures/state/README.md` and
+`benchmarks/tika_ocr_downscale.md`.
 
-1. **The JSON state shape.** Does a `NamedBlobImage` field value carry
-   `_width` and `_height` in the state, and does `_pgthumbor_source` appear
-   as a nested object with its own `@ref` to a blob? Components 1 and 2
-   depend on both. Confirm the same for the derivative itself, since
-   selecting it is pointless if its own dimensions are not recorded and the
-   guard then sees NULL. Build the fixtures from a real state dump, not
-   from what the consumer wants to see.
-2. **The double enqueue.** Confirm that a large image with pgthumbor
-   installed produces two queue rows today. If it does not, component 1
-   changes shape and the reason the original reaches Tika is elsewhere.
-3. **The production Tika image.** Confirm whether the deployment in #222
-   ran a `-full` image. If it did, the issue's premise was wrong and
-   images are worth keeping in the pipeline, which this design already
-   assumes. If it ran the stock image, the OOM has a cause not covered
-   here and needs its own investigation.
+1. **`_width` and `_height` in the state: confirmed.** Present under
+   exactly those names on both the original and the derivative, with
+   `contentType` and `filename`. The pixel count needs no blob read and no
+   decode, as component 2 assumed.
+2. **`_pgthumbor_source` as a nested dict: wrong.** It is an `@ref` to a
+   separate persistent object. Component 1 now says so, and the plan's
+   pairing task was redesigned as walk-then-fetch.
+3. **The double enqueue: does not exist.** One row per image field, which
+   is correct. Component 1 now says so, and the plan lost that fix.
+
+A fourth question the design had been answering by assertion rather than
+by measurement: **what downscaling costs OCR.** At pgthumbor's default
+4000 px cap, 3 percentage points of phrase recall and 1.4 of word recall
+on a dense A0 page at 300 dpi. The default
+`PGCATALOG_TIKA_MAX_IMAGE_PIXELS = 16000000` stands. Two surprises came
+with it, both recorded in component 4: recall is **not monotonic** in
+resolution, and the collapse tracks **glyph height** rather than image
+size.
+
+One assumption remains unverified, because it is about someone else's
+deployment and not about this code:
+
+- **The production Tika image.** Whether the deployment in #222 ran a
+  `-full` image. The stock image does not reproduce the reported OOM at
+  all, so if it really ran stock then the incident has a cause not covered
+  here, most likely the PDF rasterisation named under non-goals. Asked on
+  the issue.
 
 ## Non-goals
 
@@ -577,26 +613,29 @@ entry meaningful while making `text/plain; charset=utf-8` match
 
 ## PR decomposition
 
-Sequenced so each PR is independently reviewable and shippable, with the
-correctness fixes first. The order changed once component 4 grew a
-deferral: the `not_before` machinery now has to land **before** the
-decision matrix that uses it, so retry moved from fifth to third.
+Sequenced so each PR is independently reviewable and shippable. Two
+things reordered it. Component 4 grew a deferral, so the `not_before`
+machinery has to land **before** the decision matrix that uses it. And
+step 0 found no double enqueue, so what was PR 1's second fix is gone and
+the ref walk has no independent value any more.
 
-1. Step 0 verification, plus the MIME normalisation fix and the double
-   enqueue fix. No new configuration, no new columns.
-2. The `source_info` column, the structure-aware ref walk, dimensions and
-   rendition pairing written at enqueue.
-3. Retry backoff, `not_before` and `deferrals`. Fixes proposal 3 of #222
-   on its own and provides the machinery component 4 needs.
-4. OCR probe, the decision matrix, dequeue-time rendition resolution, and
-   the `skipped` status.
-5. `/rmeta/text` and metadata harvesting.
-6. Documentation for the Tika side, and the reference page for the new
+0. **Phase 0, done.** The step-0 verifications, the OCR recall benchmark
+   and the real fixtures. No production code.
+1. **The MIME normalisation fix, alone.** No new columns, no dependency
+   on anything else here, shippable immediately.
+2. **The rendition groundwork**, in commit order: the walk-then-fetch ref
+   module, the `source_info` column, then the enqueue that fills it.
+   These three do nothing apart and share one migration.
+3. **Retry backoff**, `not_before` and `deferrals`. Fixes proposal 3 of
+   #222 on its own and provides the machinery component 4 needs.
+4. **OCR probe, the decision matrix**, dequeue-time rendition resolution
+   and the `skipped` status.
+5. **`/rmeta/text`** and metadata harvesting.
+6. **Documentation** for the Tika side, and the reference page for the new
    environment variables.
 
-PRs 1 and 3 each fix something real on their own and do not depend on the
-rest, so they can ship while the accuracy question in component 4 is still
-being measured.
+PRs 1 and 3 each fix something real on their own and depend on nothing
+else in this design.
 
 Each PR carries its own `CHANGES.md` entry.
 

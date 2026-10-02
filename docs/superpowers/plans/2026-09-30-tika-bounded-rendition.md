@@ -366,12 +366,42 @@ Assisted-by: Claude Opus 5"
 
 ---
 
-# PR 1: correctness fixes, no new configuration
+# Tasks 4 to 7: the standalone MIME fix, and the rendition groundwork
 
-Two bugs that exist today and are worth shipping before any of the new
-machinery. Depends on Task 1 having confirmed the state shape.
+Phase 0 changed the shipping order here. The double-enqueue bug this plan
+expected **does not exist** (see `tests/fixtures/state/README.md`), so
+Task 5 is no longer a fix and has no independent value. The grouping is
+now:
 
-## Task 4: Structure-aware blob ref walk and rendition pairing
+- **PR 1 = Task 6 alone.** MIME normalisation. No new columns, no
+  dependency on anything else in this plan, shippable immediately.
+- **PR 2 = Tasks 4, 5 and 7 together.** The reference walk, the
+  `source_info` column and the enqueue that fills it. Apart they do
+  nothing, and they share one migration.
+
+Commit order inside PR 2 is **4, 7, 5**: the walk, then the column, then
+the enqueue that fills it.
+
+Task numbers are unchanged so the ledger and the Interfaces blocks stay
+valid. Only the grouping moved.
+
+## Task 4: Reference walk and per-state image facts
+
+Phase 0 measured the real shape and it is not what this task originally
+assumed. A `NamedBlobImage` is its own persistent object, and a pgthumbor
+derivative is a second one hanging off it, so an image's blob sits three
+persistent hops from the content object and the derivative's blob one hop
+further. A single function over a single state cannot pair them.
+
+Chosen resolution: **walk then fetch.** Every function here reads exactly
+one `object_state` and the caller fetches the next, so the module stays
+pure, the processor and the standalone worker can share it, and the unit
+tests need no database. The alternative, a resolver callback, would have
+put I/O inside the pairing function.
+
+The `@ref` marker's two-element form carries the dotted class name, so a
+wrapper ref is distinguishable from a blob ref **without fetching
+either**, which is what makes the walk cheap.
 
 **Files:**
 - Create: `src/plone/pgcatalog/blobrefs.py`
@@ -380,113 +410,152 @@ machinery. Depends on Task 1 having confirmed the state shape.
 **Interfaces:**
 - Consumes: the fixtures from Task 1.
 - Produces:
-  - `collect_blob_refs(state) -> list[tuple[tuple[str, ...], int]]`
-    returning `(path, zoid)` pairs, `path` being the tuple of dict keys
-    traversed to reach the `@ref`.
-  - `DERIVATIVE_KEY = "_pgthumbor_source"`
-  - `pair_renditions(state) -> list[Rendition]` where `Rendition` is a
-    frozen dataclass with fields `field: tuple[str, ...]`,
-    `blob_zoid: int`, `derivative_zoid: int | None`,
+  - `Ref` frozen dataclass: `path: tuple[str, ...]`, `zoid: int`,
+    `class_name: str | None`
+  - `walk_refs(state) -> list[Ref]`
+  - `blob_wrapper_refs(state) -> list[Ref]` — the content object's refs to
+    `NamedBlob*` objects, excluding anything under a derivative
+  - `ImageFacts` frozen dataclass: `blob_zoid: int | None`,
     `width: int | None`, `height: int | None`,
-    `derivative_width: int | None`, `derivative_height: int | None`,
-    `content_type: str | None`, `derivative_content_type: str | None`.
+    `content_type: str | None`, `derivative_zoid: int | None`
+  - `image_facts(wrapper_state) -> ImageFacts` — reads **one**
+    `NamedBlob*` state
+  - `DERIVATIVE_KEY = "_pgthumbor_source"`, `BLOB_CLASS = "ZODB.blob.Blob"`
 
-- [ ] **Step 1: Write the failing tests**
+The caller shape, which Tasks 5 and 11 both follow:
 
 ```python
-"""Tests for structure-aware blob ref collection and rendition pairing."""
+for ref in blob_wrapper_refs(content_state):
+    facts = image_facts(fetch_state(ref.zoid))
+    if facts.derivative_zoid is not None:
+        derivative = image_facts(fetch_state(facts.derivative_zoid))
+```
 
-from plone.pgcatalog.blobrefs import collect_blob_refs
-from plone.pgcatalog.blobrefs import pair_renditions
+- [ ] **Step 1: Write the failing test**
+
+```python
+"""Tests for reference walking and per-state image facts.
+
+The fixtures are real ZODB output, not hand-written shapes: see
+tests/fixtures/state/README.md for how they were captured and why the
+structure is three levels deep.
+"""
+
+from plone.pgcatalog.blobrefs import blob_wrapper_refs
+from plone.pgcatalog.blobrefs import image_facts
 
 import json
+import pytest
 
 
-ONE_FIELD_WITH_DERIVATIVE = json.dumps(
-    {
-        "image": {
-            "_blob": {"@ref": "00000000000003e8"},
-            "_width": 15000,
-            "_height": 11000,
-            "contentType": "image/jpeg",
-            "_pgthumbor_source": {
-                "_blob": {"@ref": "00000000000003e9"},
-                "_width": 4000,
-                "_height": 2933,
-                "contentType": "image/jpeg",
-            },
-        }
-    }
-)
-
-TWO_FIELDS_ONE_DERIVATIVE = json.dumps(
-    {
-        "image": {
-            "_blob": {"@ref": "00000000000003e8"},
-            "_width": 15000,
-            "_height": 11000,
-            "contentType": "image/jpeg",
-            "_pgthumbor_source": {
-                "_blob": {"@ref": "00000000000003e9"},
-                "_width": 4000,
-                "_height": 2933,
-                "contentType": "image/jpeg",
-            },
-        },
-        "attachment": {
-            "_blob": {"@ref": "00000000000003ea"},
-            "_width": 800,
-            "_height": 600,
-            "contentType": "image/png",
-        },
-    }
-)
+def load(name):
+    with open(f"tests/fixtures/state/{name}.json") as fh:
+        return json.load(fh)
 
 
-def test_collect_blob_refs_records_the_path():
-    """Each ref carries the attribute path that holds it."""
-    refs = dict(collect_blob_refs(ONE_FIELD_WITH_DERIVATIVE))
-    assert refs[("image", "_blob")] == 1000
-    assert refs[("image", "_pgthumbor_source", "_blob")] == 1001
+def graph(doc):
+    """A fetch_state callable over a fixture's own object graph."""
+    objects = {int(z): s for z, s in doc["objects"].items()}
+    return objects.get
 
 
-def test_pair_renditions_attaches_the_derivative_to_its_own_field():
-    r = pair_renditions(ONE_FIELD_WITH_DERIVATIVE)
-    assert len(r) == 1
-    assert r[0].field == ("image",)
-    assert r[0].blob_zoid == 1000
-    assert r[0].derivative_zoid == 1001
-    assert (r[0].width, r[0].height) == (15000, 11000)
-    assert (r[0].derivative_width, r[0].derivative_height) == (4000, 2933)
+def test_walk_finds_the_image_wrapper_with_its_class_name():
+    doc = load("image_with_derivative")
+    content = doc["objects"][str(doc["content_zoid"])]
+    refs = blob_wrapper_refs(content)
+    assert len(refs) == 1
+    assert refs[0].path == ("image",)
+    assert refs[0].class_name == "plone.namedfile.file.NamedBlobImage"
+
+
+def test_image_facts_reads_one_wrapper_state():
+    doc = load("image_with_derivative")
+    fetch = graph(doc)
+    content = doc["objects"][str(doc["content_zoid"])]
+    (ref,) = blob_wrapper_refs(content)
+
+    facts = image_facts(fetch(ref.zoid))
+    assert (facts.width, facts.height) == (15000, 11000)
+    assert facts.content_type == "image/jpeg"
+    assert facts.blob_zoid in doc["blob_zoids"]
+    assert facts.derivative_zoid is not None
+
+
+def test_the_derivative_is_one_more_fetch_away():
+    """The finding that reshaped this task: the derivative's dimensions are
+    in its own object_state, not in the original's."""
+    doc = load("image_with_derivative")
+    fetch = graph(doc)
+    content = doc["objects"][str(doc["content_zoid"])]
+    (ref,) = blob_wrapper_refs(content)
+    original = image_facts(fetch(ref.zoid))
+
+    derivative = image_facts(fetch(original.derivative_zoid))
+    assert max(derivative.width, derivative.height) == 4000
+    assert derivative.blob_zoid != original.blob_zoid
+    assert derivative.blob_zoid in doc["blob_zoids"]
+    assert derivative.derivative_zoid is None, "a derivative has no derivative"
+
+
+def test_small_image_has_no_derivative():
+    doc = load("image_without_derivative")
+    fetch = graph(doc)
+    content = doc["objects"][str(doc["content_zoid"])]
+    (ref,) = blob_wrapper_refs(content)
+    facts = image_facts(fetch(ref.zoid))
+    assert (facts.width, facts.height) == (800, 600)
+    assert facts.derivative_zoid is None
 
 
 def test_two_fields_do_not_cross_assign_the_derivative():
     """Review Focus 2: a lead image's derivative must not land on the
-    attachment, and the attachment must report no derivative at all."""
-    by_field = {r.field: r for r in pair_renditions(TWO_FIELDS_ONE_DERIVATIVE)}
+    attachment, and the attachment must report none at all."""
+    doc = load("two_image_fields")
+    fetch = graph(doc)
+    content = doc["objects"][str(doc["content_zoid"])]
+    by_field = {r.path: image_facts(fetch(r.zoid)) for r in blob_wrapper_refs(content)}
     assert set(by_field) == {("image",), ("attachment",)}
-    assert by_field[("image",)].derivative_zoid == 1001
+    assert by_field[("image",)].derivative_zoid is not None
     assert by_field[("attachment",)].derivative_zoid is None
-    assert by_field[("attachment",)].blob_zoid == 1002
+    assert (by_field[("image",)].width, by_field[("image",)].height) == (
+        15000,
+        11000,
+    )
+    assert (
+        by_field[("attachment",)].width,
+        by_field[("attachment",)].height,
+    ) == (800, 600)
+
+
+def test_blob_wrapper_refs_skips_refs_under_a_derivative():
+    """Walking a wrapper state must not report the derivative as a field."""
+    doc = load("image_with_derivative")
+    fetch = graph(doc)
+    content = doc["objects"][str(doc["content_zoid"])]
+    (ref,) = blob_wrapper_refs(content)
+    assert blob_wrapper_refs(fetch(ref.zoid)) == []
+
+
+@pytest.mark.parametrize("state", [None, {}, "", "not json", [], 7])
+def test_degenerate_states_are_empty_not_raising(state):
+    assert blob_wrapper_refs(state) == []
+    facts = image_facts(state)
+    assert facts.blob_zoid is None
+    assert facts.width is None
 
 
 def test_missing_dimensions_are_none_not_zero():
-    """Review Focus 1: a legacy field value has no _width/_height."""
-    state = json.dumps({"image": {"_blob": {"@ref": "00000000000003e8"}}})
-    r = pair_renditions(state)[0]
-    assert r.width is None
-    assert r.height is None
-    assert r.derivative_zoid is None
+    """Review Focus 1: a legacy wrapper has no _width/_height."""
+    facts = image_facts({"_blob": {"@ref": ["00000000000003e8", "ZODB.blob.Blob"]}})
+    assert facts.blob_zoid == 1000
+    assert facts.width is None and facts.height is None
+    assert facts.content_type is None
 
 
-def test_real_state_fixture_from_plone():
-    """The hand-written shapes above must match what Plone really writes."""
-    with open("tests/fixtures/state/image_with_derivative.json") as fh:
-        real = fh.read()
-    r = pair_renditions(real)
-    assert len(r) == 1
-    assert r[0].derivative_zoid is not None
-    assert r[0].width and r[0].width > 4000
+def test_single_element_ref_form_is_accepted():
+    """Not every @ref carries a class name; the short form must still walk."""
+    facts = image_facts({"_blob": {"@ref": "00000000000003e8"}})
+    assert facts.blob_zoid == 1000
 ```
 
 - [ ] **Step 2: Run to verify it fails**
@@ -494,15 +563,21 @@ def test_real_state_fixture_from_plone():
 Run: `.venv/bin/pytest tests/test_blobrefs.py -v`
 Expected: FAIL, `ModuleNotFoundError: No module named 'plone.pgcatalog.blobrefs'`
 
-- [ ] **Step 3: Implement the module**
+- [ ] **Step 3: Write the implementation**
 
 ```python
-"""Structure-aware ``@ref`` collection and original/derivative pairing.
+"""Reference walking and per-state image facts.
 
-``processor._collect_ref_oids`` flattens a state into bare zoids, which is
-all the enqueue path needed before renditions existed.  Pairing an image
-with its pgthumbor source derivative needs to know *where* each ref sat,
-so this module walks the same structure and keeps the path.
+Phase 0 measured the real shape, recorded in
+``tests/fixtures/state/README.md``: a ``NamedBlobImage`` is its own
+persistent object and a pgthumbor source derivative is a second one
+hanging off it, so an image's blob sits three persistent hops from the
+content object and the derivative's blob one hop further.
+
+Nothing here does I/O.  Each function reads exactly one ``object_state``
+and the caller fetches the next, which is what lets the state processor
+and the standalone worker share this module and lets the unit tests run
+without a database.
 """
 
 from dataclasses import dataclass
@@ -510,68 +585,98 @@ from dataclasses import dataclass
 import json
 
 
-__all__ = ["collect_blob_refs", "pair_renditions", "DERIVATIVE_KEY", "Rendition"]
+__all__ = [
+    "BLOB_CLASS",
+    "DERIVATIVE_KEY",
+    "ImageFacts",
+    "Ref",
+    "blob_wrapper_refs",
+    "image_facts",
+    "walk_refs",
+]
 
 
-# pgthumbor stores the derivative as an attribute of the field value.
-# This name is a cross-package contract; see the design doc.
+# pgthumbor stores the derivative under this attribute of the wrapper.
+# A cross-package contract; see the design doc and pgthumbor's own docs.
 DERIVATIVE_KEY = "_pgthumbor_source"
+BLOB_CLASS = "ZODB.blob.Blob"
+
+# plone.namedfile's blob-backed wrappers: NamedBlobImage and NamedBlobFile.
+_WRAPPER_MARKER = "NamedBlob"
 
 
 @dataclass(frozen=True)
-class Rendition:
-    """One image field's original blob and its derivative, if any."""
+class Ref:
+    """One ``@ref`` marker, with where it sat and what it points at."""
 
-    field: tuple[str, ...]
-    blob_zoid: int
-    derivative_zoid: int | None = None
+    path: tuple[str, ...]
+    zoid: int
+    class_name: str | None = None
+
+
+@dataclass(frozen=True)
+class ImageFacts:
+    """What one ``NamedBlob*`` state says about itself.
+
+    ``derivative_zoid`` is another wrapper's zoid, not a blob's: reading
+    its dimensions takes a second fetch.
+    """
+
+    blob_zoid: int | None = None
     width: int | None = None
     height: int | None = None
-    derivative_width: int | None = None
-    derivative_height: int | None = None
     content_type: str | None = None
-    derivative_content_type: str | None = None
+    derivative_zoid: int | None = None
 
 
 def _as_dict(state):
+    """*state* as a dict, or an empty dict for anything unusable."""
     if isinstance(state, str):
         try:
-            return json.loads(state)
-        except (json.JSONDecodeError, TypeError):
+            state = json.loads(state)
+        except (json.JSONDecodeError, TypeError, ValueError):
             return {}
     return state if isinstance(state, dict) else {}
 
 
-def _ref_zoid(value):
-    """The int zoid of an ``@ref`` marker, or None if it is not one."""
+def _parse_ref(value):
+    """``(zoid, class_name)`` for an ``@ref`` marker, else None.
+
+    Both forms occur: ``{"@ref": "hex"}`` and
+    ``{"@ref": ["hex", "dotted.Class"]}``.  The two-element form is what
+    zodb-json-codec writes for a persistent reference, and its class name
+    is why a wrapper can be told from a blob without fetching it.
+    """
     if not isinstance(value, dict):
         return None
     ref = value.get("@ref")
     if ref is None:
         return None
-    hex_oid = ref[0] if isinstance(ref, list) else ref
+    if isinstance(ref, list):
+        hex_oid = ref[0] if ref else None
+        class_name = ref[1] if len(ref) > 1 else None
+    else:
+        hex_oid, class_name = ref, None
     if not isinstance(hex_oid, str) or len(hex_oid) != 16:
         return None
     try:
-        return int(hex_oid, 16)
+        return int(hex_oid, 16), class_name
     except ValueError:
         return None
 
 
-def collect_blob_refs(state):
-    """Every ``@ref`` in *state* as ``(path, zoid)``.
+def walk_refs(state):
+    """Every ``@ref`` in *state* as a :class:`Ref`, keeping its path.
 
-    *path* is the tuple of dict keys traversed to reach the marker, so
-    ``("image", "_blob")`` and ``("image", DERIVATIVE_KEY, "_blob")`` are
-    distinguishable.  List indices are not part of the path: a ref inside a
-    list gets the path of the key holding the list.
+    List indices are not part of the path: a ref inside a list gets the
+    path of the key that holds the list.
     """
     found = []
 
     def walk(obj, path):
-        zoid = _ref_zoid(obj)
-        if zoid is not None:
-            found.append((path, zoid))
+        parsed = _parse_ref(obj)
+        if parsed is not None:
+            found.append(Ref(path, parsed[0], parsed[1]))
             return
         if isinstance(obj, dict):
             for key, value in obj.items():
@@ -584,222 +689,312 @@ def collect_blob_refs(state):
     return found
 
 
-def _field_dict(root, path):
-    """The dict at *path* in *root*, or an empty dict."""
-    node = root
-    for key in path:
-        if not isinstance(node, dict):
-            return {}
-        node = node.get(key, {})
-    return node if isinstance(node, dict) else {}
+def blob_wrapper_refs(state):
+    """Refs from a *content* state to its ``NamedBlob*`` field values.
 
-
-def pair_renditions(state):
-    """One :class:`Rendition` per image field carrying a blob.
-
-    A ref whose path passes through :data:`DERIVATIVE_KEY` is a
-    derivative of the field named by the path *before* that key, which is
-    what keeps two image fields on one object from swapping derivatives.
+    Refs reached through :data:`DERIVATIVE_KEY` are excluded, so walking a
+    wrapper's own state does not report its derivative as a field.
     """
-    root = _as_dict(state)
-    originals = {}
-    derivatives = {}
+    return [
+        ref
+        for ref in walk_refs(state)
+        if ref.class_name
+        and _WRAPPER_MARKER in ref.class_name
+        and DERIVATIVE_KEY not in ref.path
+    ]
 
-    for path, zoid in collect_blob_refs(root):
-        if DERIVATIVE_KEY in path:
-            field = path[: path.index(DERIVATIVE_KEY)]
-            derivatives[field] = (zoid, path[: path.index(DERIVATIVE_KEY) + 1])
-        else:
-            # Drop the trailing "_blob" (or whatever holds the marker).
-            originals[path[:-1]] = zoid
 
-    renditions = []
-    for field, blob_zoid in sorted(originals.items()):
-        own = _field_dict(root, field)
-        deriv_zoid, deriv_path = derivatives.get(field, (None, None))
-        deriv = _field_dict(root, deriv_path) if deriv_path else {}
-        renditions.append(
-            Rendition(
-                field=field,
-                blob_zoid=blob_zoid,
-                derivative_zoid=deriv_zoid,
-                width=own.get("_width"),
-                height=own.get("_height"),
-                derivative_width=deriv.get("_width"),
-                derivative_height=deriv.get("_height"),
-                content_type=own.get("contentType"),
-                derivative_content_type=deriv.get("contentType"),
-            )
-        )
-    return renditions
+def image_facts(wrapper_state):
+    """Read one ``NamedBlob*`` state.
+
+    Dimensions come back as None rather than 0 when absent, because a
+    legacy upload can lack them and the pixel guard must be able to tell
+    "no opinion" from "no pixels".
+    """
+    state = _as_dict(wrapper_state)
+    blob = _parse_ref(state.get("_blob"))
+    derivative = _parse_ref(state.get(DERIVATIVE_KEY))
+    return ImageFacts(
+        blob_zoid=blob[0] if blob else None,
+        width=state.get("_width"),
+        height=state.get("_height"),
+        content_type=state.get("contentType"),
+        derivative_zoid=derivative[0] if derivative else None,
+    )
 ```
 
 - [ ] **Step 4: Run to verify it passes**
 
 Run: `.venv/bin/pytest tests/test_blobrefs.py -v`
-Expected: 5 passed.
+Expected: 15 passed (the parametrised degenerate case counts six).
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Check the lint ceiling**
+
+Run: `uvx ruff@0.16.7 check src/plone/pgcatalog/blobrefs.py`
+Expected: clean.
+
+- [ ] **Step 6: Commit**
 
 ```bash
 git add src/plone/pgcatalog/blobrefs.py tests/test_blobrefs.py
-git commit -m "feat: structure-aware blob ref walk with rendition pairing
+git commit -m "feat: reference walk and per-state image facts
+
+Walk then fetch, rather than one function over one state: phase 0
+measured that a NamedBlobImage is its own persistent object and the
+pgthumbor derivative a second one hanging off it, so pairing needs two
+fetches. Keeping these pure lets the processor and the standalone worker
+share them and lets the tests run with no database. Refs #222.
 
 Assisted-by: Claude Opus 5"
 ```
 
-## Task 5: One queue row per image field, not one per blob
+## Task 5: Record source facts at enqueue
+
+Not a bug fix. Phase 0 verified that the enqueue path is already correct:
+two image fields produce two rows, one per field, and the derivative is
+reached as an inner ref, found absent from `blob_state`, and properly
+dropped. This task **adds** the facts the worker needs to route the job,
+and changes no existing row's identity.
+
+Run after Task 7, since it writes a column Task 7 creates.
 
 **Files:**
-- Modify: `src/plone/pgcatalog/processor.py:423-448`
+- Modify: `src/plone/pgcatalog/processor.py`, candidate accumulation
+  (213-228) and `_resolve_wrappers` / `_enqueue_candidate` (395-448)
 - Modify: `tests/test_tika_enqueue.py`
 - Modify: `CHANGES.md`
 
 **Interfaces:**
-- Consumes: `pair_renditions` from Task 4.
-- Produces: unchanged public surface; `_enqueue_candidate` now inserts at
-  most one row per image field.
+- Consumes: `blob_wrapper_refs`, `image_facts`, `ImageFacts` from Task 4;
+  the `source_info` column from Task 7.
+- Produces: queue rows whose `source_info` holds
+  `{"width", "height", "derivative_zoid", "derivative_tid",
+  "derivative_width", "derivative_height", "derivative_content_type"}`,
+  every key optional. Row identity, `blob_zoid` and `tid`, is unchanged.
 
 - [ ] **Step 1: Write the failing test**
 
-Append to `tests/test_tika_enqueue.py`:
+Append to `tests/test_tika_enqueue.py`. The fixture graph is written into
+`object_state` so the processor resolves it the way production does,
+rather than being handed a shape the test invented.
 
 ```python
-class TestSingleRowPerField:
-    """An image with a pgthumbor derivative must not be enqueued twice."""
+class TestSourceInfoAtEnqueue:
+    """The queue row carries what the worker needs to route the job."""
 
-    def test_derivative_does_not_produce_a_second_row(self, tika_db):
-        """Both blobs are reachable from one state; only one row is right."""
-        state = json.dumps(
-            {
-                "image": {
-                    "_blob": {"@ref": "00000000000003e8"},
-                    "_width": 15000,
-                    "_height": 11000,
-                    "contentType": "image/jpeg",
-                    "_pgthumbor_source": {
-                        "_blob": {"@ref": "00000000000003e9"},
-                        "_width": 4000,
-                        "_height": 2933,
-                        "contentType": "image/jpeg",
-                    },
-                }
-            }
+    def test_oversized_image_records_its_derivative(self, tika_db):
+        doc = load_state_fixture("image_with_derivative")
+        rows = enqueue_fixture(tika_db, doc, mime_type="image/jpeg")
+
+        assert len(rows) == 1, "one row per image field, unchanged"
+        info = rows[0]["source_info"]
+        assert (info["width"], info["height"]) == (15000, 11000)
+        assert info["derivative_zoid"] is not None
+        assert max(info["derivative_width"], info["derivative_height"]) == 4000
+        assert info["derivative_content_type"] == "image/jpeg"
+        assert rows[0]["blob_zoid"] != info["derivative_zoid"], (
+            "the row still points at the original"
         )
-        rows = enqueue_and_fetch(
-            tika_db,
-            zoid=700,
-            state=state,
-            mime_type="image/jpeg",
-            blob_zoids=(1000, 1001),
-        )
+
+    def test_small_image_records_dimensions_and_no_derivative(self, tika_db):
+        doc = load_state_fixture("image_without_derivative")
+        rows = enqueue_fixture(tika_db, doc, mime_type="image/jpeg")
+        info = rows[0]["source_info"]
+        assert (info["width"], info["height"]) == (800, 600)
+        assert "derivative_zoid" not in info
+
+    def test_two_fields_get_a_row_each_with_their_own_facts(self, tika_db):
+        """Review Focus 2, at the enqueue level."""
+        doc = load_state_fixture("two_image_fields")
+        rows = enqueue_fixture(tika_db, doc, mime_type="image/jpeg")
+        assert len(rows) == 2
+        by_size = {r["source_info"]["width"]: r["source_info"] for r in rows}
+        assert set(by_size) == {15000, 800}
+        assert by_size[15000]["derivative_zoid"] is not None
+        assert "derivative_zoid" not in by_size[800]
+
+    def test_no_dimensions_means_no_dimension_keys(self, tika_db):
+        """Review Focus 1: a legacy wrapper with no _width/_height must
+        still enqueue, with source_info simply lacking them."""
+        doc = {
+            "content_zoid": 900,
+            "blob_zoids": [902],
+            "objects": {
+                "900": {
+                    "file": {
+                        "@ref": [
+                            "0000000000000385",
+                            "plone.namedfile.file.NamedBlobFile",
+                        ]
+                    }
+                },
+                "901": {"_blob": {"@ref": ["0000000000000386", "ZODB.blob.Blob"]}},
+            },
+        }
+        rows = enqueue_fixture(tika_db, doc, mime_type="application/pdf")
         assert len(rows) == 1
-        assert rows[0]["blob_zoid"] == 1000, "the original is the stable key"
-        assert rows[0]["source_info"]["width"] == 15000
-        assert rows[0]["source_info"]["derivative_zoid"] == 1001
+        assert rows[0]["source_info"] is None
 ```
 
-`enqueue_and_fetch` is a helper added in the same commit: it inserts the
-two `blob_state` rows, runs `proc.process` plus `proc.finalize`, and
-returns the queue rows ordered by id.
+Two helpers in the same commit:
+
+```python
+def load_state_fixture(name):
+    with open(f"tests/fixtures/state/{name}.json") as fh:
+        return json.load(fh)
+
+
+def enqueue_fixture(conn, doc, mime_type):
+    """Write a fixture's object graph into PG, enqueue, return the rows.
+
+    The states go into object_state and the blobs into blob_state so the
+    processor's own resolution runs, rather than the test standing in for
+    it.
+    """
+    with conn.cursor() as cur:
+        for zoid, state in doc["objects"].items():
+            cur.execute(
+                "INSERT INTO object_state (zoid, tid, state) "
+                "VALUES (%s, 1, %s) ON CONFLICT DO NOTHING",
+                (int(zoid), Json(state)),
+            )
+        for blob_zoid in doc["blob_zoids"]:
+            cur.execute(
+                "INSERT INTO blob_state (zoid, tid, chunk) "
+                "VALUES (%s, 1, %s) ON CONFLICT DO NOTHING",
+                (blob_zoid, b"x"),
+            )
+        conn.commit()
+
+    content_zoid = doc["content_zoid"]
+    set_pending(
+        content_zoid,
+        {
+            "path": "/plone/item",
+            "idx": {"portal_type": "Image", "mime_type": mime_type},
+            "searchable_text": "",
+        },
+    )
+    proc = CatalogStateProcessor()
+    proc._tika_candidates = []
+    with mock.patch("plone.pgcatalog.processor.TIKA_URL", "http://tika:9998"):
+        state = json.dumps(doc["objects"][str(content_zoid)])
+        proc.process(content_zoid, "plone.dexterity.content", "Image", state)
+        with conn.cursor() as cur:
+            proc.finalize(cur)
+        conn.commit()
+
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(
+            "SELECT blob_zoid, content_type, source_info "
+            "  FROM text_extraction_queue WHERE zoid = %s ORDER BY id",
+            (content_zoid,),
+        )
+        return cur.fetchall()
+```
 
 - [ ] **Step 2: Run to verify it fails**
 
-Run: `env -u ZODB_TEST_DSN .venv/bin/pytest tests/test_tika_enqueue.py -k SingleRow -v`
-Expected: FAIL, two rows returned, and `source_info` does not exist yet.
+Run: `env -u ZODB_TEST_DSN .venv/bin/pytest tests/test_tika_enqueue.py -k SourceInfo -v`
+Expected: FAIL. `source_info` comes back `None` for every row, because
+nothing writes it yet.
 
-- [ ] **Step 3: Rewrite `_enqueue_candidate`**
+- [ ] **Step 3: Fetch the second hop**
+
+`_resolve_wrappers` currently does one batched `object_state` query:
+content refs that are not blobs are fetched, and their inner refs are
+looked up in `blob_state`. A derivative is one hop further, so a second
+batched query is needed. One extra query per transaction batch, not per
+object.
 
 ```python
-    def _enqueue_candidate(self, cursor, candidate, blob_rows, wrapper_to_inner):
-        """Insert one queue row per image field of one content candidate.
+def _resolve_derivatives(self, cursor, wrapper_states):
+    """Facts for every derivative referenced by a fetched wrapper.
 
-        Before renditions this inserted a row per resolvable blob ref,
-        which double-enqueued every image carrying a pgthumbor derivative:
-        original and derivative are both reachable from the same state.
-        The row now points at the original, which is the stable identity,
-        and records the derivative in ``source_info`` for the worker to
-        prefer at dequeue.
-        """
-        content_zoid = candidate["zoid"]
-        content_type = candidate.get("content_type")
-        for rendition in candidate["renditions"]:
-            blob_zoid, tid = self._resolve_blob(
-                rendition.blob_zoid, blob_rows, wrapper_to_inner
-            )
-            if blob_zoid is None:
-                continue
-            self._insert_queue_row(
-                cursor,
-                content_zoid,
-                blob_zoid,
-                tid,
-                rendition.content_type or content_type,
-                _source_info(rendition, blob_rows, wrapper_to_inner),
-            )
+    A second batched round trip: the derivative is itself a
+    NamedBlob* object, so its blob, dimensions and content type live
+    in its own object_state row.  See tests/fixtures/state/README.md.
+    """
+    wanted = {
+        facts.derivative_zoid
+        for facts in wrapper_states.values()
+        if facts.derivative_zoid is not None
+    }
+    if not wanted:
+        return {}
+    cursor.execute(
+        "SELECT DISTINCT ON (zoid) zoid, state FROM object_state "
+        "WHERE zoid = ANY(%(zoids)s) ORDER BY zoid, tid DESC",
+        {"zoids": list(wanted)},
+    )
+    return {row["zoid"]: image_facts(row["state"]) for row in cursor.fetchall()}
 ```
 
-with two helpers beside it, keeping `_enqueue_candidate` under the C901
-ceiling:
+- [ ] **Step 4: Build the payload**
 
 ```python
-    def _resolve_blob(self, ref_zoid, blob_rows, wrapper_to_inner):
-        """A ``(blob_zoid, tid)`` pair for a ref, direct or via a wrapper."""
-        if ref_zoid in blob_rows:
-            return ref_zoid, blob_rows[ref_zoid]
-        for inner in wrapper_to_inner.get(ref_zoid, ()):
-            if inner in blob_rows:
-                return inner, blob_rows[inner]
-        return None, None
-```
-
-```python
-def _source_info(rendition, blob_rows, wrapper_to_inner):
-    """The ``source_info`` payload for one rendition.
+def _source_info(facts, derivative, blob_rows):
+    """The ``source_info`` payload for one image field.
 
     Only facts known before extraction, and only ones the worker routes
-    on.  Extraction results belong in ``searchable_text``.
+    on: extraction results belong in ``searchable_text``.  Returns None
+    rather than an empty dict so a row with nothing to say stores SQL
+    NULL instead of ``{}``.
     """
     info = {}
-    if rendition.width and rendition.height:
-        info["width"] = rendition.width
-        info["height"] = rendition.height
-    if rendition.derivative_zoid is not None:
-        deriv_zoid, deriv_tid = _resolve_static(
-            rendition.derivative_zoid, blob_rows, wrapper_to_inner
-        )
-        if deriv_zoid is not None:
-            info["derivative_zoid"] = deriv_zoid
-            info["derivative_tid"] = deriv_tid
-            if rendition.derivative_width and rendition.derivative_height:
-                info["derivative_width"] = rendition.derivative_width
-                info["derivative_height"] = rendition.derivative_height
-            if rendition.derivative_content_type:
-                info["derivative_content_type"] = rendition.derivative_content_type
+    if facts.width and facts.height:
+        info["width"] = facts.width
+        info["height"] = facts.height
+    if derivative is not None and derivative.blob_zoid in blob_rows:
+        info["derivative_zoid"] = derivative.blob_zoid
+        info["derivative_tid"] = blob_rows[derivative.blob_zoid]
+        if derivative.width and derivative.height:
+            info["derivative_width"] = derivative.width
+            info["derivative_height"] = derivative.height
+        if derivative.content_type:
+            info["derivative_content_type"] = derivative.content_type
     return info or None
 ```
 
-Change the candidate accumulation at `processor.py:213-228` to store
-`pair_renditions(state)` under `"renditions"` instead of
-`_collect_ref_oids(state)` under `"blob_refs"`, and extend the blob
-pre-resolution query to cover derivative zoids as well.
+Note that `derivative_zoid` in `source_info` is the derivative's **blob**
+zoid, not its wrapper's: the worker fetches a blob, so storing the wrapper
+zoid would make it repeat the hop. The wrapper zoid is not kept.
 
-- [ ] **Step 4: Run the whole enqueue suite**
+Then pass it through `_enqueue_candidate` into the sixth argument of
+`_insert_queue_row` from Task 7, and change the candidate accumulation at
+`processor.py:213-228` to store `blob_wrapper_refs(state)` under
+`"wrapper_refs"` instead of `_collect_ref_oids(state)` under
+`"blob_refs"`.
+
+`_collect_ref_oids` stays where it is for its other caller; it is not
+removed by this task.
+
+- [ ] **Step 5: Run the whole enqueue suite**
 
 Run: `env -u ZODB_TEST_DSN .venv/bin/pytest tests/test_tika_enqueue.py -v`
 Expected: all pass, including the eight pre-existing `len(rows) == 1`
-assertions, which must not have changed meaning.
+assertions, whose meaning must not have changed.
 
-- [ ] **Step 5: Add the changelog entry and commit**
+- [ ] **Step 6: Check the lint ceiling**
+
+Run: `uvx ruff@0.16.7 check src/plone/pgcatalog/processor.py`
+Expected: clean. If `finalize` crossed C901's 13, the derivative round
+trip moves into its own method rather than taking a `noqa`.
+
+- [ ] **Step 7: Add the changelog entry and commit**
 
 ```bash
 git add src/plone/pgcatalog/processor.py tests/test_tika_enqueue.py CHANGES.md
-git commit -m "fix: enqueue one Tika row per image field, not per blob ref
+git commit -m "feat: record source facts on the Tika queue row
 
-An image carrying a pgthumbor source derivative was enqueued twice,
-because original and derivative are both reachable as @refs from the
-same object state, and the original is the row that can OOM Tika.
-Refs #222.
+A queued extraction now carries the image's pixel dimensions and, when
+pgthumbor has produced one, its source derivative's blob, dimensions and
+content type. The worker routes on these without fetching a blob.
+
+Row identity is unchanged: the row still points at the original, and two
+image fields still produce two rows. Reaching the derivative needs a
+second batched object_state query, because a derivative is its own
+persistent NamedBlob* object rather than an inline attribute. Refs #222.
 
 Assisted-by: Claude Opus 5"
 ```
@@ -939,11 +1134,9 @@ stays meaningful. Refs #222.
 Assisted-by: Claude Opus 5"
 ```
 
----
-
-# PR 2: the `source_info` column
-
 ## Task 7: Schema migration for `source_info`
+
+Run before Task 5, which writes the column this task creates.
 
 **Files:**
 - Modify: `src/plone/pgcatalog/schema.py`, the `TEXT_EXTRACTION_QUEUE` constant
@@ -952,7 +1145,7 @@ Assisted-by: Claude Opus 5"
 - Modify: `CHANGES.md`
 
 **Interfaces:**
-- Consumes: `_source_info` from Task 5.
+- Consumes: nothing. Task 5 is its consumer.
 - Produces: a `source_info JSONB` column, nullable, and
   `_insert_queue_row(cursor, zoid, blob_zoid, tid, content_type, source_info)`.
 
@@ -2211,7 +2404,13 @@ reason that did not occur. Task 8's commit updates the spec to match.
 10, which are the names asserted in Task 11. `Decision.blob_zoid` is
 `None` for "use the row's own blob" throughout, never `0`.
 
-**Known risk this plan does not remove.** Task 2 can invalidate the
-default cap, and with it the numbers in Tasks 10 and 14. That is why it
-runs first and why PRs 1 and 3 are sequenced to ship independently of its
-outcome.
+**Phase 0 outcome, folded back in.** Task 2 confirmed the default cap, so
+the numbers in Tasks 10 and 14 stand. Task 1 found two of three
+assumptions wrong, which rewrote Task 4 as walk-then-fetch, turned Task 5
+from a fix into an addition, and removed PR 1's double-enqueue item. The
+rulings are in the ledger.
+
+**Known risk this plan still does not remove.** Whether the production
+Tika in #222 ran a `-full` image is unanswered, and if it ran stock then
+that incident has a cause this design does not address, most likely PDF
+rasterisation. Asked on the issue; not a blocker for any task here.
