@@ -421,6 +421,8 @@ CREATE TABLE IF NOT EXISTS text_extraction_queue (
     attempts     INTEGER NOT NULL DEFAULT 0,
     max_attempts INTEGER NOT NULL DEFAULT 3,
     error        TEXT,
+    not_before   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    deferrals    INTEGER NOT NULL DEFAULT 0,
     created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE(blob_zoid, tid)
@@ -433,8 +435,21 @@ DO $$ BEGIN
 EXCEPTION WHEN OTHERS THEN NULL;
 END $$;
 
+-- Transport deferral (#222).  A Tika that is absent, restarting or
+-- mid-deploy says nothing about the job, so the worker re-queues it for
+-- later instead of spending one of its three attempts.  deferrals counts
+-- only those transport deferrals; it is deliberately not also the budget
+-- for waiting on a pgthumbor rendition, which is measured as row age.
+ALTER TABLE text_extraction_queue
+    ADD COLUMN IF NOT EXISTS not_before TIMESTAMPTZ NOT NULL DEFAULT now();
+ALTER TABLE text_extraction_queue
+    ADD COLUMN IF NOT EXISTS deferrals INTEGER NOT NULL DEFAULT 0;
+
+-- Recreated, not just created: the dequeue now filters on not_before
+-- before ordering by id, so the index has to lead on it.
+DROP INDEX IF EXISTS idx_teq_pending;
 CREATE INDEX IF NOT EXISTS idx_teq_pending
-    ON text_extraction_queue (id) WHERE status = 'pending';
+    ON text_extraction_queue (not_before, id) WHERE status = 'pending';
 
 CREATE OR REPLACE FUNCTION notify_extraction_ready() RETURNS trigger AS $$
 BEGIN
