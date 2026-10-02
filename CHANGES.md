@@ -2,6 +2,25 @@
 
 ## 1.0.0rc3 (unreleased)
 
+### Fixed
+
+- A brain now returns `Missing.Value` instead of `None` for a registered
+  metadata column that is absent from `idx`, matching ZCatalog's
+  `Catalog.recordify()`. Rendering a Collection crashed with
+  `TypeError: can only concatenate str (not "NoneType") to str` in
+  `plone.app.querystring`'s `results.pt`, which evaluates
+  `'state-' + item.review_state()`. The column is legitimately absent for
+  content whose type has an empty workflow chain, and `Missing.Missing` is
+  built so that templates can call, concatenate and stringify it without
+  checking, which is why ZCatalog never showed this. The silent half of the
+  same bug: `str(None)` is `'None'`, so a `string:${item/<field>}` expression
+  over an absent column rendered the literal text `None` into the page.
+  Columns stored as JSON `null` still return `None` — ZCatalog stores a real
+  `None` when the indexer returns one — and registered index-only names still
+  return `None`, since ZCatalog brains never expose those at all. Completes
+  the read side of #81.
+  #230
+
 ### Internal
 
 - Correct the release process documentation. `RELEASE.md` claimed that pushing

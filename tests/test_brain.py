@@ -4,6 +4,8 @@ from datetime import UTC
 from plone.pgcatalog.brain import CatalogSearchResults
 from plone.pgcatalog.brain import PGCatalogBrain
 
+import Missing
+
 
 # ---------------------------------------------------------------------------
 # Sample rows
@@ -211,17 +213,18 @@ class TestBrainAttributeAccess:
         brain = PGCatalogBrain(_make_row(idx={"expires": None}))
         assert brain.expires is None
 
-    def test_known_field_missing_from_idx_returns_none(self):
-        """Known catalog fields absent from idx return None (MV behavior).
+    def test_known_field_missing_from_idx(self):
+        """Known catalog fields absent from idx: metadata vs index-only (#230).
 
-        Matches ZCatalog's Missing Value behavior: known indexes and metadata
-        columns return None when not stored in idx for this object.
+        A registered metadata column returns ``Missing.Value``, matching
+        ZCatalog's ``Catalog.recordify()``.  A registered index-only name
+        returns ``None`` — ZCatalog brains never expose those at all.
         """
         brain = PGCatalogBrain(_make_row(idx={}))
-        # Language is a registered index (via conftest populated_registry)
+        # Language is a registered index, not a metadata column
         assert brain.Language is None
         # mime_type is registered metadata (not an index)
-        assert brain.mime_type is None
+        assert brain.mime_type is Missing.Value
 
     def test_unknown_field_raises_attribute_error(self):
         """Unknown fields raise AttributeError for fallback to getObject().
@@ -258,6 +261,75 @@ class TestBrainAttributeAccess:
         r = repr(brain)
         assert "42" in r
         assert "/plone/doc" in r
+
+
+class TestBrainMissingValue:
+    """Absent metadata columns behave like ZCatalog's Missing Value (#230).
+
+    ZCatalog's ``Catalog.recordify()`` stores ``Missing.Value`` for an
+    attribute the object does not have, and ``Missing.Missing`` is built so
+    that templates can call, concatenate and stringify it without checking.
+    Returning ``None`` instead breaks templates that are correct against
+    ZCatalog.
+    """
+
+    def test_absent_metadata_column_returns_missing_value(self):
+        """mime_type is registered metadata-only and absent from idx."""
+        brain = PGCatalogBrain(_make_row(idx={}))
+        assert brain.mime_type is Missing.Value
+
+    def test_absent_metadata_column_that_is_also_an_index(self):
+        """review_state is both an index and a metadata column.
+
+        Metadata wins: the crash in #230 came from this name.
+        """
+        brain = PGCatalogBrain(_make_row(idx={}))
+        assert brain.review_state is Missing.Value
+
+    def test_absent_metadata_column_survives_string_concatenation(self):
+        """Reproduces the plone.app.querystring results.pt crash.
+
+        ``results.pt`` line 38 evaluates ``'state-' + item.review_state()``,
+        where ``CatalogContentListingObject.review_state()`` is nothing but
+        ``return self._brain.review_state``.  With ``None`` that raises
+        ``TypeError: can only concatenate str (not "NoneType") to str``.
+        """
+        brain = PGCatalogBrain(_make_row(idx={}))
+        assert str("state-" + brain.review_state) == ""
+
+    def test_absent_metadata_column_stringifies_empty(self):
+        """``str(None)`` is ``'None'`` — the silent half of the bug.
+
+        A ``string:${item/<field>}`` expression over an absent column used to
+        render the literal text ``None`` into the page.
+        """
+        brain = PGCatalogBrain(_make_row(idx={}))
+        assert str(brain.mime_type) == ""
+
+    def test_absent_index_only_field_still_returns_none(self):
+        """Language is a registered index but not a metadata column.
+
+        ZCatalog brains do not expose index-only fields at all, so there is no
+        Missing Value behaviour to match and nothing can depend on it.
+        """
+        brain = PGCatalogBrain(_make_row(idx={}))
+        assert brain.Language is None
+
+    def test_explicit_null_metadata_stays_none(self):
+        """A column stored as JSON null is not missing.
+
+        ZCatalog stores a real ``None`` when the indexer returns one.
+        """
+        brain = PGCatalogBrain(_make_row(idx={"review_state": None}))
+        assert brain.review_state is None
+
+    def test_unknown_field_still_raises(self):
+        """Unregistered names keep raising, so callers fall back to getObject()."""
+        import pytest
+
+        brain = PGCatalogBrain(_make_row(idx={}))
+        with pytest.raises(AttributeError):
+            _ = brain.content_type
 
 
 class TestBrainContains:
@@ -445,11 +517,13 @@ class TestLazyIdxLoading:
         assert "portal_type" in results[0]
         assert results._idx_loaded
 
-    def test_known_field_returns_none_after_lazy_load(self):
-        """Known catalog field absent from idx returns None after lazy load."""
+    def test_known_field_resolution_after_lazy_load(self):
+        """Absent fields resolve the same way on the batch-loaded path (#230)."""
         results, conn = self._make_lazy_results(1)
-        # Language is registered but not in the idx_data
+        # Language is a registered index-only name, absent from the idx_data
         assert results[0].Language is None
+        # mime_type is a registered metadata column, also absent
+        assert results[0].mime_type is Missing.Value
 
     def test_unknown_field_raises_after_lazy_load(self):
         """Unknown field raises AttributeError after lazy load."""
@@ -599,11 +673,11 @@ class TestBrainMetaDecoding:
         with pytest.raises(AttributeError):
             _ = brain.content_type
 
-    def test_known_field_missing_returns_none(self):
-        """Registered metadata field not in idx or @meta returns None."""
+    def test_known_metadata_field_missing_returns_missing_value(self):
+        """Registered metadata field not in idx or @meta returns Missing.Value."""
         brain = PGCatalogBrain(_make_row(idx={"@meta": _encode_meta({})}))
         # mime_type is registered metadata (in conftest)
-        assert brain.mime_type is None
+        assert brain.mime_type is Missing.Value
 
     def test_contains_meta_field(self):
         """'in' operator finds fields in @meta."""

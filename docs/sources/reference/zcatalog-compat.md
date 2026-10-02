@@ -96,8 +96,24 @@ index._index.get("Document")  # PG query returning matching ZOIDs
 
 | Attribute Type | Resolution Order |
 |---|---|
-| Known index or metadata (in `IndexRegistry`) | 1. `meta` column (codec-decoded, for non-JSON-native types like `DateTime`) → 2. `idx["@meta"]` fallback (pre-migration data) → 3. top-level `idx` JSONB → 4. `None` if missing from all |
+| Registered metadata column | 1. `meta` column (codec-decoded, for non-JSON-native types like `DateTime`) → 2. `idx["@meta"]` fallback (pre-migration data) → 3. top-level `idx` JSONB → 4. `Missing.Value` if missing from all |
+| Registered index-only name | Same order, but `None` if missing from all |
 | Unknown attribute | Raises `AttributeError` |
+
+`Missing.Value` for an absent metadata column is what ZCatalog's
+`Catalog.recordify()` stores when the object does not have the attribute, which
+happens legitimately: `review_state` is absent for content whose type has an
+empty workflow chain.
+`Missing.Missing` is callable, swallows concatenation, and renders as the empty
+string, so templates can use an absent column without checking: `results.pt` in
+`plone.app.querystring` evaluates `'state-' + item.review_state()`.
+Returning `None` there raised `TypeError` on the loud path and rendered the
+literal text `None` into the page on quiet ones.
+A column stored as JSON `null` is *present* and still returns `None`, as it does
+under ZCatalog when an indexer returns `None`.
+
+Index-only names stay `None`: ZCatalog brains do not expose fields that are
+indexed but not in the metadata schema, so there is no behaviour to match.
 
 Non-JSON-native metadata values (Zope `DateTime`, `datetime`, `date`,
 `image_scales`, etc.) are stored in a dedicated `meta` JSONB column
