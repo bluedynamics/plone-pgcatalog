@@ -24,9 +24,39 @@ Success looks like this:
 
 ## What the measurements showed
 
+> **Two Tika majors are in play, and the difference is load-bearing.**
+> The first round was measured against `apache/tika:3.2.3.0`. Production
+> (cluster kup6s, namespace `aaf-prod`) turned out to run the **stock**
+> `apache/tika:latest`, which is **Apache Tika 4.1.0**, at a 2 GiB limit
+> and 0.5 CPU. Everything below was re-measured against that exact digest
+> on 2026-10-02. The cost findings held; two design assumptions did not,
+> and they are called out where they bite: the OCR probe in component 3
+> and the content key in component 5.
+
 Measured 2026-09-30 against `apache/tika:3.2.3.0` and
-`apache/tika:3.2.3.0-full`, both in a container limited to 1 GiB, matching
-the production limit reported in #222. Reproduction recipe in the appendix.
+`apache/tika:3.2.3.0-full` at a 1 GiB limit, which is what #222 reported,
+and re-measured 2026-10-02 against the production image, stock
+`apache/tika` 4.1.0 at 2 GiB and 0.5 CPU. Reproduction recipe in the
+appendix.
+
+Re-measurement on the production image and version, after a JVM warm-up
+and reported as the delta over a warmed 392 MiB baseline:
+
+| Payload | Time | Chars | Peak delta |
+|---|---|---|---|
+| ZIP, two text files | 0.02 s | 117 | +0 MiB |
+| JPEG, 12 MP | 0.19 s | 0 | +2 MiB |
+| **JPEG, 165 MP** | **0.18 s** | 0 | **+23 MiB** |
+
+`oom_kill 0`. **Production runs the stock image, so there is no OCR, so a
+165 megapixel image costs 23 MiB and cannot be the cause of the OOM in
+#222.** The pixel guard and the rendition selection are insurance against
+a future switch to `-full`, not a fix for the reported incident, and the
+plan is sequenced accordingly.
+
+Warm up before measuring: on half a CPU the first request after a restart
+takes about 12 seconds whatever the payload, which is JIT compilation and
+not work.
 
 | Image | Payload | Time | Chars | Peak RSS | OOM |
 |---|---|---|---|---|---|
@@ -81,12 +111,20 @@ both, and the set of types where the two images disagree about the parser
 is empty. A naive capability query would keep every image type in the list
 and change nothing.
 
-The usable signal is narrower and reliable: the eleven types only `-full`
-reports include `image/ocr-jpeg`, `image/ocr-png`, `image/ocr-tiff` and
-five more `image/ocr-*` pseudo-types. Those are registered by
-`TesseractOCRParser` only when a working Tesseract binary was found. The
-stock image reports zero types from a Tesseract or OCR parser, `-full`
-reports eleven. **Presence of any `image/ocr-*` type is the OCR probe.**
+On **3.2.3** there was a usable signal: the eleven types only `-full`
+reported included eight `image/ocr-*` pseudo-types, which
+`TesseractOCRParser` registers only when it found a working Tesseract.
+
+On **4.1.0 that signal is gone**, and with it the whole idea of deriving
+the policy from introspection. Stock and `-full` return semantically
+identical payloads: 89 parser classes, the same `supportedTypes`, 279
+media types, zero `image/ocr-*` in either. The two files differ only in
+key ordering. Meanwhile `-full` really does OCR.
+
+So introspection answers nothing on the production major, and component 3
+tests the behaviour instead. The endpoints remain useful for what they
+honestly report, which types have a parser at all, and the captured
+payloads are kept as fixtures for both majors.
 
 ## Design decisions
 
@@ -297,23 +335,39 @@ types where dimensions are meaningless, carry NULL, and a missing or NULL
 dequeue predicate and the partial index both read it. That is the same rule
 being applied, not an inconsistency.
 
-### Component 3: the OCR probe
+### Component 3: the OCR probe, by behaviour not by introspection
 
-On startup the worker issues `GET /parsers/details` once with
-`Accept: application/json`, walks the composite parser tree collecting
-`supportedTypes`, and sets `ocr_available` to true when any type matches
-`image/ocr-*`. The result is cached for the process lifetime, with a
-re-probe at most every `PGCATALOG_TIKA_PROBE_INTERVAL` seconds, default
-3600, so that swapping the Tika image does not require a worker restart.
+Whether OCR is available cannot be asked of Tika 4.x. Measured on 4.1.0,
+the stock and `-full` images return **semantically identical**
+`/parsers/details`: 89 parser classes with the same `supportedTypes`, no
+class present in one and absent from the other, and zero `image/ocr-*`
+types in either. The byte difference between the two payloads is key
+ordering. Yet `-full` demonstrably OCRs, with Tesseract 5.5.0, and stock
+returns nothing. The `image/ocr-*` signal that worked on 3.2.3 is gone.
 
-If the probe fails, `ocr_available` is assumed **true**. That is the
-conservative choice: assuming OCR means the pixel guard applies, and
-applying the guard unnecessarily costs a little recall on oversized images,
-whereas skipping the guard risks the OOM this design exists to prevent.
+So the worker **tests the capability instead of reading the
+advertisement**. At startup it sends a small PNG carrying the known word
+`TIKAOCR` to `PUT /tika` and treats a non-empty response as "OCR
+available".
 
-A `PGCATALOG_TIKA_OCR` environment variable overrides the probe in both
-directions, for deployments that cannot reach the endpoint or that want to
-pin the behaviour.
+- The asset ships with the package at
+  `src/plone/pgcatalog/assets/ocr_probe.png`, 3990 bytes, 320x90.
+- Measured cost: **0.02 s** against stock, returning empty, and **0.17 s**
+  against `-full`, returning `TIKAOCR`.
+- The result is cached for `PGCATALOG_TIKA_PROBE_INTERVAL` seconds,
+  default 3600, so swapping the Tika image does not need a worker restart.
+- `PGCATALOG_TIKA_OCR` overrides it in either direction.
+
+If the probe cannot reach Tika at all, `ocr_available` is assumed
+**true**. That is the conservative choice: assuming OCR turns the pixel
+guard on, which costs a little recall, while assuming no OCR turns it off
+and hands Tika the file that started #222.
+
+This is better than what introspection could have given us even on 3.2.3.
+`image/ocr-*` was an internal implementation detail that a major version
+duly renamed away; a round trip through the actual parser cannot go stale
+like that. It also keeps the design's promise that an operator switching
+between the stock and `-full` images changes no pgcatalog setting.
 
 ### Component 4: the decision matrix
 
@@ -414,8 +468,15 @@ The worker switches to `PUT /rmeta/text` with `Accept: application/json`.
 The response is a JSON array with one object per document, the container
 first and embedded documents after it. Extraction becomes:
 
-1. Concatenate `X-TIKA:content` across all entries, preserving today's
-   behaviour for compound documents.
+1. Concatenate the content of all entries, preserving today's behaviour
+   for compound documents. **The key depends on the Tika major**:
+   `tk:content` on 4.x, `X-TIKA:content` on 3.x. Tika 4 renamed the
+   namespace, so code that reads only `X-TIKA:content` returns empty text
+   against production and that looks like "the document has no text"
+   rather than like a bug. Read `tk:content` first and fall back, per
+   entry, so one worker build serves both majors.
+   `resourceName` likewise became `tk:resource-name`; Dublin Core keys and
+   `Content-Type` are unchanged.
 2. Append the values of a whitelist of metadata keys from the container
    entry, defaulting to `dc:title`, `dc:description`, `dc:subject`,
    `dc:creator` and `meta:keyword`, overridable via
@@ -518,14 +579,17 @@ with it, both recorded in component 4: recall is **not monotonic** in
 resolution, and the collapse tracks **glyph height** rather than image
 size.
 
-One assumption remains unverified, because it is about someone else's
-deployment and not about this code:
+**The fourth question, the production Tika image, is answered too, and it
+was the stock one.** `apache/tika:latest`, resolving to Apache Tika 4.1.0,
+at limits 500m/2Gi. So there is no OCR in production, a 165 megapixel
+image costs 23 MiB there, and **the OOM in #222 has a cause this design
+does not address**. The 564 `failed` rows are where to look; the
+diagnostic query is in the how-to. Most likely candidate remains PDF
+rasterisation, named under non-goals.
 
-- **The production Tika image.** Whether the deployment in #222 ran a
-  `-full` image. The stock image does not reproduce the reported OOM at
-  all, so if it really ran stock then the incident has a cause not covered
-  here, most likely the PDF rasterisation named under non-goals. Asked on
-  the issue.
+That answer also exposed the two breakages above, because the first round
+of measurements had been taken against 3.2.3 while production had already
+drifted to 4.1.0 on a floating `:latest` tag with nobody deciding it.
 
 ## Non-goals
 
@@ -613,29 +677,35 @@ entry meaningful while making `text/plain; charset=utf-8` match
 
 ## PR decomposition
 
-Sequenced so each PR is independently reviewable and shippable. Two
-things reordered it. Component 4 grew a deferral, so the `not_before`
-machinery has to land **before** the decision matrix that uses it. And
-step 0 found no double enqueue, so what was PR 1's second fix is gone and
-the ref walk has no independent value any more.
+Reordered once production turned out to run the stock image. Without OCR
+the pixel guard never fires and the rendition is never selected, so
+components 1 to 4 are insurance against a future `-full` switch while
+components 5 and 6 are what aaf-prod actually gets value from today. The
+work that helps a real site therefore goes first.
+
+Within that, component 4's deferral needs component 6's `not_before`
+machinery, so retry stays ahead of the matrix either way.
 
 0. **Phase 0, done.** The step-0 verifications, the OCR recall benchmark
-   and the real fixtures. No production code.
-1. **The MIME normalisation fix, alone.** No new columns, no dependency
-   on anything else here, shippable immediately.
-2. **The rendition groundwork**, in commit order: the walk-then-fetch ref
+   and real fixtures for both Tika majors. No production code.
+1. **MIME normalisation**, alone. Done. No new columns, no dependencies.
+   Fixes blobs that were silently never queued.
+2. **Retry backoff**, `not_before` and `deferrals`. Fixes proposal 3 of
+   #222, which is the 564 `failed` rows in aaf-prod, and provides the
+   machinery component 4 needs later.
+3. **`/rmeta/text`** and metadata harvesting, with the `tk:content`
+   key handled for both majors. Gives a no-OCR site the text its images
+   actually carry, which today is thrown away.
+4. **The rendition groundwork**, in commit order: the walk-then-fetch ref
    module, the `source_info` column, then the enqueue that fills it.
-   These three do nothing apart and share one migration.
-3. **Retry backoff**, `not_before` and `deferrals`. Fixes proposal 3 of
-   #222 on its own and provides the machinery component 4 needs.
-4. **OCR probe, the decision matrix**, dequeue-time rendition resolution
-   and the `skipped` status.
-5. **`/rmeta/text`** and metadata harvesting.
-6. **Documentation** for the Tika side, and the reference page for the new
-   environment variables.
+   Nothing apart, one migration.
+5. **The behavioural OCR probe, the decision matrix**, dequeue-time
+   rendition resolution and the `skipped` status.
+6. **Documentation** for the Tika side, the new environment variables, and
+   the queue-status reset recipe.
 
-PRs 1 and 3 each fix something real on their own and depend on nothing
-else in this design.
+PRs 1, 2 and 3 each stand alone and each fixes something a real site is
+losing today. PRs 4 and 5 only pay off if OCR is ever switched on.
 
 Each PR carries its own `CHANGES.md` entry.
 

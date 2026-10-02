@@ -1,58 +1,74 @@
-# Real Apache Tika response fixtures
+# Real Apache Tika response fixtures, for two majors
 
-Captured 2026-10-01 for Task 3 of
-`docs/superpowers/plans/2026-09-30-tika-bounded-rendition.md`. A fixture
-whose origin is unknown is a fixture nobody dares update, so this records
-exactly where each one came from.
+Captured for Task 3 of
+`docs/superpowers/plans/2026-09-30-tika-bounded-rendition.md`. There are
+two sets because **the two majors differ in ways that break code**, and a
+single-major fixture set is how that went unnoticed for a week.
 
 ## Provenance
 
-| File | Source | Request |
+| File | Source | Captured |
 |---|---|---|
-| `parsers_details_stock.json` | `apache/tika:3.2.3.0` | `GET /parsers/details`, `Accept: application/json` |
-| `parsers_details_full.json` | `apache/tika:3.2.3.0-full` | same |
-| `rmeta_compound_zip.json` | `apache/tika:3.2.3.0` | `PUT /rmeta/text` of a two-file ZIP |
-| `rmeta_image_exif.json` | `apache/tika:3.2.3.0` | `PUT /rmeta/text` of a 4000x3000 JPEG with EXIF |
+| `parsers_details_3_2_3_stock.json` | `apache/tika:3.2.3.0` | 2026-10-01 |
+| `parsers_details_3_2_3_full.json` | `apache/tika:3.2.3.0-full` | 2026-10-01 |
+| `rmeta_3_2_3_compound_zip.json` | `apache/tika:3.2.3.0` | 2026-10-01 |
+| `rmeta_3_2_3_image_exif.json` | `apache/tika:3.2.3.0` | 2026-10-01 |
+| `parsers_details_4_1_0_stock.json` | `apache/tika@sha256:06bcdbd0…`, the digest aaf-prod runs | 2026-10-02 |
+| `parsers_details_4_1_0_full.json` | `apache/tika:4.1.0-full` | 2026-10-02 |
+| `rmeta_4_1_0_compound_zip.json` | the production digest | 2026-10-02 |
+| `rmeta_4_1_0_image_exif.json` | the production digest | 2026-10-02 |
 
-Containers were run with `--memory=1g`, matching the production limit in
-#222. The ZIP holds `vertrag.txt` and `anhang.txt`; the JPEG carries an
-EXIF `ImageDescription`, `Artist`, `Copyright`, `Make` and `Model`. Both
-generators are in the appendix of
-`docs/superpowers/specs/2026-09-30-tika-bounded-rendition-design.md`.
+The 3.x set was taken at a 1 GiB limit, which is what #222 reported. The
+4.1.0 set was taken at 2 GiB, the limit aaf-prod actually runs. Payloads
+are the same two documents throughout: a ZIP holding `vertrag.txt` and
+`anhang.txt`, and a 4000x3000 JPEG carrying an EXIF `ImageDescription`.
+Generators are in the appendix of the design doc.
 
-## Invariants these fixtures exist to pin
+## What changed between the majors, and what it cost
 
-Checked at capture time, and the unit tests assert the same things:
+**`X-TIKA:content` became `tk:content`.** Also `resourceName` →
+`tk:resource-name`, `X-TIKA:parse_time_millis` → `tk:parse-time-millis`.
+Dublin Core keys and `Content-Type` are unchanged. Code reading only the
+3.x name returns **empty text for every document** against 4.x, which
+reads as "this file has no text" rather than as a bug. `tika_rmeta.py`
+tries both names per entry, and
+`test_both_majors_from_their_real_fixtures_agree` pins it.
+
+**The `image/ocr-*` OCR signal is gone.** On 3.2.3, stock advertised 0 and
+`-full` advertised 8 of those pseudo-types, which made OCR availability
+readable from `/parsers/details`. On 4.1.0 **both images advertise 0**,
+and more than that they are semantically identical: 89 parser classes, the
+same `supportedTypes`, 279 media types, differing only in key ordering.
+Yet 4.1.0 `-full` really does OCR, with Tesseract 5.5.0, returning
+`TIKAOCR` for the probe image while stock returns nothing.
+
+So there is no introspection-based OCR probe on 4.x. `tika_policy` probes
+by **behaviour** instead, sending
+`src/plone/pgcatalog/assets/ocr_probe.png` through the real parser:
+measured 0.02 s and empty against stock, 0.17 s and `TIKAOCR` against
+`-full`. `ocr_types()` survives for diagnostics only, and
+`test_4_1_0_payloads_carry_no_ocr_signal` is what documents why the
+decision cannot use it.
+
+## Invariants the tests assert
 
 ```
-stock 0, full 8 image/ocr-* types
-   image/ocr-bmp, image/ocr-gif, image/ocr-jp2, image/ocr-jpeg,
-   image/ocr-jpx, image/ocr-png, image/ocr-tiff, image/ocr-x-portable-pixmap
-   total supported types: stock 264, full 275
-rmeta compound: 3 entries, container content='vertrag.txt\n\n\nanhang.txt'
-rmeta image: dc:description='Sonnenuntergang am Attersee, Aufnahme vom Steg'
+3.2.3: stock 0 image/ocr-* types, full 8;  264 vs 275 supported types
+4.1.0: stock 0 image/ocr-* types, full 0;  279 vs 279, semantically equal
+both : the compound ZIP's container entry holds only the file names,
+        so concatenating entries does not double-count
+both : the image's dc:description carries the EXIF ImageDescription
+        with no OCR involved
 ```
-
-Three things follow, and each is load-bearing for the design:
-
-1. **`image/ocr-*` is the only reliable OCR signal.** `image/jpeg` is
-   claimed by `JpegParser` in *both* images and no media type has a
-   different parser between them, so a plain capability query cannot tell
-   an OCR deployment from a metadata-only one. Zero `image/ocr-*` in the
-   stock image, eight in `-full`.
-2. **Concatenating `/rmeta/text` entries does not double-count.** The
-   container entry's content is the file *names* only; the two child
-   entries hold the text. Word order does differ from `PUT /tika`, which
-   interleaves each name with its content.
-3. **An image yields text without any OCR.** `dc:description` comes from
-   the EXIF `ImageDescription`, at metadata-only cost, which is why the
-   design keeps image types in the pipeline instead of dropping them.
 
 ## Updating
 
-Only alongside a deliberate Tika version bump, and then re-run the
-capture for **both** images in the same change, because the stock-versus-
-`-full` difference is the fixture's whole point. If a future Tika renames
-the `image/ocr-*` family, that is a real behaviour change for
-`tika_policy.probe_ocr` and not a fixture to quietly refresh: the
-`PGCATALOG_TIKA_OCR` override exists for exactly that case.
+Only alongside a deliberate Tika version change, and then capture
+**every** variant in that same change: stock and `-full`, for each major
+you intend to support. Keeping one major only is what let a production
+drift from 3.x to 4.1.0 invalidate a week of measurements silently.
+
+If a future Tika restores an `image/ocr-*` family, that is a real
+behaviour change and not a fixture to refresh quietly:
+`test_3_2_3_payloads_did_carry_the_signal` exists so the restoration gets
+noticed rather than assumed.

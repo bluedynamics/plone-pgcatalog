@@ -50,6 +50,14 @@ Tika 3.2.3 server.
   `dc:title,dc:description,dc:subject,dc:creator,meta:keyword`.
 - **Backoff ladder** for transport deferrals: 5 s, 30 s, 120 s, capped at
   120 s.
+- **Two Tika majors must both work.** Production (kup6s, `aaf-prod`) runs
+  the **stock** `apache/tika:latest`, which is **4.1.0**, at limits
+  500m/2Gi, so **no OCR**. 3.x is still in the field elsewhere. Key
+  differences: the content key is `tk:content` on 4.x and
+  `X-TIKA:content` on 3.x; `resourceName` became `tk:resource-name`;
+  `image/ocr-*` exists only on 3.x. Fixtures for both majors live in
+  `tests/fixtures/tika/` and any change touching Tika responses is tested
+  against both.
 
 ## Review Focus
 
@@ -67,11 +75,12 @@ the code.
 3. **Tika answers `/rmeta/text` with a non-JSON body.** A 500 with an HTML
    error page, or a truncated response. Parsing must fail the one job as a
    normal error and must not kill the worker loop. Pinned in Task 10.
-4. **A `/parsers/details` payload with no `image/ocr-*` although OCR
-   works.** `image/ocr-*` is a Tika implementation detail and a future
-   version could rename it, which would silently disable the guard. The
-   `PGCATALOG_TIKA_OCR` override must win over the probe in both
-   directions. Pinned in Task 7.
+4. **A Tika major that renames what the code reads.** No longer
+   hypothetical: 4.1.0 removed the `image/ocr-*` signal and renamed
+   `X-TIKA:content` to `tk:content`. The probe is now behavioural and the
+   content key is tried under both names, and both facts are pinned
+   against real payloads from both majors. `PGCATALOG_TIKA_OCR` must still
+   win over the probe in either direction. Pinned in Tasks 9 and 12.
 5. **A `skipped` or attempt-exhausted row must never be resurrected.**
    Adding `not_before` to the dequeue predicate must not widen it. Pinned
    in Task 8.
@@ -366,7 +375,7 @@ Assisted-by: Claude Opus 5"
 
 ---
 
-# Tasks 4 to 7: the standalone MIME fix, and the rendition groundwork
+# PR 1 (Task 6) and PR 4 (Tasks 4, 7, 5)
 
 Phase 0 changed the shipping order here. The double-enqueue bug this plan
 expected **does not exist** (see `tests/fixtures/state/README.md`), so
@@ -375,11 +384,18 @@ now:
 
 - **PR 1 = Task 6 alone.** MIME normalisation. No new columns, no
   dependency on anything else in this plan, shippable immediately.
-- **PR 2 = Tasks 4, 5 and 7 together.** The reference walk, the
+  **Done.**
+- **PR 4 = Tasks 4, 5 and 7 together.** The reference walk, the
   `source_info` column and the enqueue that fills it. Apart they do
   nothing, and they share one migration.
 
-Commit order inside PR 2 is **4, 7, 5**: the walk, then the column, then
+These two are not adjacent in shipping order any more. Production runs the
+stock Tika image, so the rendition groundwork helps aaf-prod only if OCR is
+ever switched on, while retry (PR 2, Task 8) and metadata harvesting
+(PR 3, Tasks 12 and 13) each fix something a real site is losing today.
+Read the sections in document order, but ship in PR-number order.
+
+Commit order inside PR 4 is **4, 7, 5**: the walk, then the column, then
 the enqueue that fills it.
 
 Task numbers are unchanged so the ledger and the Interfaces blocks stay
@@ -1223,7 +1239,11 @@ Assisted-by: Claude Opus 5"
 
 ---
 
-# PR 3: retry that can bridge a Tika restart
+# PR 2: retry that can bridge a Tika restart
+
+**Ships second, not third.** Production runs the stock image, so the
+rendition work buys aaf-prod nothing today while this fixes its 564
+`failed` rows. See the spec's PR decomposition.
 
 Fixes proposal 3 of #222 on its own, and provides the deferral machinery
 that PR 4 needs. Shippable without any of the rendition work.
@@ -1434,28 +1454,54 @@ Assisted-by: Claude Opus 5"
 
 ---
 
-# PR 4: OCR probe, decision matrix, dequeue-time resolution
+# PR 5: OCR probe, decision matrix, dequeue-time resolution
 
-## Task 9: The OCR probe
+**Ships last of the code PRs.** Without OCR the matrix always answers
+"extract" and the rendition is never selected, so this is insurance
+against a future `-full` switch rather than a fix for anything observed.
+
+## Task 9: The OCR probe, by behaviour
+
+Rewritten after measuring the production Tika. Introspection cannot
+answer this on 4.x: stock and `-full` return semantically identical
+`/parsers/details` (89 parser classes, same `supportedTypes`, 279 media
+types, zero `image/ocr-*` in either, differing only in key ordering) while
+`-full` demonstrably OCRs. The `image/ocr-*` signal existed on 3.2.3 and
+was renamed away.
+
+So the probe sends a known image through the real parser and reads the
+answer. That also cannot go stale across a major version.
 
 **Files:**
 - Create: `src/plone/pgcatalog/tika_policy.py`
 - Create: `tests/test_tika_policy.py`
+- Asset: `src/plone/pgcatalog/assets/ocr_probe.png` (already committed,
+  3990 bytes, 320x90, the word `TIKAOCR`)
+- Modify: `pyproject.toml`, to ship the asset
 
 **Interfaces:**
-- Consumes: the fixtures from Task 3.
+- Consumes: the probe asset; the fixtures from Task 3.
 - Produces:
-  - `ocr_types(payload: dict) -> set[str]`
-  - `probe_ocr(payload: dict) -> bool`
-  - `OcrProbe(client_factory, url, interval=3600, override=None)` with
+  - `OCR_PROBE_PATH` — the packaged asset's path
+  - `probe_ocr(put_image) -> bool` where *put_image* is a callable taking
+    the probe bytes and returning Tika's response text
+  - `OcrProbe(put_image, interval=3600, override=None)` with
     `.available() -> bool`
+  - `ocr_types(payload) -> set[str]` kept for diagnostics only, **not**
+    used for the decision; it is what proves the 4.x payloads carry no
+    signal
 
-- [ ] **Step 1: Write the failing tests**
+- [ ] **Step 1: Write the failing test**
 
 ```python
-"""Tests for the Tika OCR capability probe and the extraction policy."""
+"""Tests for the Tika OCR capability probe and the extraction policy.
+
+The probe is behavioural because introspection cannot answer the question
+on Tika 4.x; `test_4_1_0_payloads_carry_no_ocr_signal` is what pins that.
+"""
 
 from plone.pgcatalog.tika_policy import ocr_types
+from plone.pgcatalog.tika_policy import OCR_PROBE_PATH
 from plone.pgcatalog.tika_policy import OcrProbe
 from plone.pgcatalog.tika_policy import probe_ocr
 
@@ -1468,51 +1514,78 @@ def load(name):
         return json.load(fh)
 
 
-def test_stock_image_reports_no_ocr():
-    """image/jpeg is claimed by JpegParser in both images, so the parser
-    list alone cannot tell them apart; image/ocr-* can."""
-    assert ocr_types(load("parsers_details_stock.json")) == set()
-    assert probe_ocr(load("parsers_details_stock.json")) is False
+def test_the_probe_asset_ships_and_is_the_size_we_measured():
+    assert OCR_PROBE_PATH.exists()
+    assert OCR_PROBE_PATH.stat().st_size == 3990
 
 
-def test_full_image_reports_ocr():
-    types = ocr_types(load("parsers_details_full.json"))
-    assert "image/ocr-jpeg" in types
-    assert len(types) == 8
-    assert probe_ocr(load("parsers_details_full.json")) is True
+def test_text_back_means_ocr_is_available():
+    """Measured: -full returns 'TIKAOCR' in 0.17 s."""
+    assert probe_ocr(lambda data: "\n\nTIKAOCR\n") is True
+
+
+def test_empty_response_means_no_ocr():
+    """Measured: stock returns '' in 0.02 s."""
+    assert probe_ocr(lambda data: "") is False
+    assert probe_ocr(lambda data: "   \n ") is False
+
+
+def test_the_probe_sends_the_packaged_asset():
+    seen = {}
+
+    def put_image(data):
+        seen["len"] = len(data)
+        return "TIKAOCR"
+
+    probe_ocr(put_image)
+    assert seen["len"] == 3990
+
+
+def test_4_1_0_payloads_carry_no_ocr_signal():
+    """Why this probe is behavioural. On 4.1.0 the stock and -full
+    capability payloads are semantically identical, so no introspection
+    could tell them apart."""
+    stock = load("parsers_details_4_1_0_stock.json")
+    full = load("parsers_details_4_1_0_full.json")
+    assert ocr_types(stock) == set()
+    assert ocr_types(full) == set(), (
+        "4.1.0 -full advertises no OCR types although it does OCR"
+    )
+
+
+def test_3_2_3_payloads_did_carry_the_signal():
+    """Kept so a future Tika restoring the signal is noticed rather than
+    assumed."""
+    assert ocr_types(load("parsers_details_3_2_3_stock.json")) == set()
+    assert len(ocr_types(load("parsers_details_3_2_3_full.json"))) == 8
 
 
 def test_probe_failure_assumes_ocr_is_present():
-    """The safe direction: assuming OCR means the guard applies."""
+    """The safe direction: assuming OCR turns the pixel guard on."""
 
-    def explode(*a, **kw):
+    def explode(data):
         raise OSError("connection refused")
 
-    assert OcrProbe(explode, "http://tika:9998").available() is True
+    assert OcrProbe(explode).available() is True
 
 
 @pytest.mark.parametrize(
-    "override,payload,expected",
-    [
-        (True, "parsers_details_stock.json", True),
-        (False, "parsers_details_full.json", False),
-    ],
+    "override,response,expected",
+    [(True, "", True), (False, "TIKAOCR", False)],
 )
-def test_override_wins_in_both_directions(override, payload, expected):
-    """Review Focus 4: image/ocr-* is a Tika internal that could be
-    renamed, so PGCATALOG_TIKA_OCR must be able to force either answer."""
-    probe = OcrProbe(lambda: load(payload), "http://tika:9998", override=override)
+def test_override_wins_in_both_directions(override, response, expected):
+    probe = OcrProbe(lambda data: response, override=override)
     assert probe.available() is expected
 
 
 def test_result_is_cached_for_the_interval():
     calls = []
 
-    def fetch():
+    def put_image(data):
         calls.append(1)
-        return load("parsers_details_full.json")
+        return "TIKAOCR"
 
-    probe = OcrProbe(fetch, "http://tika:9998", interval=3600)
+    probe = OcrProbe(put_image, interval=3600)
     assert probe.available() is True
     assert probe.available() is True
     assert len(calls) == 1
@@ -1521,30 +1594,47 @@ def test_result_is_cached_for_the_interval():
 - [ ] **Step 2: Run to verify it fails**
 
 Run: `.venv/bin/pytest tests/test_tika_policy.py -v`
-Expected: FAIL, `ModuleNotFoundError`.
+Expected: FAIL, `ModuleNotFoundError: No module named 'plone.pgcatalog.tika_policy'`
 
-- [ ] **Step 3: Implement the probe**
+- [ ] **Step 3: Write the implementation**
 
 ```python
 """Tika capability probing and the extraction decision, as pure functions.
 
-Asking Tika what it supports does not distinguish an OCR deployment from a
-metadata-only one: ``image/jpeg`` is claimed by ``JpegParser`` in both the
-stock and the ``-full`` image, and no media type has a different parser
-between them.  What does differ is the eight ``image/ocr-*`` pseudo-types
-that ``TesseractOCRParser`` registers only when it found a working
-Tesseract binary: zero in the stock image, eight in ``-full``.
+Whether this Tika can OCR cannot be read off ``/parsers/details``.
+Measured on 4.1.0, the stock and ``-full`` images return semantically
+identical payloads -- 89 parser classes, the same supported types, 279
+media types, no ``image/ocr-*`` in either -- while ``-full`` really does
+OCR, with Tesseract 5.5.0.  The ``image/ocr-*`` family that carried the
+signal on 3.2.3 was renamed away by the major bump.
+
+So the probe runs a known image through the real parser.  A round trip
+cannot go stale the way an implementation detail can.
 """
 
+from pathlib import Path
 from time import monotonic
 
 import logging
 
 
-__all__ = ["ocr_types", "probe_ocr", "OcrProbe", "OCR_TYPE_PREFIX"]
+__all__ = [
+    "OCR_PROBE_PATH",
+    "OCR_TYPE_PREFIX",
+    "OcrProbe",
+    "ocr_types",
+    "probe_ocr",
+]
 
 log = logging.getLogger(__name__)
 
+# A 320x90 PNG carrying the word TIKAOCR.  Measured round trip: 0.02 s
+# against the stock image, returning empty, and 0.17 s against -full,
+# returning the word.
+OCR_PROBE_PATH = Path(__file__).parent / "assets" / "ocr_probe.png"
+
+# Kept for diagnostics only.  The decision does not use it: see the
+# module docstring.
 OCR_TYPE_PREFIX = "image/ocr-"
 
 
@@ -1556,27 +1646,31 @@ def _supported_types(node, acc):
 
 
 def ocr_types(payload):
-    """The ``image/ocr-*`` media types a ``/parsers/details`` payload lists."""
-    everything = _supported_types(payload, set())
-    return {t for t in everything if t.startswith(OCR_TYPE_PREFIX)}
+    """The ``image/ocr-*`` types a ``/parsers/details`` payload lists.
+
+    Diagnostic only.  Empty on 4.x for both image variants, which is the
+    reason :func:`probe_ocr` exists.
+    """
+    return {
+        t for t in _supported_types(payload, set()) if t.startswith(OCR_TYPE_PREFIX)
+    }
 
 
-def probe_ocr(payload):
-    """Whether this Tika has a working OCR engine."""
-    return bool(ocr_types(payload))
+def probe_ocr(put_image):
+    """Whether this Tika OCRs, by sending it the probe image.
+
+    *put_image* takes the image bytes and returns Tika's response text.
+    Injected rather than built here so this module stays free of httpx
+    and therefore unit-testable.
+    """
+    return bool(put_image(OCR_PROBE_PATH.read_bytes()).strip())
 
 
 class OcrProbe:
-    """Cached OCR availability for one Tika endpoint.
+    """Cached OCR availability for one Tika endpoint."""
 
-    *client_factory* is called with no arguments and returns the parsed
-    ``/parsers/details`` payload.  It is injected rather than built here so
-    the policy module stays free of httpx and therefore unit-testable.
-    """
-
-    def __init__(self, client_factory, url, interval=3600, override=None):
-        self._fetch = client_factory
-        self._url = url
+    def __init__(self, put_image, interval=3600, override=None):
+        self._put_image = put_image
         self._interval = interval
         self._override = override
         self._value = None
@@ -1589,33 +1683,55 @@ class OcrProbe:
         if self._value is not None and now - self._checked_at < self._interval:
             return self._value
         try:
-            self._value = probe_ocr(self._fetch())
+            self._value = probe_ocr(self._put_image)
         except Exception as exc:
             # Assume OCR: that turns the pixel guard on, which costs a
             # little recall.  Assuming no OCR would turn it off and hand
             # Tika the 165 MP file that started #222.
-            log.warning(
-                "OCR probe against %s failed, assuming OCR is present: %s",
-                self._url,
-                exc,
-            )
+            log.warning("OCR probe failed, assuming OCR is present: %s", exc)
             self._value = True
         self._checked_at = now
         return self._value
 ```
 
-- [ ] **Step 4: Run to verify it passes**
+- [ ] **Step 4: Ship the asset**
 
-Run: `.venv/bin/pytest tests/test_tika_policy.py -v`
-Expected: 7 passed.
+The worker reads `OCR_PROBE_PATH` at runtime, so the PNG has to be in the
+wheel. With hatchling, add to `pyproject.toml`:
 
-- [ ] **Step 5: Commit**
+```toml
+[tool.hatch.build.targets.wheel]
+artifacts = ["src/plone/pgcatalog/assets/*.png"]
+```
+
+Verify rather than trust it:
 
 ```bash
-git add src/plone/pgcatalog/tika_policy.py tests/test_tika_policy.py
-git commit -m "feat: detect Tika OCR availability from image/ocr-* types
+.venv/bin/python -m build --wheel --outdir /tmp/pgc-wheel 2>&1 | tail -2
+unzip -l /tmp/pgc-wheel/*.whl | grep ocr_probe.png
+```
+Expected: the PNG is listed. A probe whose asset is missing from the wheel
+fails closed to "OCR present", which silently enables the guard in
+production.
 
-Refs #222.
+- [ ] **Step 5: Run to verify it passes**
+
+Run: `.venv/bin/pytest tests/test_tika_policy.py -v`
+Expected: 10 passed.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add src/plone/pgcatalog/tika_policy.py tests/test_tika_policy.py \
+        pyproject.toml
+git commit -m "feat: detect Tika OCR availability by behaviour, not introspection
+
+Tika 4.1.0 reports semantically identical /parsers/details for the stock
+and -full images, 89 parser classes with the same supported types and no
+image/ocr-* in either, while -full demonstrably OCRs. The signal that
+worked on 3.2.3 was renamed away, so the worker now sends a packaged
+3990-byte PNG through the real parser instead: 0.02 s and empty on stock,
+0.17 s and 'TIKAOCR' on -full. Refs #222.
 
 Assisted-by: Claude Opus 5"
 ```
@@ -1991,7 +2107,10 @@ Assisted-by: Claude Opus 5"
 
 ---
 
-# PR 5: metadata harvesting
+# PR 3: metadata harvesting
+
+**Ships third.** On a no-OCR site this is the only part of the design that
+adds text that is being thrown away today: an image's EXIF caption.
 
 ## Task 12: Parse `/rmeta/text`
 
@@ -2026,14 +2145,14 @@ def load(name):
 def test_compound_document_text_appears_exactly_once():
     """Measured: the container entry holds only the file names, the child
     entries hold the text, so concatenation does not double-count."""
-    text = extract_text(load("rmeta_compound_zip.json"), METADATA_FIELDS_DEFAULT)
+    text = extract_text(load("rmeta_4_1_0_compound_zip.json"), METADATA_FIELDS_DEFAULT)
     assert text.count("ALPHA") == 1
     assert text.count("BRAVO") == 1
     assert "vertrag.txt" in text
 
 
 def test_image_caption_is_harvested_without_ocr():
-    text = extract_text(load("rmeta_image_exif.json"), METADATA_FIELDS_DEFAULT)
+    text = extract_text(load("rmeta_4_1_0_image_exif.json"), METADATA_FIELDS_DEFAULT)
     assert "Sonnenuntergang am Attersee" in text
 
 
@@ -2061,6 +2180,37 @@ def test_metadata_comes_from_the_container_entry_only():
     assert "Container" in text
     assert "Embedded" not in text
     assert "inner" in text, "embedded *content* is still kept"
+
+
+def test_tika_4_content_key_is_read():
+    """Production runs 4.1.0, where the key is tk:content. Reading only
+    the 3.x name returned empty text for every document."""
+    text = extract_text(
+        [{"tk:content": "Kaufvertrag Attersee", "dc:title": "T"}],
+        ("dc:title",),
+    )
+    assert "Kaufvertrag Attersee" in text
+
+
+def test_tika_3_content_key_still_works():
+    text = extract_text([{"X-TIKA:content": "Altbestand"}], ())
+    assert "Altbestand" in text
+
+
+def test_both_majors_from_their_real_fixtures_agree():
+    """The same ZIP through 3.2.3 and 4.1.0 must yield the same words."""
+    old = extract_text(load("rmeta_3_2_3_compound_zip.json"), ())
+    new = extract_text(load("rmeta_4_1_0_compound_zip.json"), ())
+    for token in ("ALPHA", "BRAVO", "vertrag.txt", "anhang.txt"):
+        assert token in old, f"{token} missing from the 3.2.3 fixture"
+        assert token in new, f"{token} missing from the 4.1.0 fixture"
+
+
+def test_the_4_1_0_key_wins_when_both_are_present():
+    """Defensive: a proxy or a mixed payload must not double-count."""
+    text = extract_text([{"tk:content": "NEW", "X-TIKA:content": "OLD"}], ())
+    assert "NEW" in text
+    assert "OLD" not in text
 
 
 @pytest.mark.parametrize("payload", [[], {}, None, "not a list"])
@@ -2099,7 +2249,12 @@ only and the children held the text.  Word order does differ from
 
 __all__ = ["extract_text", "METADATA_FIELDS_DEFAULT", "MAX_RESPONSE_BYTES"]
 
-CONTENT_KEY = "X-TIKA:content"
+# Tika 4 renamed the metadata namespace: X-TIKA:content became
+# tk:content, resourceName became tk:resource-name.  Dublin Core keys and
+# Content-Type are unchanged.  Reading only the 3.x name against a 4.x
+# server returns empty text for every document, which looks like "no text
+# in this file" rather than like a bug, so both are tried per entry.
+CONTENT_KEYS = ("tk:content", "X-TIKA:content")
 
 METADATA_FIELDS_DEFAULT = (
     "dc:title",
@@ -2119,6 +2274,14 @@ def _as_text(value):
     if isinstance(value, (list, tuple)):
         return " ".join(str(v) for v in value if v)
     return str(value) if value else ""
+
+
+def _content_of(entry):
+    """One entry's body text, under whichever major's key is present."""
+    for key in CONTENT_KEYS:
+        if key in entry:
+            return _as_text(entry[key])
+    return ""
 
 
 def extract_text(payload, fields):
@@ -2142,7 +2305,7 @@ def extract_text(payload, fields):
         if value:
             parts.append(value)
     for entry in entries:
-        content = _as_text(entry.get(CONTENT_KEY)).strip()
+        content = _content_of(entry).strip()
         if content:
             parts.append(content)
     return "\n".join(parts)

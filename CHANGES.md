@@ -18,6 +18,18 @@
 
 ### Documentation
 
+- Re-measure the Tika design against the Tika major that production
+  actually runs. The first round was taken against 3.2.3 while aaf-prod had
+  drifted to a stock `apache/tika:latest` resolving to **4.1.0**. The cost
+  findings held, a 165 megapixel JPEG still costing 0.18 s and 23 MiB
+  without OCR, but two design assumptions did not: Tika 4 renamed
+  `X-TIKA:content` to `tk:content`, and the `image/ocr-*` capability signal
+  is gone, with stock and `-full` returning semantically identical
+  `/parsers/details`. The OCR probe is now behavioural, sending a packaged
+  probe image through the real parser, and response parsing accepts both
+  majors' keys. Fixtures for both majors are committed.
+  #222
+
 - Add the design and implementation plan for bounded Tika renditions
   (#222), together with the phase-0 evidence they rest on: real
   `object_state` fixtures under `tests/fixtures/state/`, real Tika 3.2.3
