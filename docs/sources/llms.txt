@@ -137,7 +137,9 @@ getIndexDataForUID, index_objects.
 - `search()` → use `searchResults()`
 
 **Brain attribute resolution**:
-- Known index/metadata fields → returns None if missing from idx JSONB
+- Registered metadata columns → returns `Missing.Value` if missing from idx
+  JSONB (matching ZCatalog's `Catalog.recordify()`)
+- Registered index-only names → returns None if missing from idx JSONB
 - Unknown attributes → raises AttributeError (triggers getObject() fallback)
 
 ## Permissions

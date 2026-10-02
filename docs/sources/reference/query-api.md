@@ -388,9 +388,19 @@ attributes (for example, `brain.portal_type`, `brain.Title`, `brain.Subject`).
   the extracted columns mechanism.
 - JSON-native metadata (str, int, float, bool, None, lists/dicts of
   these) is stored directly in the top-level `idx` JSONB.
-- For registered indexes/metadata: returns `None` if the field is
-  missing from `meta`, `idx["@meta"]` (pre-migration fallback), and
-  top-level `idx` (Missing Value behavior, matching ZCatalog).
+- For a registered metadata column missing from `meta`, `idx["@meta"]`
+  (pre-migration fallback) and top-level `idx`: returns `Missing.Value`,
+  matching what ZCatalog's `Catalog.recordify()` stores for an attribute
+  the object does not have.
+  `Missing.Missing` is callable, swallows concatenation, and renders as the
+  empty string, which is what lets templates such as `plone.app.querystring`'s
+  `results.pt` evaluate `'state-' + item.review_state()` on content whose
+  type has an empty workflow chain.
+  A column stored as JSON `null` is *present* and still returns `None`, as it
+  does under ZCatalog.
+- For a registered index-only name missing from `idx`: returns `None`.
+  ZCatalog brains do not expose index-only fields at all, so there is no
+  Missing Value behavior to match.
 - For unknown attributes: raises `AttributeError`. This is intentional:
   `CatalogContentListingObject.__getattr__()` catches `AttributeError`
   and falls back to `getObject()`, loading the real content object.

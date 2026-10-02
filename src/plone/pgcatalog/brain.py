@@ -19,6 +19,7 @@ from zope.interface.common.sequence import IFiniteSequence
 from ZTUtils.Lazy import Lazy
 
 import logging
+import Missing
 import os
 
 
@@ -225,9 +226,16 @@ class PGCatalogBrain:
         2. Fallback: ``idx["@meta"]`` (pre-migration data still in idx).
         3. Top-level ``idx[name]`` — JSON-native values (str, int, bool, …)
            and converted index data.
-        4. Known field not present → ``None`` (Missing Value, matching ZCatalog).
-        5. Unknown field → ``AttributeError`` (lets callers fall back to
+        4. Registered metadata column not present → ``Missing.Value``, matching
+           ZCatalog's ``Catalog.recordify()`` (#230).
+        5. Registered index-only name not present → ``None``.  ZCatalog brains
+           do not expose index-only fields at all, so there is no Missing Value
+           behaviour to match.
+        6. Unknown field → ``AttributeError`` (lets callers fall back to
            ``getObject()``).
+
+        A column stored as JSON ``null`` is *present*, so it keeps returning
+        ``None`` — ZCatalog stores a real ``None`` when the indexer returns one.
         """
         row = object.__getattribute__(self, "_row")
 
@@ -247,7 +255,14 @@ class PGCatalogBrain:
             if name in idx:
                 return idx[name]
         registry = get_registry()
-        if name in registry or name in registry.metadata:
+        # Metadata first: names such as ``review_state`` are both an index and
+        # a metadata column, and the metadata contract is the one templates
+        # see.  ``Missing.Missing`` is callable, swallows concatenation and
+        # stringifies to ``''``, which is why ZCatalog-correct templates like
+        # ``plone.app.querystring``'s ``results.pt`` survive an absent column.
+        if name in registry.metadata:
+            return Missing.Value
+        if name in registry:
             return None
         raise AttributeError(name)
 
