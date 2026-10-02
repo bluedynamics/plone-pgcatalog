@@ -1,5 +1,38 @@
 # Changelog
 
+## 1.0.0rc4 (unreleased)
+
+### Fixed
+
+- `searchResults()` now honours `AccessInactivePortalContent` granted through a
+  local or group role, not only site-wide. The permission was checked on the
+  catalog tool alone, and that tool sits directly below the portal root, so a
+  role assigned deeper never reached it. In practice that means `Editor` through
+  a group on a Lineage subsite or a per-section editor group, and `Owner`, which
+  Plone grants the permission to by default. For those users inactive content
+  (expired, or not yet effective) silently vanished from folder contents,
+  listings, collections and `@@search` alike; there was no error to go on, and
+  only globally assigned roles still worked. `Products.CMFPlone.CatalogTool`
+  falls back to a path-scoped check in exactly this case, and its
+  `allow_inactive()` is now ported with its conservative semantics: the
+  site-wide check first, then the permission on every object named by the
+  query's `path`, where one disallowed path denies the whole query,
+  untraversable paths are ignored and a query without a `path` denies. Blank
+  paths and path lists longer than the query builder's limit of 100 deny too,
+  rather than being traversed: the former add no path filter at all, the latter
+  make the query fail later anyway.
+  #232
+
+- An explicit `show_inactive=False` now suppresses inactive content even for
+  users who hold the permission, as CMFPlone documents it. The key was read
+  with a `False` default, which cannot tell "not passed" from an explicit
+  `False`, and the permission check then overrode it, so the documented
+  escape hatch for admins did nothing. `searchResults()` also stops mutating
+  the query dict it was handed: it merged the keyword arguments into that dict
+  and popped `show_inactive` back out of it, so a caller reusing one dict for
+  a second query silently got different filtering.
+  #232
+
 ## 1.0.0rc3 (2026-10-02)
 
 ### Fixed

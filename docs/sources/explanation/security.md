@@ -130,6 +130,17 @@ reaches `build_query()`:
   This is a DateRangeIndex query using
   the `pgcatalog_to_timestamptz()` expression index.
 
+  `allow_inactive()` decides, mirroring `Products.CMFPlone.CatalogTool`: the
+  permission is checked site-wide on the catalog tool first and, failing that,
+  on every object named by the query's `path`.
+  The second step is what makes a
+  *local* role count -- one assigned directly or through a group, say `Editor`
+  on a subsite -- since the catalog tool itself sits directly below the portal
+  root and never sees it.
+  That check is conservative: a single disallowed path
+  denies the whole query, paths that cannot be traversed are ignored, and a
+  query without a `path` denies.
+
 These filters are injected by `apply_security_filters()` in `query.py` and cannot
 be bypassed through the public `searchResults()` API.
 

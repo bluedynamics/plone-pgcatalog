@@ -17,6 +17,7 @@ Module structure:
 """
 
 from AccessControl import ClassSecurityInfo
+from AccessControl import getSecurityManager
 from AccessControl.class_init import InitializeClass
 from AccessControl.Permissions import manage_zcatalog_entries
 from AccessControl.Permissions import manage_zcatalog_indexes
@@ -49,11 +50,16 @@ from plone.pgcatalog.pool import get_pool
 from plone.pgcatalog.pool import get_request_connection
 from plone.pgcatalog.pool import get_storage_connection
 from plone.pgcatalog.processor import ANNOTATION_KEY
+from plone.pgcatalog.query import _MAX_PATHS
 from plone.pgcatalog.query import apply_security_filters
 from plone.pgcatalog.search import _PendingBrain
 from plone.pgcatalog.search import _run_search
+from Products.CMFCore.permissions import AccessInactivePortalContent
+from Products.CMFCore.utils import _checkPermission
 from Products.CMFCore.utils import UniqueObject
 from Products.ZCatalog.interfaces import IZCatalog
+from zExceptions import Unauthorized
+from zope.component.hooks import getSite
 from zope.interface import implementer
 
 import logging
@@ -198,6 +204,7 @@ class PlonePGCatalogTool(UniqueObject, Folder):
     )
 
     # -- Private methods (Python-only, no through-the-web access) ------------
+    security.declarePrivate("allow_inactive")
     security.declarePrivate("unrestrictedSearchResults")
     security.declarePrivate("_unrestrictedSearchResults")
     security.declarePrivate("_listAllowedRolesAndUsers")
@@ -700,29 +707,91 @@ class PlonePGCatalogTool(UniqueObject, Folder):
 
     # -- Read path (PG only) ------------------------------------------------
 
+    def allow_inactive(self, query_kw):
+        """Check whether the user may see inactive content.
+
+        Ported from ``Products.CMFPlone.CatalogTool.allow_inactive`` so
+        that pgcatalog keeps ZCatalog semantics:
+
+        1. check the ``AccessInactivePortalContent`` permission site-wide,
+           i.e. on the catalog tool itself;
+        2. otherwise, if the query carries a ``path``, check the permission
+           on each of those objects.  A *local* role — assigned directly or
+           through a group, e.g. on a subsite — only ever shows up here,
+           because the tool sits right below the portal root.
+
+        Conservative: as soon as one path is disallowed the answer is
+        ``False``.  Paths that cannot be traversed are ignored, and a query
+        without a ``path`` yields ``False``.
+        """
+        if _checkPermission(AccessInactivePortalContent, self):
+            return True
+
+        paths = query_kw.get("path", False)
+        if not paths:
+            return False
+
+        if isinstance(paths, dict):
+            # {"path": {"depth": 0, "query": ["/plone/events"]}}
+            # or {"path": {"depth": 0, "query": "/plone/events"}}
+            paths = paths.get("query", [])
+
+        if isinstance(paths, str):
+            paths = [paths]
+        paths = list(paths)
+
+        # Drop blank paths the same way the query builder does.  It adds no
+        # path filter for them, so the results would not be restricted at
+        # all — while traversal resolves "" to the portal root and would
+        # happily grant on it.
+        paths = [p for p in paths if p and p.strip()]
+        if not paths:
+            return False
+
+        # Bound the traversal work.  A query with more paths than this is
+        # rejected by build_query() anyway, so no legitimate query reaches
+        # the limit, and refusing is the conservative direction.
+        if len(paths) > _MAX_PATHS:
+            return False
+
+        objs = []
+        site = getSite()
+        for path in paths:
+            try:
+                site_path = "/".join(site.getPhysicalPath())
+                parts = path[len(site_path) + 1 :].split("/")
+                parent = site.unrestrictedTraverse("/".join(parts[:-1]))
+                objs.append(parent.restrictedTraverse(parts[-1]))
+            except (KeyError, AttributeError, Unauthorized):
+                # Unresolvable path — ignore it, like CMFPlone does
+                pass
+
+        if not objs:
+            return False
+
+        return all(_checkPermission(AccessInactivePortalContent, ob) for ob in objs)
+
     def searchResults(self, query=None, **kw):
-        """Search using PG instead of ZCatalog BTrees."""
+        """Search using PG instead of ZCatalog BTrees.
+
+        ``show_inactive`` follows ``Products.CMFPlone.CatalogTool``: when
+        passed explicitly it wins, so ``True`` reveals inactive content to
+        users without the permission and ``False`` suppresses it even for
+        those who have it.  When absent, ``allow_inactive()`` decides.
+        """
         # NOTE: No application-level rate limiting is applied to search queries.
         # Deploy a reverse proxy (e.g. nginx, HAProxy) with rate limiting on
         # search endpoints (@@search, @@search-results) for production use.
-        from AccessControl import getSecurityManager
-
-        if query is None:
-            query = {}
+        query = {} if query is None else dict(query)
         query.update(kw)
 
         # Security: inject allowedRolesAndUsers
         user = getSecurityManager().getUser()
         roles = self._listAllowedRolesAndUsers(user)
-        show_inactive = query.pop("show_inactive", False)
 
-        # Check permission for inactive content
-        if not show_inactive:
-            from Products.CMFCore.permissions import AccessInactivePortalContent
-
-            sm = getSecurityManager()
-            if sm.checkPermission(AccessInactivePortalContent, self):
-                show_inactive = True
+        show_inactive = query.pop("show_inactive", None)
+        if show_inactive is None:
+            show_inactive = self.allow_inactive(query)
 
         query = apply_security_filters(query, roles, show_inactive=show_inactive)
 
