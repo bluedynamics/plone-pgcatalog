@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### Fixed
+
+- Normalise the MIME type before the Tika extraction gate. `_should_extract`
+  compared the catalogued `mime_type` against the configured set by exact
+  string, so `text/plain; charset=utf-8` and `APPLICATION/PDF` never matched
+  although Plone can hold both, and those blobs were silently never queued
+  for extraction. The configured entries are normalised too, so a
+  `PGCATALOG_TIKA_CONTENT_TYPES` value of `Application/PDF` now matches as
+  well. Parameters are not simply stripped: Tika's own supported-type set
+  contains parameterised entries such as `audio/ogg; codecs=opus`, so the
+  full normalised value is tried first and the bare type second, which keeps
+  an explicit parameterised configuration entry meaningful.
+  #222
+
 ### Documentation
 
 - Add the design and implementation plan for bounded Tika renditions
