@@ -1,0 +1,116 @@
+{
+  "_provenance": "Captured 2026-10-01 from a real ZODB round trip: plone.namedfile 8.x NamedBlobImage written through zodb-pgjsonb PGJsonbStorage, with plone.pgthumbor set_source_derivative(max_edge=4000) applied. See tests/fixtures/state/README.md.",
+  "blob_zoids": [
+    6,
+    7,
+    15
+  ],
+  "content_zoid": 3,
+  "objects": {
+    "14": {
+      "_blob": {
+        "@ref": [
+          "000000000000000f",
+          "ZODB.blob.Blob"
+        ]
+      },
+      "_height": 2933,
+      "_modified": 1790857449159,
+      "_pgthumbor_is_source": true,
+      "_width": 4000,
+      "contentType": "image/jpeg",
+      "exif": {
+        "0th": {},
+        "1st": {},
+        "Exif": {},
+        "GPS": {},
+        "Interop": {},
+        "thumbnail": null
+      },
+      "filename": "image-15000x11000-pgthumbor-source.jpeg"
+    },
+    "3": {
+      "attachment": {
+        "@ref": [
+          "0000000000000005",
+          "plone.namedfile.file.NamedBlobImage"
+        ]
+      },
+      "image": {
+        "@ref": [
+          "0000000000000004",
+          "plone.namedfile.file.NamedBlobImage"
+        ]
+      }
+    },
+    "4": {
+      "_blob": {
+        "@ref": [
+          "0000000000000007",
+          "ZODB.blob.Blob"
+        ]
+      },
+      "_height": 11000,
+      "_modified": 1790857447400,
+      "_pgthumbor_source": {
+        "@ref": [
+          "000000000000000e",
+          "plone.namedfile.file.NamedBlobImage"
+        ]
+      },
+      "_pgthumbor_source_info": {
+        "max_edge": 4000,
+        "reason": "generated",
+        "source_ids": {
+          "@t": [
+            7,
+            291620480267928900
+          ]
+        }
+      },
+      "_width": 15000,
+      "contentType": "image/jpeg",
+      "exif": {
+        "0th": {},
+        "1st": {},
+        "Exif": {},
+        "GPS": {},
+        "Interop": {},
+        "thumbnail": null
+      },
+      "filename": "image-15000x11000.jpg"
+    },
+    "5": {
+      "_blob": {
+        "@ref": [
+          "0000000000000006",
+          "ZODB.blob.Blob"
+        ]
+      },
+      "_height": 600,
+      "_modified": 1790857447405,
+      "_pgthumbor_source": null,
+      "_pgthumbor_source_info": {
+        "max_edge": 4000,
+        "reason": "not_needed",
+        "source_ids": {
+          "@t": [
+            6,
+            291620480267928900
+          ]
+        }
+      },
+      "_width": 800,
+      "contentType": "image/jpeg",
+      "exif": {
+        "0th": {},
+        "1st": {},
+        "Exif": {},
+        "GPS": {},
+        "Interop": {},
+        "thumbnail": null
+      },
+      "filename": "attachment-800x600.jpg"
+    }
+  }
+}
