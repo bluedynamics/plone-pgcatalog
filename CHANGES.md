@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Documentation
+
+- Add the design and implementation plan for bounded Tika renditions
+  (#222), together with the phase-0 evidence they rest on: real
+  `object_state` fixtures under `tests/fixtures/state/`, real Tika 3.2.3
+  response fixtures under `tests/fixtures/tika/`, and an OCR recall
+  benchmark in `benchmarks/tika_ocr_downscale.md`. No production code
+  changes yet.
+
 ## 1.0.0rc4 (2026-10-02)
 
 ### Fixed
