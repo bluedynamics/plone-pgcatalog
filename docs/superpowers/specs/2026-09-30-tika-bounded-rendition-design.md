@@ -48,9 +48,24 @@ and reported as the delta over a warmed 392 MiB baseline:
 | JPEG, 12 MP | 0.19 s | 0 | +2 MiB |
 | **JPEG, 165 MP** | **0.18 s** | 0 | **+23 MiB** |
 
-`oom_kill 0`. **Production runs the stock image, so there is no OCR, so a
-165 megapixel image costs 23 MiB and cannot be the cause of the OOM in
-#222.** The pixel guard and the rendition selection are insurance against
+`oom_kill 0`. Re-measured at the limit the incident actually ran under,
+and below it: at **1 GiB** the same 165 MP JPEG costs +27 MiB in 0.2 s,
+and at stage's **512 MiB** it costs +12 MiB in 0.5 s. No OOM in either.
+
+**And the incident's cause is now known, from the production queue rather
+than from inference.** Of 1708 `failed` rows, 1689 carry
+`[Errno 1] Operation not permitted` and 14 carry
+`[Errno 111] Connection refused`: on a Cilium cluster the socket load
+balancer returns `EPERM` for a `connect()` to a ClusterIP with no ready
+backend. The single-replica Tika Service had no endpoint. **Those
+documents were never parsed at all**, and every row sits at
+`attempts = 3 / max_attempts = 3`, so three retries inside a second burned
+the budget during a roughly 30 second restart. Only 5 rows are genuine
+document failures, all `422`.
+
+So the extraction cost of images is not what broke production; service
+downtime plus a retry policy that cannot bridge it is. That is component 6,
+and it is why the plan ships it second. The pixel guard and the rendition selection are insurance against
 a future switch to `-full`, not a fix for the reported incident, and the
 plan is sequenced accordingly.
 
@@ -486,6 +501,21 @@ first and embedded documents after it. Extraction becomes:
 The merge function takes a single text argument, so no schema or SQL
 function change is needed.
 
+**It also removes a regression Tika 4 introduced.** `PUT /tika` with
+`Accept: text/plain` returns **Markdown** on 4.x where 3.x returned
+unmarked text. Heading and bullet markers are harmless, since
+`to_tsvector` discards them as punctuation, but Markdown **link syntax
+puts the URL into the text**. Measured: `Siehe [die Akte](https://example.org/akte).`
+tokenises to five lexemes including `example.org`, `example.org/akte).`
+and `/akte).`, where the same sentence from `/rmeta/text` gives two. A
+link-heavy page therefore gains up to three junk lexemes per link, some
+with punctuation glued on.
+
+`tk:content` from `/rmeta/text` is plain text on 4.x, verified against the
+production digest. So switching endpoints is not only how images
+contribute their captions, it is also how `searchable_text` stops
+absorbing Markdown syntax and link targets.
+
 **Concatenation does not double-count, which was worth checking.** Measured
 on a ZIP holding two text files, the container entry's `X-TIKA:content` was
 `'vertrag.txt\n\n\nanhang.txt'`, the file *names* only, and the two child
@@ -595,8 +625,11 @@ drifted to 4.1.0 on a floating `:latest` tag with nobody deciding it.
 
 - **PDF rasterisation.** A scanned PDF with `ocrStrategy=auto` renders
   pages to images inside the JVM, which an image pixel guard does not see
-  and which was not measured. Plausibly the real cause of the production
-  incident. It needs its own issue.
+  and which was not measured. An earlier draft called this the likely
+  cause of the production incident. **That was wrong twice over**: the
+  image has no Tesseract, so `AUTO` does not rasterise at all, and the
+  incident's cause is now known from the queue data. It stays a non-goal,
+  without the speculation.
 - **Tesseract tuning**, languages and preprocessing. Server-side
   configuration, already documented.
 - **Audio and video.** Worth its own issue, and the measurements are

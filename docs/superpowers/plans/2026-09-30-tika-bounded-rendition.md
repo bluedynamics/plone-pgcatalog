@@ -2109,8 +2109,17 @@ Assisted-by: Claude Opus 5"
 
 # PR 3: metadata harvesting
 
-**Ships third.** On a no-OCR site this is the only part of the design that
-adds text that is being thrown away today: an image's EXIF caption.
+**Ships third, and it now fixes a regression as well as adding text.**
+
+Two reasons, one of which nobody anticipated. On a no-OCR site this is the
+only part of the design that adds text currently being thrown away, an
+image's EXIF caption. And `PUT /tika`, which the worker uses today, returns
+**Markdown** on Tika 4.x where 3.x returned unmarked text. Measured against
+the production digest, `Siehe [die Akte](https://example.org/akte).`
+tokenises to five lexemes including `example.org`, `example.org/akte).` and
+`/akte).`; the same sentence out of `/rmeta/text` gives two. `tk:content`
+carries no Markdown. So moving endpoints also stops `searchable_text`
+absorbing link targets and syntax.
 
 ## Task 12: Parse `/rmeta/text`
 
@@ -2204,6 +2213,19 @@ def test_both_majors_from_their_real_fixtures_agree():
     for token in ("ALPHA", "BRAVO", "vertrag.txt", "anhang.txt"):
         assert token in old, f"{token} missing from the 3.2.3 fixture"
         assert token in new, f"{token} missing from the 4.1.0 fixture"
+
+
+def test_rmeta_content_is_not_markdown():
+    """Why this PR is also a fix. Tika 4's PUT /tika returns Markdown, so
+    a link's target lands in searchable_text as junk lexemes;
+    /rmeta/text's tk:content does not. Measured against the production
+    digest: five lexemes against two for the same sentence."""
+    text = extract_text(
+        [{"tk:content": "Siehe die Akte."}],
+        (),
+    )
+    assert "[" not in text and "](" not in text
+    assert "example.org" not in text
 
 
 def test_the_4_1_0_key_wins_when_both_are_present():
