@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+### Fixed
+
+- Defer Tika extraction jobs with backoff instead of failing them. Three
+  attempts inside one second cannot bridge a Tika restart, so a pod restart
+  or a deploy turned transient `[Errno 111] Connection refused` and
+  `[Errno 1] Operation not permitted` errors into `failed` rows that needed
+  a manual SQL reset: 102 of them in one reported run, 1703 in another.
+  Connection-level failures, meaning `httpx.ConnectError`,
+  `httpx.ConnectTimeout` and `httpx.RemoteProtocolError`, now re-queue on a
+  5/30/120 second ladder **without** spending one of the job's three
+  attempts, since a server that was not there had no opinion about the
+  document. Every other exception keeps its previous meaning and still
+  counts an attempt. Two new columns, `not_before` and `deferrals`, are
+  added idempotently, and `idx_teq_pending` is recreated to lead on
+  `not_before` because the dequeue now filters on it. Note that
+  `trg_notify_extraction` fires on insert only, so a deferred job is picked
+  up by the polling fallback rather than by a notification.
+  #222
+
+
 ### Documentation
 
 - Add the design and implementation plan for bounded Tika renditions

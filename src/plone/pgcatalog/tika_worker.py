@@ -69,6 +69,28 @@ MISSING_EXTRA_HINT = (
 _S3_STREAM_CHUNK = 1024 * 1024  # 1 MiB
 
 
+# Transport deferral ladder, in seconds (#222).  Three attempts inside one
+# second cannot bridge a pod restart, which is how 102 transient failures
+# became `failed` rows needing a manual SQL reset.
+BACKOFF_LADDER = (5, 30, 120)
+
+# Failures that say nothing about the job: the server was not there to
+# have an opinion.  Everything else counts as an attempt.
+#
+# Built conditionally because this module must import without httpx (#171):
+# an empty tuple makes the isinstance check always false, which is the right
+# answer when no extraction can happen in the first place.
+_TRANSPORT_ERRORS = (
+    (
+        httpx.ConnectError,
+        httpx.ConnectTimeout,
+        httpx.RemoteProtocolError,
+    )
+    if httpx is not None
+    else ()
+)
+
+
 class TikaWorker:
     """PostgreSQL-backed text extraction worker using Apache Tika."""
 
@@ -84,7 +106,13 @@ class TikaWorker:
         self._s3_client = None
 
     def run(self):
-        """Main loop: LISTEN for notifications, process jobs."""
+        """Main loop: LISTEN for notifications, process jobs.
+
+        The polling fallback is load-bearing and must not be "optimised"
+        away.  ``trg_notify_extraction`` fires ``AFTER INSERT`` only, so a
+        job deferred by :meth:`_defer` gets no notification when its
+        ``not_before`` passes; the poll is what picks it up.
+        """
         with psycopg.connect(self.dsn, autocommit=True) as listen_conn:
             listen_conn.execute("LISTEN text_extraction_ready")
             log.info(
@@ -132,10 +160,12 @@ class TikaWorker:
                     "  SELECT id FROM text_extraction_queue "
                     "  WHERE status = 'pending' "
                     "    AND attempts < max_attempts "
+                    "    AND not_before <= now() "
                     "  ORDER BY id "
                     "  FOR UPDATE SKIP LOCKED "
                     "  LIMIT 1"
-                    ") RETURNING id, zoid, blob_zoid, tid, content_type"
+                    ") RETURNING id, zoid, blob_zoid, tid, content_type, "
+                    "            deferrals"
                 )
                 row = cur.fetchone()
                 if row is None:
@@ -169,6 +199,18 @@ class TikaWorker:
                     job_id,
                 )
             except Exception as exc:
+                if httpx is not None and isinstance(exc, _TRANSPORT_ERRORS):
+                    delay = BACKOFF_LADDER[
+                        min(row["deferrals"], len(BACKOFF_LADDER) - 1)
+                    ]
+                    log.info(
+                        "Tika unreachable, deferring job %d by %ds: %s",
+                        job_id,
+                        delay,
+                        exc,
+                    )
+                    self._defer(conn, job_id, delay, f"deferred: {exc}")
+                    return True
                 log.warning(
                     "Extraction failed for zoid=%d blob_zoid=%d tid=%d (job %d): %s",
                     zoid,
@@ -291,6 +333,28 @@ class TikaWorker:
                 aws_secret_access_key=self.s3_config.get("secret_key"),
             )
         return self._s3_client
+
+    def _defer(self, conn, job_id, delay, reason):
+        """Re-queue a job later without spending one of its attempts.
+
+        A Tika that is absent, restarting or mid-deploy says nothing about
+        the job, so counting it as an attempt is what turned 102 transient
+        failures into ``failed`` rows in #222.  ``attempts`` is decremented
+        because the claim query already incremented it, and ``GREATEST``
+        keeps it from going negative.
+        """
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE text_extraction_queue SET "
+                "  status = 'pending', "
+                "  attempts = GREATEST(attempts - 1, 0), "
+                "  deferrals = deferrals + 1, "
+                "  not_before = now() + make_interval(secs => %(delay)s), "
+                "  error = %(reason)s, updated_at = now() "
+                "WHERE id = %(id)s",
+                {"delay": delay, "reason": reason[:1000], "id": job_id},
+            )
+            conn.commit()
 
     def _update_searchable_text(self, conn, zoid, extracted_text):
         """Merge extracted text into searchable_text via PL/pgSQL function."""

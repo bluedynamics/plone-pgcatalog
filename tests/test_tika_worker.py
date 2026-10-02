@@ -13,6 +13,7 @@ from unittest.mock import MagicMock
 from unittest.mock import patch
 from zodb_pgjsonb.schema import HISTORY_FREE_SCHEMA
 
+import httpx
 import os
 import psycopg
 import pytest
@@ -388,3 +389,102 @@ class TestWorkerIntegration:
         tsv_text = row["searchable_text"]
         # Tika should have extracted "PostgreSQL Performance" and "Indexes matter"
         assert "postgresql" in tsv_text or "perform" in tsv_text or "index" in tsv_text
+
+
+# ── Transport deferral and backoff (#222) ────────────────────────────
+
+TRANSPORT_ERRORS = (
+    httpx.ConnectError("refused"),
+    httpx.ConnectTimeout("timed out"),
+    httpx.RemoteProtocolError("server disconnected"),
+)
+
+
+class TestTransportDeferral:
+    """A Tika that is absent says nothing about the job.
+
+    Three attempts inside one second cannot bridge a pod restart, which
+    is how 102 transient connection errors became `failed` rows needing a
+    manual SQL reset in #222.
+    """
+
+    @pytest.mark.parametrize("exc", TRANSPORT_ERRORS, ids=lambda e: type(e).__name__)
+    def test_transport_error_defers_without_spending_an_attempt(self, worker_db, exc):
+        _insert_object_with_blob(worker_db, zoid=800)
+        _enqueue_job(worker_db, zoid=800)
+
+        worker = TikaWorker(dsn=DSN, tika_url="http://localhost:9998")
+        with patch.object(worker, "_extract", side_effect=exc):
+            worker._process_one()
+
+        row = _get_queue_status(worker_db, 800)
+        assert row["status"] == "pending"
+        assert row["attempts"] == 0, "a missing server is not the job's fault"
+        assert row["deferrals"] == 1
+        assert row["not_before"] > row["created_at"]
+
+    def test_backoff_ladder_grows_then_caps(self, worker_db):
+        _insert_object_with_blob(worker_db, zoid=801)
+        _enqueue_job(worker_db, zoid=801)
+        worker = TikaWorker(dsn=DSN, tika_url="http://localhost:9998")
+
+        delays = []
+        for _ in range(4):
+            worker_db.execute(
+                "UPDATE text_extraction_queue SET not_before = now() WHERE zoid = 801"
+            )
+            worker_db.commit()
+            with patch.object(
+                worker, "_extract", side_effect=httpx.ConnectError("refused")
+            ):
+                worker._process_one()
+            row = _get_queue_status(worker_db, 801)
+            delays.append(
+                round((row["not_before"] - row["updated_at"]).total_seconds())
+            )
+
+        assert delays == [5, 30, 120, 120]
+
+    def test_other_errors_still_spend_an_attempt(self, worker_db):
+        """Only transport failures are free; a bad document is the job's
+        own problem and must still exhaust its attempts."""
+        _insert_object_with_blob(worker_db, zoid=802)
+        _enqueue_job(worker_db, zoid=802)
+
+        worker = TikaWorker(dsn=DSN, tika_url="http://localhost:9998")
+        with patch.object(worker, "_extract", side_effect=ValueError("bad")):
+            worker._process_one()
+
+        row = _get_queue_status(worker_db, 802)
+        assert row["attempts"] == 1
+        assert row["deferrals"] == 0
+
+    def test_deferred_job_is_invisible_until_not_before(self, worker_db):
+        _insert_object_with_blob(worker_db, zoid=803)
+        _enqueue_job(worker_db, zoid=803)
+        worker_db.execute(
+            "UPDATE text_extraction_queue "
+            "   SET not_before = now() + interval '1 hour' WHERE zoid = 803"
+        )
+        worker_db.commit()
+
+        worker = TikaWorker(dsn=DSN, tika_url="http://localhost:9998")
+        assert worker._process_one() is False, "nothing claimable yet"
+
+    def test_skipped_and_exhausted_rows_are_never_resurrected(self, worker_db):
+        """Review Focus 5: adding not_before must only narrow the dequeue
+        predicate, never widen it."""
+        for zoid in (804, 805):
+            _insert_object_with_blob(worker_db, zoid=zoid)
+            _enqueue_job(worker_db, zoid=zoid)
+        worker_db.execute(
+            "UPDATE text_extraction_queue SET status = 'skipped' WHERE zoid = 804"
+        )
+        worker_db.execute(
+            "UPDATE text_extraction_queue "
+            "   SET attempts = max_attempts, not_before = now() WHERE zoid = 805"
+        )
+        worker_db.commit()
+
+        worker = TikaWorker(dsn=DSN, tika_url="http://localhost:9998")
+        assert worker._process_one() is False
