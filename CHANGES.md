@@ -2,6 +2,32 @@
 
 ## Unreleased
 
+### Added
+
+- Extract via Tika's `/rmeta/text` endpoint instead of `/tika`, and harvest
+  a whitelist of Dublin Core metadata fields into `searchable_text`
+  alongside the body text. Configurable with
+  `PGCATALOG_TIKA_METADATA_FIELDS`, default
+  `dc:title,dc:description,dc:subject,dc:creator,meta:keyword`, and
+  `TIKA_WORKER_MAX_EMBEDDED_RESOURCES`, default 1000.
+
+  Two measured reasons. `/tika` returns body text only, so an image
+  without OCR yielded zero characters even when it carried an EXIF
+  caption; `dc:description` now puts that caption into the index at
+  metadata-only cost. And on Tika 4 `/tika` returns **Markdown**, so a
+  link's target was being tokenised into `searchable_text`: the sentence
+  `Siehe [die Akte](https://example.org/akte).` produced five lexemes
+  including `example.org` and `/akte).`, where the same sentence out of
+  `/rmeta/text` produces two. `tk:content` carries no Markdown.
+
+  The content key differs between Tika majors, `tk:content` on 4.x and
+  `X-TIKA:content` on 3.x, and both are read so one worker build serves
+  both. Word order changes relative to `/tika`, which interleaved each
+  embedded file's name with its content, so phrase proximity over
+  `searchable_text` shifts; term content does not.
+  #222
+
+
 ### Documentation
 
 - Add the design and implementation plan for bounded Tika renditions
