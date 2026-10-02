@@ -146,7 +146,11 @@ class TestWorkerProcessOne:
 
         # Mock Tika response
         mock_response = MagicMock()
-        mock_response.text = "Extracted text from PDF"
+        # /rmeta/text shape: one entry per document, 4.x key.
+
+        mock_response.json.return_value = [{"tk:content": "Extracted text from PDF"}]
+
+        mock_response.headers = {"content-length": "64"}
         mock_response.raise_for_status = MagicMock()
         mock_client = MagicMock()
         mock_client.__enter__ = MagicMock(return_value=mock_client)
@@ -220,7 +224,13 @@ class TestWorkerSearchableText:
 
         # Mock Tika response
         mock_response = MagicMock()
-        mock_response.text = "important findings about quantum computing"
+        # /rmeta/text shape: one entry per document, 4.x key.
+
+        mock_response.json.return_value = [
+            {"tk:content": "important findings about quantum computing"}
+        ]
+
+        mock_response.headers = {"content-length": "64"}
         mock_response.raise_for_status = MagicMock()
         mock_client = MagicMock()
         mock_client.__enter__ = MagicMock(return_value=mock_client)
@@ -258,7 +268,11 @@ class TestWorkerConcurrency:
 
         # Mock Tika
         mock_response = MagicMock()
-        mock_response.text = "extracted"
+        # /rmeta/text shape: one entry per document, 4.x key.
+
+        mock_response.json.return_value = [{"tk:content": "extracted"}]
+
+        mock_response.headers = {"content-length": "64"}
         mock_response.raise_for_status = MagicMock()
         mock_client = MagicMock()
         mock_client.__enter__ = MagicMock(return_value=mock_client)
@@ -388,3 +402,97 @@ class TestWorkerIntegration:
         tsv_text = row["searchable_text"]
         # Tika should have extracted "PostgreSQL Performance" and "Indexes matter"
         assert "postgresql" in tsv_text or "perform" in tsv_text or "index" in tsv_text
+
+
+class TestRmetaEndpoint:
+    """The worker extracts via /rmeta/text, not /tika (#222).
+
+    /tika returns body text only, so an image without OCR yields nothing
+    even when it carries an EXIF caption, and on Tika 4 /tika returns
+    Markdown, which puts link targets into searchable_text.
+    """
+
+    def _resp(self, **kw):
+        resp = MagicMock()
+        resp.raise_for_status = MagicMock()
+        resp.headers = kw.pop("headers", {"content-length": "64"})
+        for key, value in kw.items():
+            setattr(resp, key, value)
+        return resp
+
+    def test_extract_calls_rmeta_and_caps_embedded_resources(self, worker_db):
+        worker = TikaWorker(dsn=DSN, tika_url="http://localhost:9998")
+        resp = self._resp()
+        resp.json.return_value = [{"tk:content": "body", "dc:title": "T"}]
+
+        with patch("plone.pgcatalog.tika_worker.httpx.Client") as client_cls:
+            put = client_cls.return_value.__enter__.return_value.put
+            put.return_value = resp
+            with patch.object(
+                worker,
+                "_blob_source",
+                return_value={"kind": "bytes", "data": b"x"},
+            ):
+                text = worker._extract(worker_db, 1, 1, "application/pdf")
+
+        assert put.call_args[0][0].endswith("/rmeta/text")
+        headers = put.call_args[1]["headers"]
+        assert headers["Accept"] == "application/json"
+        assert "X-Tika-MaxEmbeddedResources" in headers
+        assert "body" in text
+        assert "T" in text
+
+    def test_non_json_body_raises_a_job_error_not_a_loop_error(self, worker_db):
+        """Review Focus 3: a 200 carrying an HTML error page must fail the
+        one job, not the worker loop."""
+        worker = TikaWorker(dsn=DSN, tika_url="http://localhost:9998")
+        resp = self._resp()
+        resp.json = MagicMock(side_effect=ValueError("not json"))
+
+        with patch("plone.pgcatalog.tika_worker.httpx.Client") as client_cls:
+            client_cls.return_value.__enter__.return_value.put.return_value = resp
+            with (
+                patch.object(
+                    worker,
+                    "_blob_source",
+                    return_value={"kind": "bytes", "data": b"x"},
+                ),
+                pytest.raises(ValueError),
+            ):
+                worker._extract(worker_db, 1, 1, "application/pdf")
+
+    def test_oversized_response_is_refused_before_parsing(self, worker_db):
+        """One entry per embedded resource means the body is not bounded by
+        the source size, so the ceiling is checked before json()."""
+        worker = TikaWorker(dsn=DSN, tika_url="http://localhost:9998")
+        resp = self._resp(headers={"content-length": str(64 * 1024 * 1024)})
+        resp.json = MagicMock(side_effect=AssertionError("must not parse"))
+
+        with patch("plone.pgcatalog.tika_worker.httpx.Client") as client_cls:
+            client_cls.return_value.__enter__.return_value.put.return_value = resp
+            with (
+                patch.object(
+                    worker,
+                    "_blob_source",
+                    return_value={"kind": "bytes", "data": b"x"},
+                ),
+                pytest.raises(ValueError, match="response too large"),
+            ):
+                worker._extract(worker_db, 1, 1, "application/pdf")
+
+    def test_a_real_tika_round_trip_yields_the_document_text(self, worker_db):
+        """Against the live server configured for the suite, not a mock."""
+        if not os.environ.get("PGCATALOG_TIKA_URL"):
+            pytest.skip("PGCATALOG_TIKA_URL not set")
+        worker = TikaWorker(dsn=DSN, tika_url=os.environ["PGCATALOG_TIKA_URL"])
+        with patch.object(
+            worker,
+            "_blob_source",
+            return_value={
+                "kind": "bytes",
+                "data": b"Kaufvertrag Seegrundstueck Attersee",
+            },
+        ):
+            text = worker._extract(worker_db, 1, 1, "text/plain")
+        assert "Kaufvertrag" in text
+        assert "Attersee" in text
