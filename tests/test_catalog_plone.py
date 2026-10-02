@@ -25,6 +25,10 @@ class TestSecurityDeclarations:
         roles = getattr(PlonePGCatalogTool, "unrestrictedSearchResults__roles__", None)
         assert roles == (), f"Expected () for private, got {roles!r}"
 
+    def test_allow_inactive_is_private(self):
+        roles = getattr(PlonePGCatalogTool, "allow_inactive__roles__", None)
+        assert roles == (), f"Expected () for private, got {roles!r}"
+
     def test_refresh_catalog_is_protected(self):
         # declareProtected sets MethodName__roles__ = PermissionRole(...)
         roles = getattr(PlonePGCatalogTool, "refreshCatalog__roles__", None)
@@ -650,10 +654,11 @@ class TestSearchResults:
         mock_results = mock.Mock()
 
         with (
-            mock.patch("AccessControl.getSecurityManager") as sm_mock,
+            mock.patch("plone.pgcatalog.catalog.getSecurityManager"),
             mock.patch.object(
                 tool, "_listAllowedRolesAndUsers", return_value=["Anonymous"]
             ),
+            mock.patch.object(tool, "allow_inactive", return_value=False),
             mock.patch(
                 "plone.pgcatalog.catalog.get_storage_connection",
                 return_value=mock_conn,
@@ -666,7 +671,6 @@ class TestSearchResults:
                 side_effect=lambda q, r, **kw: q,
             ),
         ):
-            sm_mock.return_value.checkPermission.return_value = False
             result = tool.searchResults({"portal_type": "Document"})
             assert result is mock_results
             run_mock.assert_called_once()
@@ -682,10 +686,11 @@ class TestSearchResults:
         mock_results = mock.Mock()
 
         with (
-            mock.patch("AccessControl.getSecurityManager") as sm_mock,
+            mock.patch("plone.pgcatalog.catalog.getSecurityManager"),
             mock.patch.object(
                 tool, "_listAllowedRolesAndUsers", return_value=["Anonymous"]
             ),
+            mock.patch.object(tool, "allow_inactive", return_value=False),
             mock.patch(
                 "plone.pgcatalog.catalog.get_storage_connection", return_value=None
             ),
@@ -701,7 +706,6 @@ class TestSearchResults:
                 side_effect=lambda q, r, **kw: q,
             ),
         ):
-            sm_mock.return_value.checkPermission.return_value = False
             result = tool.searchResults({"portal_type": "Document"})
             assert result is mock_results
             run_mock.assert_called_once()
@@ -725,6 +729,115 @@ class TestSearchResults:
             assert result is mock_results
             run_mock.assert_called_once()
             assert run_mock.call_args.kwargs.get("lazy_conn") is mock_conn
+
+
+class TestShowInactivePrecedence:
+    """An explicit show_inactive wins over the permission check (#232).
+
+    CMFPlone documents both directions: ``True`` reveals inactive content
+    to users without the permission, ``False`` suppresses it even for
+    users who have it.  pgcatalog used to default to ``False`` and then
+    let the permission check overrule it, so the second direction never
+    worked.
+    """
+
+    SENTINEL = "decided-by-allow_inactive"
+
+    def _search(self, query=None, **kw):
+        """Run searchResults with everything but the decision mocked out.
+
+        Returns ``(captured, allow_mock)`` where ``captured`` holds the
+        query dict and the ``show_inactive`` value that reached
+        ``apply_security_filters``.
+        """
+        tool = PlonePGCatalogTool.__new__(PlonePGCatalogTool)
+        captured = {}
+
+        def fake_filters(q, roles, **kwargs):
+            captured["query"] = q
+            captured["show_inactive"] = kwargs.get("show_inactive")
+            return q
+
+        with (
+            mock.patch("plone.pgcatalog.catalog.getSecurityManager"),
+            mock.patch.object(
+                tool, "_listAllowedRolesAndUsers", return_value=["Anonymous"]
+            ),
+            mock.patch.object(
+                tool, "allow_inactive", return_value=self.SENTINEL
+            ) as allow_mock,
+            mock.patch(
+                "plone.pgcatalog.catalog.get_storage_connection",
+                return_value=mock.Mock(),
+            ),
+            mock.patch("plone.pgcatalog.catalog._run_search", return_value=mock.Mock()),
+            mock.patch(
+                "plone.pgcatalog.catalog.apply_security_filters",
+                side_effect=fake_filters,
+            ),
+        ):
+            tool.searchResults(query, **kw)
+        return captured, allow_mock
+
+    def test_absent_falls_back_to_allow_inactive(self):
+        captured, allow_mock = self._search({"portal_type": "Document"})
+        assert captured["show_inactive"] == self.SENTINEL
+        allow_mock.assert_called_once_with({"portal_type": "Document"})
+
+    def test_explicit_false_skips_the_permission_check(self):
+        captured, allow_mock = self._search(
+            {"portal_type": "Document"}, show_inactive=False
+        )
+        assert captured["show_inactive"] is False
+        allow_mock.assert_not_called()
+
+    def test_explicit_true_skips_the_permission_check(self):
+        captured, allow_mock = self._search(
+            {"portal_type": "Document"}, show_inactive=True
+        )
+        assert captured["show_inactive"] is True
+        allow_mock.assert_not_called()
+
+    def test_show_inactive_inside_the_query_dict_counts(self):
+        captured, allow_mock = self._search(
+            {"portal_type": "Document", "show_inactive": False}
+        )
+        assert captured["show_inactive"] is False
+        allow_mock.assert_not_called()
+
+    def test_show_inactive_is_stripped_from_the_query(self):
+        captured, _ = self._search({"portal_type": "Document", "show_inactive": True})
+        assert "show_inactive" not in captured["query"]
+
+    def test_allow_inactive_sees_path_from_the_positional_query(self):
+        """The path may arrive in the query dict, not only as a keyword."""
+        _, allow_mock = self._search({"path": "/plone/subsite"})
+        allow_mock.assert_called_once_with({"path": "/plone/subsite"})
+
+    def test_allow_inactive_sees_path_from_keywords(self):
+        _, allow_mock = self._search(path="/plone/subsite")
+        allow_mock.assert_called_once_with({"path": "/plone/subsite"})
+
+    def test_callers_query_dict_is_not_mutated(self):
+        query = {"portal_type": "Document", "show_inactive": False}
+        tool = PlonePGCatalogTool.__new__(PlonePGCatalogTool)
+        with (
+            mock.patch("plone.pgcatalog.catalog.getSecurityManager"),
+            mock.patch.object(
+                tool, "_listAllowedRolesAndUsers", return_value=["Anonymous"]
+            ),
+            mock.patch(
+                "plone.pgcatalog.catalog.get_storage_connection",
+                return_value=mock.Mock(),
+            ),
+            mock.patch("plone.pgcatalog.catalog._run_search", return_value=mock.Mock()),
+            mock.patch(
+                "plone.pgcatalog.catalog.apply_security_filters",
+                side_effect=lambda q, r, **kw: q,
+            ),
+        ):
+            tool.searchResults(query, portal_type="Folder")
+        assert query == {"portal_type": "Document", "show_inactive": False}
 
 
 # ---------------------------------------------------------------------------

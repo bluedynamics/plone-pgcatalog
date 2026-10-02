@@ -946,3 +946,167 @@ class TestComputePathInfo:
         parent, depth = compute_path_info("/plone/a/b/c/d/leaf")
         assert parent == "/plone/a/b/c/d"
         assert depth == 6
+
+
+# ===========================================================================
+# allow_inactive — path-scoped AccessInactivePortalContent (#232)
+# ===========================================================================
+
+
+INACTIVE_PERMISSION = "Access inactive portal content"
+
+
+def _pg_tool(portal):
+    """A PlonePGCatalogTool acquisition-wrapped in the portal.
+
+    The layer's ``portal_catalog`` is still the stock ZCatalog tool; the
+    permission checks in ``allow_inactive`` only need the tool to sit in
+    the portal's acquisition chain, which ``__of__`` provides.
+    """
+    from plone.pgcatalog.catalog import PlonePGCatalogTool
+
+    return PlonePGCatalogTool().__of__(portal)
+
+
+def _subtree_editor(portal):
+    """Grant the test user Editor on ``/plone/scoped`` only.
+
+    ``Owner`` is excluded from the rolemap on purpose — the test user
+    creates the content here and would otherwise hold the permission
+    through ownership instead of through the local role.
+    """
+    setRoles(portal, TEST_USER_ID, ["Manager"])
+    portal.invokeFactory("Folder", "scoped", title="Scoped")
+    portal.invokeFactory("Folder", "unscoped", title="Unscoped")
+    portal["scoped"].invokeFactory("Folder", "deeper", title="Deeper")
+
+    portal.manage_permission(
+        INACTIVE_PERMISSION,
+        roles=["Manager", "Site Administrator", "Editor"],
+        acquire=False,
+    )
+    portal["scoped"].manage_setLocalRoles(TEST_USER_ID, ["Editor"])
+    setRoles(portal, TEST_USER_ID, ["Member"])
+
+
+class TestAllowInactive:
+    """``allow_inactive()`` ported from Products.CMFPlone.CatalogTool.
+
+    Before #232 the method did not exist at all and ``searchResults()``
+    only checked the permission on the catalog tool, so local and group
+    roles never granted access to inactive content.
+    """
+
+    def test_site_wide_permission_wins(self, pgcatalog_layer):
+        """A Manager is allowed without any path in the query."""
+        portal = pgcatalog_layer["portal"]
+        setRoles(portal, TEST_USER_ID, ["Manager"])
+
+        assert _pg_tool(portal).allow_inactive({}) is True
+
+    def test_no_permission_no_path(self, pgcatalog_layer):
+        """A plain Member without a path is not allowed."""
+        portal = pgcatalog_layer["portal"]
+        setRoles(portal, TEST_USER_ID, ["Member"])
+
+        assert _pg_tool(portal).allow_inactive({}) is False
+
+    def test_local_role_matching_path(self, pgcatalog_layer):
+        """Local Editor role + query path inside it → allowed."""
+        portal = pgcatalog_layer["portal"]
+        _subtree_editor(portal)
+
+        tool = _pg_tool(portal)
+        assert tool.allow_inactive({"path": "/plone/scoped"}) is True
+        assert tool.allow_inactive({"path": "/plone/scoped/deeper"}) is True
+
+    def test_local_role_other_path(self, pgcatalog_layer):
+        """Local Editor role but query path outside it → denied."""
+        portal = pgcatalog_layer["portal"]
+        _subtree_editor(portal)
+
+        assert _pg_tool(portal).allow_inactive({"path": "/plone/unscoped"}) is False
+
+    def test_mixed_paths_denied(self, pgcatalog_layer):
+        """One disallowed path denies the whole query."""
+        portal = pgcatalog_layer["portal"]
+        _subtree_editor(portal)
+
+        tool = _pg_tool(portal)
+        paths = ["/plone/scoped", "/plone/unscoped"]
+        assert tool.allow_inactive({"path": paths}) is False
+
+    def test_path_dict_with_query_list(self, pgcatalog_layer):
+        """The ``{'query': [...], 'depth': n}`` form is understood."""
+        portal = pgcatalog_layer["portal"]
+        _subtree_editor(portal)
+
+        tool = _pg_tool(portal)
+        allowed = {"path": {"query": ["/plone/scoped"], "depth": 0}}
+        denied = {"path": {"query": ["/plone/unscoped"], "depth": 0}}
+        assert tool.allow_inactive(allowed) is True
+        assert tool.allow_inactive(denied) is False
+
+    def test_path_dict_with_query_string(self, pgcatalog_layer):
+        """The ``{'query': '...'}`` form is understood too."""
+        portal = pgcatalog_layer["portal"]
+        _subtree_editor(portal)
+
+        tool = _pg_tool(portal)
+        assert tool.allow_inactive({"path": {"query": "/plone/scoped"}}) is True
+
+    def test_trailing_slash_path(self, pgcatalog_layer):
+        """A trailing slash still resolves to the folder."""
+        portal = pgcatalog_layer["portal"]
+        _subtree_editor(portal)
+
+        assert _pg_tool(portal).allow_inactive({"path": "/plone/scoped/"}) is True
+
+    def test_untraversable_path_is_ignored(self, pgcatalog_layer):
+        """Paths that cannot be resolved are skipped, not an error."""
+        portal = pgcatalog_layer["portal"]
+        _subtree_editor(portal)
+
+        tool = _pg_tool(portal)
+        # Only an unresolvable path → no objects → denied.
+        assert tool.allow_inactive({"path": "/plone/does-not-exist"}) is False
+        # Unresolvable alongside an allowed one → the allowed one decides.
+        both = ["/plone/does-not-exist", "/plone/scoped"]
+        assert tool.allow_inactive({"path": both}) is True
+
+    def test_path_outside_the_site_is_ignored(self, pgcatalog_layer):
+        """A path that is not below the portal resolves to nothing."""
+        portal = pgcatalog_layer["portal"]
+        _subtree_editor(portal)
+
+        assert _pg_tool(portal).allow_inactive({"path": "/other-site/x"}) is False
+
+    def test_blank_paths_grant_nothing(self, pgcatalog_layer):
+        """A blank path adds no SQL filter, so it must not grant either.
+
+        Traversal resolves ``""`` to the portal root, which would answer
+        for an unrestricted query.
+        """
+        portal = pgcatalog_layer["portal"]
+        _subtree_editor(portal)
+
+        tool = _pg_tool(portal)
+        assert tool.allow_inactive({"path": ""}) is False
+        assert tool.allow_inactive({"path": [""]}) is False
+        assert tool.allow_inactive({"path": ["   "]}) is False
+        assert tool.allow_inactive({"path": {"query": [""], "depth": 0}}) is False
+        assert tool.allow_inactive({"path": {"depth": 0}}) is False
+
+    def test_too_many_paths_denied(self, pgcatalog_layer):
+        """Beyond the query builder's path limit the answer is 'no'.
+
+        Such a query is rejected by ``build_query()`` anyway; refusing
+        here keeps ``allow_inactive`` from traversing unbounded input.
+        """
+        from plone.pgcatalog.query import _MAX_PATHS
+
+        portal = pgcatalog_layer["portal"]
+        _subtree_editor(portal)
+
+        paths = ["/plone/scoped"] * (_MAX_PATHS + 1)
+        assert _pg_tool(portal).allow_inactive({"path": paths}) is False

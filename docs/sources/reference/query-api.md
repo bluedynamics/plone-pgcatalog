@@ -317,8 +317,13 @@ matching count is available via `results.actual_result_count`.
   permissions.
 - `unrestrictedSearchResults()` bypasses all security filtering.
   Requires appropriate Zope permissions.
-- `show_inactive=True` bypasses `effectiveRange` filtering (for users
-  with `AccessInactivePortalContent` permission, this is automatic).
+- `effectiveRange` is skipped automatically for users holding
+  `AccessInactivePortalContent` -- either site-wide, or on every object
+  named by the query's `path`, which is how a local or group role on a
+  subsite grants it (see `allow_inactive()`).
+- `show_inactive` overrides that check in both directions when passed
+  explicitly: `True` bypasses `effectiveRange` for users without the
+  permission, `False` enforces it even for users who have it.
 
 Security filters are injected by `apply_security_filters()` in
 `query.py` before the query is passed to `build_query()`.

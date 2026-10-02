@@ -10,9 +10,11 @@ and searchable text.
 """
 
 from datetime import UTC
+from plone.app.testing import login
 from plone.app.testing import logout
 from plone.app.testing import setRoles
 from plone.app.testing import TEST_USER_ID
+from plone.app.testing import TEST_USER_NAME
 from plone.pgcatalog.testing import PGCATALOG_PG_FIXTURE
 from zope.pytestlayer import fixture
 
@@ -1152,6 +1154,179 @@ class TestSecurityFiltering:
         results = catalog.unrestrictedSearchResults(portal_type="Document")
         paths = [b.getPath() for b in results]
         assert any(p.endswith("/unr-doc") for p in paths)
+
+
+# ---------------------------------------------------------------------------
+# Path-scoped AccessInactivePortalContent (#232)
+# ---------------------------------------------------------------------------
+
+
+INACTIVE_PERMISSION = "Access inactive portal content"
+
+
+def _setup_subtree_editor(portal):
+    """Build two branches with expired content and a local Editor.
+
+    Mirrors the common production setup: the permission to see inactive
+    content is granted to the ``Editor`` role at the portal root, but the
+    test user holds that role only *locally*, on ``/plone/subsite``.  The
+    second branch, ``/plone/elsewhere``, carries an expired document that
+    has to stay hidden from them.
+
+    ``Owner`` is deliberately left out of the rolemap: Plone grants it
+    the permission by default, and since the owner of this content is the
+    site owner the local Editor role is the only thing under test.
+
+    This layer runs without a workflow, so all content is anonymously
+    viewable — ``allowedRolesAndUsers`` is not the subject of these tests.
+    """
+    from datetime import datetime
+
+    portal.invokeFactory("Folder", "subsite", title="Subsite")
+    subsite = portal["subsite"]
+    subsite.invokeFactory("Folder", "section", title="Section")
+    subsite["section"].invokeFactory("Document", "expired-doc", title="Expired Inside")
+
+    portal.invokeFactory("Folder", "elsewhere", title="Elsewhere")
+    elsewhere = portal["elsewhere"]
+    elsewhere.invokeFactory("Document", "expired-other", title="Expired Outside")
+    transaction.commit()
+
+    expired = datetime(2001, 1, 1, tzinfo=UTC)
+    for obj in (subsite["section"]["expired-doc"], elsewhere["expired-other"]):
+        obj.expiration_date = expired
+        obj.reindexObject()
+
+    # Site policy: Editor may see inactive content ...
+    portal.manage_permission(
+        INACTIVE_PERMISSION,
+        roles=["Manager", "Site Administrator", "Editor"],
+        acquire=True,
+    )
+    # ... but this user is Editor only inside the subsite, and plain
+    # Member everywhere else.
+    subsite.manage_setLocalRoles(TEST_USER_ID, ["Editor"])
+    setRoles(portal, TEST_USER_ID, ["Member"])
+    transaction.commit()
+
+
+class TestPathScopedInactiveContent:
+    """searchResults honours path-scoped AccessInactivePortalContent.
+
+    Regression tests for #232: the permission was only ever checked on
+    the catalog tool itself, so a user holding it through a local or
+    group role never saw inactive content — not even when the query was
+    restricted to exactly the path where the role applies.
+    """
+
+    def test_local_editor_sees_inactive_in_own_subtree(self, pg_functional):
+        """Editor by local role + query inside that path → expired shown."""
+        portal = pg_functional["portal"]
+        _setup_subtree_editor(portal)
+        catalog = portal["portal_catalog"]
+        site_path = "/".join(portal.getPhysicalPath())
+
+        login(portal, TEST_USER_NAME)
+        results = catalog.searchResults(
+            portal_type="Document",
+            path=f"{site_path}/subsite/section",
+        )
+        paths = [b.getPath() for b in results]
+        assert any(p.endswith("/expired-doc") for p in paths), paths
+
+    def test_local_editor_sees_inactive_via_path_dict(self, pg_functional):
+        """The same, with the dict form of the path query."""
+        portal = pg_functional["portal"]
+        _setup_subtree_editor(portal)
+        catalog = portal["portal_catalog"]
+        site_path = "/".join(portal.getPhysicalPath())
+
+        login(portal, TEST_USER_NAME)
+        results = catalog.searchResults(
+            portal_type="Document",
+            path={"query": f"{site_path}/subsite", "depth": -1},
+        )
+        paths = [b.getPath() for b in results]
+        assert any(p.endswith("/expired-doc") for p in paths), paths
+
+    def test_local_editor_cannot_see_inactive_outside_subtree(self, pg_functional):
+        """Query path outside the local role → expired stays hidden."""
+        portal = pg_functional["portal"]
+        _setup_subtree_editor(portal)
+        catalog = portal["portal_catalog"]
+        site_path = "/".join(portal.getPhysicalPath())
+
+        login(portal, TEST_USER_NAME)
+        results = catalog.searchResults(
+            portal_type="Document",
+            path=f"{site_path}/elsewhere",
+        )
+        paths = [b.getPath() for b in results]
+        assert not any(p.endswith("/expired-other") for p in paths), paths
+
+    def test_local_editor_without_path_sees_no_inactive(self, pg_functional):
+        """No path in the query → no path-scoped grant, nothing shown."""
+        portal = pg_functional["portal"]
+        _setup_subtree_editor(portal)
+        catalog = portal["portal_catalog"]
+
+        login(portal, TEST_USER_NAME)
+        results = catalog.searchResults(portal_type="Document")
+        paths = [b.getPath() for b in results]
+        assert not any(p.endswith("/expired-doc") for p in paths), paths
+        assert not any(p.endswith("/expired-other") for p in paths), paths
+
+    def test_mixed_paths_are_conservative(self, pg_functional):
+        """One disallowed path in the query hides inactive content for all."""
+        portal = pg_functional["portal"]
+        _setup_subtree_editor(portal)
+        catalog = portal["portal_catalog"]
+        site_path = "/".join(portal.getPhysicalPath())
+
+        login(portal, TEST_USER_NAME)
+        results = catalog.searchResults(
+            portal_type="Document",
+            path=[f"{site_path}/subsite/section", f"{site_path}/elsewhere"],
+        )
+        paths = [b.getPath() for b in results]
+        assert not any(p.endswith("/expired-doc") for p in paths), paths
+        assert not any(p.endswith("/expired-other") for p in paths), paths
+
+    def test_show_inactive_false_suppresses_for_privileged_user(self, pg_functional):
+        """Explicit show_inactive=False wins over the site-wide permission."""
+        portal = pg_functional["portal"]
+        _setup_subtree_editor(portal)
+        catalog = portal["portal_catalog"]
+
+        # Still logged in as the site owner — Manager, so site-wide allowed.
+        results = catalog.searchResults(portal_type="Document")
+        assert any(b.getPath().endswith("/expired-doc") for b in results)
+
+        results = catalog.searchResults(portal_type="Document", show_inactive=False)
+        paths = [b.getPath() for b in results]
+        assert not any(p.endswith("/expired-doc") for p in paths), paths
+
+    def test_show_inactive_true_overrides_missing_permission(self, pg_functional):
+        """Explicit show_inactive=True still works without any permission."""
+        portal = pg_functional["portal"]
+        _setup_subtree_editor(portal)
+        catalog = portal["portal_catalog"]
+
+        login(portal, TEST_USER_NAME)
+        results = catalog.searchResults(portal_type="Document", show_inactive=True)
+        paths = [b.getPath() for b in results]
+        assert any(p.endswith("/expired-doc") for p in paths), paths
+        assert any(p.endswith("/expired-other") for p in paths), paths
+
+    def test_query_dict_is_not_mutated(self, pg_functional):
+        """searchResults leaves the caller's query dict untouched."""
+        portal = pg_functional["portal"]
+        _setup_subtree_editor(portal)
+        catalog = portal["portal_catalog"]
+
+        query = {"portal_type": "Document", "show_inactive": False}
+        catalog.searchResults(query)
+        assert query == {"portal_type": "Document", "show_inactive": False}
 
 
 # ---------------------------------------------------------------------------
