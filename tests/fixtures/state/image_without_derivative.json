@@ -1,0 +1,49 @@
+{
+  "_provenance": "Captured 2026-10-01 from a real ZODB round trip: plone.namedfile 8.x NamedBlobImage written through zodb-pgjsonb PGJsonbStorage, with plone.pgthumbor set_source_derivative(max_edge=4000) applied. See tests/fixtures/state/README.md.",
+  "blob_zoids": [
+    9
+  ],
+  "content_zoid": 2,
+  "objects": {
+    "2": {
+      "image": {
+        "@ref": [
+          "0000000000000008",
+          "plone.namedfile.file.NamedBlobImage"
+        ]
+      }
+    },
+    "8": {
+      "_blob": {
+        "@ref": [
+          "0000000000000009",
+          "ZODB.blob.Blob"
+        ]
+      },
+      "_height": 600,
+      "_modified": 1790857445846,
+      "_pgthumbor_source": null,
+      "_pgthumbor_source_info": {
+        "max_edge": 4000,
+        "reason": "not_needed",
+        "source_ids": {
+          "@t": [
+            9,
+            291620480267928900
+          ]
+        }
+      },
+      "_width": 800,
+      "contentType": "image/jpeg",
+      "exif": {
+        "0th": {},
+        "1st": {},
+        "Exif": {},
+        "GPS": {},
+        "Interop": {},
+        "thumbnail": null
+      },
+      "filename": "image-800x600.jpg"
+    }
+  }
+}

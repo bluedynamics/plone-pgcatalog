@@ -1,5 +1,29 @@
 # Changelog
 
+## Unreleased
+
+### Documentation
+
+- Add the design and implementation plan for bounded Tika renditions
+  (#222), with the evidence they rest on rather than only the conclusions:
+  real `object_state` fixtures under `tests/fixtures/state/`, real
+  `/parsers/details` payloads from Tika 3.2.3 and 4.1.0 under
+  `tests/fixtures/tika/`, and an OCR recall benchmark in
+  `benchmarks/tika_ocr_downscale.md`.
+
+  Three measured findings drove the design and are worth reading before
+  changing any of it. Without OCR, Tika never decodes image pixels, so a
+  165 megapixel JPEG costs 0.2 s and tens of MiB at container limits from
+  512 MiB to 2 GiB; a byte-size guard is therefore the wrong instrument,
+  since such a file weighs about 5 MB. Downscaling before OCR costs 3
+  percentage points of recall at a 4000 px cap, and recall is **not**
+  monotonic in resolution, so raising a cap is not reliably an
+  improvement. And OCR availability cannot be read off `/parsers/details`
+  on Tika 4.x, where the stock and `-full` images report semantically
+  identical payloads although only one of them OCRs.
+
+  No production code changes.
+
 ## 1.0.0rc4 (2026-10-02)
 
 ### Fixed
