@@ -29,6 +29,9 @@ Environment variables:
                               PDFs, which can exceed the default)
 """
 
+from plone.pgcatalog.tika_rmeta import extract_text
+from plone.pgcatalog.tika_rmeta import MAX_RESPONSE_BYTES
+from plone.pgcatalog.tika_rmeta import METADATA_FIELDS_DEFAULT
 from psycopg.rows import dict_row
 
 import logging
@@ -95,13 +98,22 @@ class TikaWorker:
     """PostgreSQL-backed text extraction worker using Apache Tika."""
 
     def __init__(
-        self, dsn, tika_url, s3_config=None, poll_interval=5, http_timeout=120.0
+        self,
+        dsn,
+        tika_url,
+        s3_config=None,
+        poll_interval=5,
+        http_timeout=120.0,
+        metadata_fields=METADATA_FIELDS_DEFAULT,
+        max_embedded_resources=1000,
     ):
         self.dsn = dsn
         self.tika_url = tika_url.rstrip("/")
         self.s3_config = s3_config
         self.poll_interval = poll_interval
         self.http_timeout = http_timeout
+        self.metadata_fields = metadata_fields
+        self.max_embedded_resources = max_embedded_resources
         self._shutdown = threading.Event()
         self._s3_client = None
 
@@ -237,13 +249,25 @@ class TikaWorker:
     def _extract(self, conn, zoid, tid, content_type):
         """Fetch blob and send to Tika, return extracted text.
 
+        Uses ``/rmeta/text`` rather than ``/tika`` for two measured
+        reasons: ``/tika`` returns body text only, so an image without OCR
+        yields nothing even when it carries an EXIF caption, and on Tika 4
+        ``/tika`` returns Markdown, which puts link targets into
+        ``searchable_text``.  See ``tika_rmeta``.
+
         S3-tiered blobs are streamed straight from S3 into the Tika request
         body in chunks, so the worker never holds the whole blob in memory
         (#189).  PG-bytea blobs are sub-threshold (small) and sent as bytes.
         """
         if httpx is None:
             raise RuntimeError(MISSING_EXTRA_HINT)
-        headers = {"Accept": "text/plain"}
+        headers = {
+            "Accept": "application/json",
+            # One JSON entry per embedded resource, so a 500-page PDF full
+            # of images is not bounded by the source size.  Cap it at the
+            # server rather than parsing an unbounded body.
+            "X-Tika-MaxEmbeddedResources": str(self.max_embedded_resources),
+        }
         if content_type:
             headers["Content-Type"] = content_type
 
@@ -261,12 +285,17 @@ class TikaWorker:
             else:
                 content = source["data"]
             resp = client.put(
-                f"{self.tika_url}/tika",
+                f"{self.tika_url}/rmeta/text",
                 content=content,
                 headers=headers,
             )
             resp.raise_for_status()
-            return resp.text
+            declared = int(resp.headers.get("content-length") or 0)
+            if declared > MAX_RESPONSE_BYTES:
+                raise ValueError(
+                    f"Tika response too large: {declared} bytes > {MAX_RESPONSE_BYTES}"
+                )
+            return extract_text(resp.json(), self.metadata_fields)
 
     def _blob_source(self, conn, zoid, tid):
         """Locate a blob without materializing S3 data.
@@ -400,6 +429,15 @@ def main():
             "secret_key": os.environ.get("TIKA_WORKER_S3_SECRET_KEY"),
         }
 
+    metadata_fields = tuple(
+        f.strip()
+        for f in os.environ.get(
+            "PGCATALOG_TIKA_METADATA_FIELDS",
+            ",".join(METADATA_FIELDS_DEFAULT),
+        ).split(",")
+        if f.strip()
+    )
+    max_embedded = int(os.environ.get("TIKA_WORKER_MAX_EMBEDDED_RESOURCES", "1000"))
     poll_interval = int(os.environ.get("TIKA_WORKER_POLL_INTERVAL", "5"))
     http_timeout = float(os.environ.get("TIKA_WORKER_HTTP_TIMEOUT", "120"))
 
@@ -408,6 +446,8 @@ def main():
         tika_url=tika_url,
         s3_config=s3_config,
         poll_interval=poll_interval,
+        metadata_fields=metadata_fields,
+        max_embedded_resources=max_embedded,
         http_timeout=http_timeout,
     )
 
