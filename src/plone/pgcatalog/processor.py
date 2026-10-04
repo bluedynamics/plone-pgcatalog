@@ -10,6 +10,8 @@ from plone.pgcatalog.columns import compute_path_info
 from plone.pgcatalog.columns import extract_extra_idx_columns
 from plone.pgcatalog.columns import get_extra_idx_columns
 from plone.pgcatalog.gopip import sync_folder_ranks
+from plone.pgcatalog.mimetypes import matches
+from plone.pgcatalog.mimetypes import normalise
 from plone.pgcatalog.pending import _MISSING
 from plone.pgcatalog.pending import pop_all_partial_pending
 from plone.pgcatalog.pending import pop_all_pending_gopip
@@ -52,20 +54,24 @@ _DEFAULT_CONTENT_TYPES = (
     "image/jpeg,image/png,image/tiff,image/webp,image/gif"
 )
 
+# Normalised at construction, not only at lookup: a configured
+# "Application/PDF" has to match too, and the set is the right place to
+# canonicalise once rather than on every candidate.
 TIKA_CONTENT_TYPES = {
-    ct.strip()
-    for ct in os.environ.get(
-        "PGCATALOG_TIKA_CONTENT_TYPES", _DEFAULT_CONTENT_TYPES
-    ).split(",")
-    if ct.strip()
+    normalised
+    for normalised in (
+        normalise(ct)
+        for ct in os.environ.get(
+            "PGCATALOG_TIKA_CONTENT_TYPES", _DEFAULT_CONTENT_TYPES
+        ).split(",")
+    )
+    if normalised
 }
 
 
 def _should_extract(content_type):
     """Check if a content type should be sent to Tika for extraction."""
-    if not content_type:
-        return False
-    return content_type in TIKA_CONTENT_TYPES
+    return matches(content_type, TIKA_CONTENT_TYPES)
 
 
 def _collect_ref_oids(state):
