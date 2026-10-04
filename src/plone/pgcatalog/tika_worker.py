@@ -29,6 +29,9 @@ Environment variables:
                               PDFs, which can exceed the default)
 """
 
+from plone.pgcatalog.mimetypes import CONTENT_TYPES_ENV
+from plone.pgcatalog.mimetypes import content_types_from_env
+from plone.pgcatalog.mimetypes import matches
 from plone.pgcatalog.tika_rmeta import extract_text
 from plone.pgcatalog.tika_rmeta import MAX_RESPONSE_BYTES
 from plone.pgcatalog.tika_rmeta import METADATA_FIELDS_DEFAULT
@@ -106,6 +109,7 @@ class TikaWorker:
         http_timeout=120.0,
         metadata_fields=METADATA_FIELDS_DEFAULT,
         max_embedded_resources=1000,
+        content_types=None,
     ):
         self.dsn = dsn
         self.tika_url = tika_url.rstrip("/")
@@ -114,6 +118,15 @@ class TikaWorker:
         self.http_timeout = http_timeout
         self.metadata_fields = metadata_fields
         self.max_embedded_resources = max_embedded_resources
+        # Same allowlist and same meaning of "unset" as the enqueue side
+        # (#235).  The in-process worker inherits Zope's environment; the
+        # standalone one needs PGCATALOG_TIKA_CONTENT_TYPES set too, and
+        # main() warns when it is not.
+        self.content_types = (
+            content_types
+            if content_types is not None
+            else content_types_from_env(os.environ)
+        )
         self._shutdown = threading.Event()
         self._s3_client = None
 
@@ -190,6 +203,16 @@ class TikaWorker:
             blob_zoid = row["blob_zoid"] or row["zoid"]  # fallback for old rows
             tid = row["tid"]
             content_type = row["content_type"]
+
+            if not matches(content_type, self.content_types):
+                # Queued under an older, wider allowlist, or requeued by
+                # hand.  Refuse before the blob fetch, which is the cost.
+                self._skip(
+                    conn,
+                    job_id,
+                    f"skipped: content-type-not-allowed: {content_type or 'none'}",
+                )
+                return True
 
             try:
                 text = self._extract(conn, blob_zoid, tid, content_type)
@@ -363,6 +386,24 @@ class TikaWorker:
             )
         return self._s3_client
 
+    def _skip(self, conn, job_id, reason):
+        """Mark a job refused on purpose.
+
+        ``skipped`` is terminal and is not an error: a reset of stuck work
+        must target ``failed`` only, or it would requeue rows that will be
+        refused again.  *reason* starts with ``skipped: <code>:`` so that a
+        status shared by several refusal causes can still be partitioned.
+        """
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE text_extraction_queue SET "
+                "  status = 'skipped', error = %(reason)s, updated_at = now() "
+                "WHERE id = %(id)s",
+                {"reason": reason[:1000], "id": job_id},
+            )
+            conn.commit()
+        log.info("Skipped job %d: %s", job_id, reason)
+
     def _defer(self, conn, job_id, delay, reason):
         """Re-queue a job later without spending one of its attempts.
 
@@ -429,6 +470,14 @@ def main():
             "secret_key": os.environ.get("TIKA_WORKER_S3_SECRET_KEY"),
         }
 
+    if CONTENT_TYPES_ENV not in os.environ:
+        log.warning(
+            "%s is not set for the worker; using the default allowlist, "
+            "which includes image types. Set it to the same value the Zope "
+            "processes use, or rows they would no longer queue still get "
+            "extracted here.",
+            CONTENT_TYPES_ENV,
+        )
     metadata_fields = tuple(
         f.strip()
         for f in os.environ.get(

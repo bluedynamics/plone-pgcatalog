@@ -58,6 +58,30 @@
   up by the polling fallback rather than by a notification.
   #222
 
+- Re-check the Tika content-type allowlist when the worker claims a job,
+  not only when the job is queued. `PGCATALOG_TIKA_CONTENT_TYPES` used to be
+  enforced at enqueue alone, so narrowing it left every already-queued row of
+  the excluded types to be extracted anyway, and any requeue bypassed it
+  entirely. On one production site 1144 of 1708 failed rows were images
+  queued before images were excluded, so the obvious
+  `UPDATE ... SET status = 'pending' WHERE status = 'failed'` would have fed
+  them all back to Tika. A row whose type is not allowed is now marked
+  `skipped` with the reason `skipped: content-type-not-allowed: <type>`
+  before its blob is fetched. `skipped` is terminal and is not an error: a
+  reset of stuck work should target `failed` only. Existing rows are not
+  swept or migrated; only rows the worker claims are checked, and it never
+  claims `failed` rows. The allowlist now has a single definition shared by
+  the enqueue side and the worker, so the two cannot disagree about what is
+  allowed or what "unset" means.
+
+  **Deployment note:** the standalone `pgcatalog-tika-worker` reads the same
+  `PGCATALOG_TIKA_CONTENT_TYPES` variable as the Zope processes and must be
+  given the same value. If it is unset the worker falls back to the default
+  allowlist, which includes image types, and logs a warning at startup
+  saying so. The in-process worker inherits Zope's environment and needs no
+  change.
+  #235
+
 
 ### Documentation
 

@@ -10,8 +10,8 @@ from plone.pgcatalog.columns import compute_path_info
 from plone.pgcatalog.columns import extract_extra_idx_columns
 from plone.pgcatalog.columns import get_extra_idx_columns
 from plone.pgcatalog.gopip import sync_folder_ranks
+from plone.pgcatalog.mimetypes import content_types_from_env
 from plone.pgcatalog.mimetypes import matches
-from plone.pgcatalog.mimetypes import normalise
 from plone.pgcatalog.pending import _MISSING
 from plone.pgcatalog.pending import pop_all_partial_pending
 from plone.pgcatalog.pending import pop_all_pending_gopip
@@ -42,31 +42,9 @@ log = logging.getLogger(__name__)
 
 TIKA_URL = os.environ.get("PGCATALOG_TIKA_URL", "").strip()
 
-_DEFAULT_CONTENT_TYPES = (
-    "application/pdf,"
-    "application/msword,"
-    "application/vnd.openxmlformats-officedocument.wordprocessingml.document,"
-    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,"
-    "application/vnd.openxmlformats-officedocument.presentationml.presentation,"
-    "application/vnd.oasis.opendocument.text,"
-    "application/vnd.oasis.opendocument.spreadsheet,"
-    "application/rtf,"
-    "image/jpeg,image/png,image/tiff,image/webp,image/gif"
-)
-
-# Normalised at construction, not only at lookup: a configured
-# "Application/PDF" has to match too, and the set is the right place to
-# canonicalise once rather than on every candidate.
-TIKA_CONTENT_TYPES = {
-    normalised
-    for normalised in (
-        normalise(ct)
-        for ct in os.environ.get(
-            "PGCATALOG_TIKA_CONTENT_TYPES", _DEFAULT_CONTENT_TYPES
-        ).split(",")
-    )
-    if normalised
-}
+# Built from the shared definition in mimetypes.py, which the worker uses
+# too.  The name stays here because catalog.py and the tests import it.
+TIKA_CONTENT_TYPES = content_types_from_env(os.environ)
 
 
 def _should_extract(content_type):

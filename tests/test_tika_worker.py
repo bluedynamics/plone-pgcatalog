@@ -353,7 +353,9 @@ class TestWorkerIntegration:
         )
         conn.commit()
 
-        worker = TikaWorker(dsn=DSN, tika_url=TIKA_URL)
+        # These test extraction, not policy: text/plain is outside the
+        # default allowlist, which the worker now enforces (#235).
+        worker = TikaWorker(dsn=DSN, tika_url=TIKA_URL, content_types={"text/plain"})
         result = worker._process_one()
         assert result is True
 
@@ -388,7 +390,9 @@ class TestWorkerIntegration:
         )
         conn.commit()
 
-        worker = TikaWorker(dsn=DSN, tika_url=TIKA_URL)
+        # These test extraction, not policy: text/html is outside the
+        # default allowlist, which the worker now enforces (#235).
+        worker = TikaWorker(dsn=DSN, tika_url=TIKA_URL, content_types={"text/html"})
         worker._process_one()
 
         status = _get_queue_status(conn, zoid)
@@ -596,3 +600,99 @@ class TestRmetaEndpoint:
             text = worker._extract(worker_db, 1, 1, "text/plain")
         assert "Kaufvertrag" in text
         assert "Attersee" in text
+
+
+class TestDequeueAllowlist:
+    """The content-type allowlist is re-checked at dequeue (#235).
+
+    It used to be enforced at enqueue only, so a row queued under an older,
+    wider allowlist was processed anyway, and any requeue bypassed the
+    allowlist entirely. On one production site 1144 of 1708 failed rows were
+    images queued before images were excluded.
+    """
+
+    def _worker(self, types):
+        return TikaWorker(
+            dsn=DSN, tika_url="http://localhost:9998", content_types=types
+        )
+
+    def test_disallowed_type_is_skipped_without_fetching_the_blob(self, worker_db):
+        _insert_object_with_blob(worker_db, zoid=900)
+        _enqueue_job(worker_db, zoid=900, content_type="image/jpeg")
+        worker = self._worker({"application/pdf"})
+
+        with (
+            patch.object(worker, "_blob_source") as source,
+            patch.object(worker, "_extract") as extract,
+        ):
+            assert worker._process_one() is True
+
+        source.assert_not_called()
+        extract.assert_not_called()
+        row = _get_queue_status(worker_db, 900)
+        assert row["status"] == "skipped"
+        assert row["error"] == "skipped: content-type-not-allowed: image/jpeg"
+
+    def test_allowed_type_is_extracted(self, worker_db):
+        _insert_object_with_blob(worker_db, zoid=901)
+        _enqueue_job(worker_db, zoid=901, content_type="application/pdf")
+        worker = self._worker({"application/pdf"})
+
+        with patch.object(worker, "_extract", return_value="body text"):
+            worker._process_one()
+
+        assert _get_queue_status(worker_db, 901)["status"] == "done"
+
+    def test_parameterised_type_matches_a_bare_allowlist_entry(self, worker_db):
+        """Same normalisation as the enqueue side, or the two disagree."""
+        _insert_object_with_blob(worker_db, zoid=902)
+        _enqueue_job(
+            worker_db, zoid=902, content_type="application/pdf; charset=binary"
+        )
+        worker = self._worker({"application/pdf"})
+
+        with patch.object(worker, "_extract", return_value="body text"):
+            worker._process_one()
+
+        assert _get_queue_status(worker_db, 902)["status"] == "done"
+
+    def test_missing_content_type_is_skipped(self, worker_db):
+        """A legacy row with no content type cannot pass the allowlist."""
+        _insert_object_with_blob(worker_db, zoid=903)
+        _enqueue_job(worker_db, zoid=903, content_type=None)
+        worker = self._worker({"application/pdf"})
+
+        with patch.object(worker, "_blob_source") as source:
+            worker._process_one()
+
+        source.assert_not_called()
+        row = _get_queue_status(worker_db, 903)
+        assert row["status"] == "skipped"
+        assert row["error"] == "skipped: content-type-not-allowed: none"
+
+    def test_a_skipped_row_is_never_claimed_again(self, worker_db):
+        _insert_object_with_blob(worker_db, zoid=904)
+        _enqueue_job(worker_db, zoid=904, content_type="image/gif")
+        worker = self._worker({"application/pdf"})
+
+        assert worker._process_one() is True
+        assert worker._process_one() is False, "skipped is terminal"
+
+    def test_failed_rows_are_not_touched(self, worker_db):
+        """No sweep, no migration: rows that already exist are left alone
+        unless the worker claims them, and it never claims a failed row."""
+        _insert_object_with_blob(worker_db, zoid=905)
+        _enqueue_job(worker_db, zoid=905, content_type="image/jpeg")
+        worker_db.execute(
+            "UPDATE text_extraction_queue "
+            "   SET status = 'failed', attempts = max_attempts WHERE zoid = 905"
+        )
+        worker_db.commit()
+
+        assert self._worker({"application/pdf"})._process_one() is False
+        assert _get_queue_status(worker_db, 905)["status"] == "failed"
+
+    def test_default_allowlist_comes_from_the_environment(self, monkeypatch):
+        monkeypatch.setenv("PGCATALOG_TIKA_CONTENT_TYPES", "Application/PDF")
+        worker = TikaWorker(dsn="x", tika_url="y")
+        assert worker.content_types == {"application/pdf"}
