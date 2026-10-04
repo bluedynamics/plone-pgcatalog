@@ -167,7 +167,12 @@ def test_extract_uses_configured_http_timeout(monkeypatch):
     captured = {}
 
     class _Resp:
-        text = "extracted text"
+        """Stands in for an httpx response on a /rmeta/text call."""
+
+        headers = types.MappingProxyType({"content-length": "64"})
+
+        def json(self):
+            return [{"tk:content": "extracted text"}]
 
         def raise_for_status(self):
             pass
@@ -239,7 +244,12 @@ def _capture_httpx(monkeypatch):
     captured = {}
 
     class _Resp:
-        text = "ok"
+        """Stands in for an httpx response on a /rmeta/text call."""
+
+        headers = types.MappingProxyType({"content-length": "64"})
+
+        def json(self):
+            return [{"tk:content": "ok"}]
 
         def raise_for_status(self):
             pass
