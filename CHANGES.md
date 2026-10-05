@@ -114,6 +114,26 @@
 
   No production code changes.
 
+- Document the Tika extraction behaviour that shipped for #222 and #235,
+  which until now was described only in this changelog. The reference
+  gains `PGCATALOG_TIKA_METADATA_FIELDS`,
+  `TIKA_WORKER_MAX_EMBEDDED_RESOURCES`, the queue's `not_before` and
+  `deferrals` columns, and a table of queue status values including
+  `skipped`. The how-to covers capping the Java heap below the container
+  limit, pinning the Tika image by digest, choosing which metadata is
+  indexed, giving the standalone worker the same allowlist as Zope, and
+  recovering failed extractions safely. The explanation records why the
+  worker uses `/rmeta/text`, why a missing Tika does not cost an attempt,
+  and why the allowlist is checked twice.
+
+  Corrects several statements that had become wrong. The image-indexing
+  explanation claimed that Tika includes Tesseract and that photos become
+  searchable by their visible text, which holds only for the `-full`
+  image. The data flow still described `PUT /tika`. The queue schema
+  listed `UNIQUE(zoid, tid)` where the table has `UNIQUE(blob_zoid, tid)`,
+  omitted the `blob_zoid` column entirely, and gave a stale index
+  definition. Also fixes a broken anchor to the OCR section of the how-to.
+
 ## 1.0.0rc4 (2026-10-02)
 
 ### Fixed

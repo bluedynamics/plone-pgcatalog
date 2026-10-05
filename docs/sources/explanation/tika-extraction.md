@@ -72,6 +72,71 @@ This is more space-efficient
 and matches how PostgreSQL full-text search works: the search engine
 operates on tsvectors, not raw text.
 
+(tika-why-rmeta)=
+
+### Why the worker uses `/rmeta/text`
+
+Tika offers two ways to extract text, and the obvious one, `PUT /tika`, loses information in two ways.
+
+It returns body text only.
+An image without OCR has no body text, so it contributed nothing, even when its file carried a caption.
+
+On Tika 4, it also returns Markdown.
+Heading and list markers do no harm, because PostgreSQL's text search drops them as punctuation.
+Link syntax does harm, because it puts the link target into the text.
+The sentence `Siehe [die Akte](https://example.org/akte).` becomes five lexemes in the index, including `example.org` and `/akte).`, where the plain sentence gives two.
+Every link in a document added junk to the full-text index.
+
+`PUT /rmeta/text` returns JSON with one entry per document: the container first, then every embedded document.
+Its body text is plain on both major Tika versions, and the metadata comes alongside.
+The worker joins every entry's body text and adds a short whitelist of the container's metadata, set by `PGCATALOG_TIKA_METADATA_FIELDS`.
+Embedded documents' metadata stays out, because the title of an attachment inside a PDF is rarely about the object being cataloged.
+
+Two details are easy to get wrong.
+The key holding the body text changed between major versions: `tk:content` on Tika 4, `X-TIKA:content` on Tika 3.
+A worker reading only the old key gets empty text from every document, which looks like documents without text rather than like a bug, so the worker reads both.
+And joining the entries does not count anything twice, because the container entry holds only the embedded files' names.
+Word order does differ from `/tika`, which interleaved each name with its content, so phrase proximity in `searchable_text` differs while the set of terms does not.
+
+(tika-why-deferral)=
+
+### Why a missing Tika does not cost an attempt
+
+A typical deployment runs a single Tika replica.
+When that pod restarts, the service has no endpoint for about half a minute.
+Requests fail with `Connection refused`, or with `Operation not permitted` on clusters whose network layer rejects connections to a service without backends.
+
+Counting those failures as attempts made the queue fragile.
+Three attempts went by within a second, every job claimed during the restart ended up `failed`, and someone had to reset them by hand.
+On one production site, 1703 of 1708 failed jobs had never reached Tika at all.
+
+A failure to connect says nothing about the document.
+The worker therefore treats connection-level errors differently from everything else: it sets the job back to `pending`, pushes `not_before` forward by 5, then 30, then 120 seconds, and leaves `attempts` untouched.
+Any other error still spends an attempt, so a document that Tika genuinely cannot parse still ends up `failed`.
+
+The database fires a notification only when a job is inserted, not when a deferral runs out.
+A deferred job is therefore picked up by the worker's polling fallback, which makes that polling essential rather than a nicety.
+
+(tika-why-two-checks)=
+
+### Why the allowlist is checked twice
+
+`PGCATALOG_TIKA_CONTENT_TYPES` decides which blobs reach Tika.
+It used to be checked once, when a job was queued.
+
+That left two holes.
+Narrowing the allowlist did not affect jobs already in the queue, so they were extracted anyway.
+And any job set back to `pending` by hand bypassed the allowlist entirely.
+On one site, more than a thousand failed jobs were images queued before images were excluded, and the natural recovery statement would have sent every one of them back to Tika.
+
+The worker now checks the allowlist again when it claims a job, before it fetches the blob, which is where the cost lies.
+A job whose type is not allowed becomes `skipped`, a terminal status separate from `failed`.
+Both checks use one shared definition, so they cannot disagree about what is allowed or about what an unset variable means.
+
+The standalone worker reads the same `PGCATALOG_TIKA_CONTENT_TYPES` as the Zope processes rather than a variable of its own.
+Zope and the worker may reach Tika at different addresses, which is why the URL has two names.
+The allowlist must never differ, and two names for one policy would invite exactly the drift this check removes.
+
 ## Data flow
 
 ```{mermaid}
@@ -95,8 +160,8 @@ sequenceDiagram
     Worker->>PG: UPDATE ... FOR UPDATE SKIP LOCKED<br/>RETURNING job
     Worker->>PG: SELECT data FROM blob_state
     PG-->>Worker: blob bytes
-    Worker->>Tika: PUT /tika (blob bytes)
-    Tika-->>Worker: extracted text
+    Worker->>Tika: PUT /rmeta/text (blob bytes)
+    Tika-->>Worker: JSON, one entry per document
     Worker->>PG: SELECT pgcatalog_merge_extracted_text(zoid, text)
     Worker->>PG: UPDATE status = 'done'
 ```
@@ -138,9 +203,11 @@ The worker **fetches the blob** from `blob_state` (PG bytea) or S3
    (for S3-tiered blobs above the size threshold).
 
 7.
-The worker sends the blob to **Tika** via `PUT /tika` with the
+The worker sends the blob to **Tika** via `PUT /rmeta/text` with the
    content type header.
-   Tika returns plain text.
+   Tika returns JSON with one entry per document: the container first, then each embedded document.
+   The worker joins every entry's body text and adds a whitelist of the container's metadata, such as `dc:description`.
+   See {ref}`tika-why-rmeta`.
 
 8.
 The worker calls **`pgcatalog_merge_extracted_text(zoid, text)`**,
@@ -152,8 +219,9 @@ The worker calls **`pgcatalog_merge_extracted_text(zoid, text)`**,
 
 9.
 The job status is updated to `done`.
-On failure, the job returns
-   to `pending` (up to `max_attempts` retries).
+   If Tika cannot be reached, the job returns to `pending` with `not_before` pushed forward and without spending an attempt.
+   Any other failure returns it to `pending` and spends one of its `max_attempts`.
+   See {ref}`tika-why-deferral`.
 
 ## Weight hierarchy
 
@@ -180,14 +248,21 @@ See {doc}`../reference/schema` for the full schema.
 
 Key design choices:
 
-- **UNIQUE(zoid, tid)**: Prevents duplicate jobs for the same object
+- **UNIQUE(blob_zoid, tid)**: Prevents duplicate jobs for the same blob
   version.
-- **Partial index on `status = 'pending'`**: Makes dequeue queries
-  fast regardless of how many completed jobs exist.
+- **Partial index on `(not_before, id) WHERE status = 'pending'`**: Makes
+  dequeue queries fast regardless of how many completed jobs exist, and
+  lets the dequeue skip jobs that are deferred until later.
 - **NOTIFY trigger**: Fires on every INSERT, waking the worker
   instantly.
 - **attempts/max_attempts**: Built-in retry with configurable limit
-  (default: 3). Failed jobs stay visible for debugging.
+  (default: 3) for failures that concern the document itself.
+  Failed jobs stay visible for debugging.
+- **not_before/deferrals**: Transport failures defer the job instead of
+  spending an attempt.
+- **skipped**: A terminal status for jobs refused on purpose, distinct
+  from `failed`.
+  See {ref}`queue-status-values`.
 
 ## Worker modes
 
@@ -222,20 +297,29 @@ concurrent load.
 
 ## Image indexing
 
-Tika includes Tesseract OCR, which can extract text from images
-(JPEG, PNG, TIFF, WebP, GIF). By default, plone.pgcatalog configures
-all common image types as extractable.
+What an image contributes depends on whether the Tika service can run optical character recognition (OCR).
 
-This means that after enabling Tika:
+The stock `apache/tika` image has no OCR engine.
+It still parses images, but only for their metadata, and that is cheap: without OCR, Tika never decodes an image's pixels.
+A 165 megapixel JPEG costs about 0.2 seconds and a few tens of MiB, measured at container memory limits from 512 MiB to 2 GiB.
+Keeping image types in the default allowlist therefore costs little.
+It also pays off, because the worker harvests the image's metadata.
+An EXIF caption arrives as `dc:description` and becomes searchable without any OCR.
+
+The `-full` image adds Tesseract, and then the text inside an image becomes searchable too:
 
 - A photo of a whiteboard becomes searchable by the text on the board
 - A scanned invoice becomes searchable by its content
 - An infographic becomes searchable by its labels and annotations
 
-Plone does not make image blobs searchable by default (there was no
-extraction mechanism).
-With Tika, this happens automatically for all
-Image content types that have blobs.
+OCR is a different cost class.
+It renders the image to pixels, so memory grows with the pixel count rather than the file size.
+A 165 megapixel photograph weighs only about 5 MB, yet on the `-full` image it filled a 1 GiB container and got Tesseract killed by the kernel.
+A guard on file size cannot catch that, because the file is small.
+Bounding OCR input by pixel count, using the smaller source images that plone.pgthumbor already produces, is tracked in [issue 241](https://github.com/bluedynamics/plone-pgcatalog/issues/241).
+
+Plone does not make image blobs searchable by default, because it has no extraction mechanism.
+With Tika, every Image content type with a blob contributes its metadata, and its text as well when OCR is available.
 
 ## Interaction with existing search
 

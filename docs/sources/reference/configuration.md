@@ -56,7 +56,8 @@ need a separate `%import` directive.
 |---|---|---|
 | `PGCATALOG_BM25_LANGUAGES` | (none) | Comma-separated ISO 639-1 codes, or `"auto"` to detect from `portal_languages`. Controls which per-language BM25 columns are created. Only relevant when VectorChord-BM25 extensions are installed. |
 | `PGCATALOG_TIKA_URL` | (none) | Tika server URL, for example `http://localhost:9998`. Enables async text extraction from binary content (PDFs, Office docs, images). When set, the queue table and merge function are created at startup. See {doc}`../how-to/enable-tika-extraction`. |
-| `PGCATALOG_TIKA_CONTENT_TYPES` | common office/PDF/image types | Comma-separated MIME types to send to Tika. Default includes PDF, MS Office, OpenDocument, RTF, and common image formats. |
+| `PGCATALOG_TIKA_CONTENT_TYPES` | common office/PDF/image types | Comma-separated MIME types to send to Tika. Default includes PDF, MS Office, OpenDocument, RTF, and common image formats. Matching is case-insensitive and ignores MIME parameters such as `; charset=utf-8`, unless an entry spells a parameter out. Checked twice: when a job is queued, and again when the worker claims it, before the blob is fetched. A claimed job whose type is not allowed becomes `skipped`. The standalone worker reads this same variable and must be given the same value; if unset, it uses the default list, which includes image types, and logs a warning at startup. |
+| `PGCATALOG_TIKA_METADATA_FIELDS` | `dc:title,dc:description,dc:subject,dc:creator,meta:keyword` | Comma-separated Tika metadata keys whose values are merged into `searchable_text` alongside the extracted body text. Only the container document's metadata is used, not that of embedded documents. Applies to the in-process and the standalone worker. |
 | `PGCATALOG_TIKA_INPROCESS` | (none) | Set to `true`, `1`, or `yes` to start the extraction worker as a daemon thread inside the Zope process. Requires `PGCATALOG_TIKA_URL`. |
 | `PGCATALOG_SLOW_QUERY_MS` | `10` | Threshold in milliseconds for slow query detection. Queries exceeding this are logged as warnings and recorded in the `pgcatalog_slow_queries` table for analysis via the ZMI Slow Queries tab. Set to `0` to disable. |
 | `PGCATALOG_QUERY_CACHE_SIZE` | `200` | Max cached query results per process. Set to `0` to disable. Invalidated when `pgcatalog_change_seq` changes (only on catalog writes, not on unrelated ZODB commits). Cost-based eviction keeps expensive queries in cache. |
@@ -68,7 +69,12 @@ need a separate `%import` directive.
 ### Standalone worker environment variables
 
 These variables configure the `pgcatalog-tika-worker` CLI when running
-as a standalone process (outside Zope):
+as a standalone process (outside Zope).
+The in-process worker ignores them.
+
+The standalone worker also reads `PGCATALOG_TIKA_CONTENT_TYPES` and
+`PGCATALOG_TIKA_METADATA_FIELDS` from the table above.
+Give it the same `PGCATALOG_TIKA_CONTENT_TYPES` as the Zope processes.
 
 | Variable | Default | Description |
 |---|---|---|
@@ -76,6 +82,7 @@ as a standalone process (outside Zope):
 | `TIKA_WORKER_URL` | (required) | Tika server URL. |
 | `TIKA_WORKER_POLL_INTERVAL` | `5` | Seconds between polls when idle (LISTEN/NOTIFY provides instant wakeup). |
 | `TIKA_WORKER_HTTP_TIMEOUT` | `120` | Seconds to wait for a Tika HTTP response. Raise it for OCR of large scanned PDFs, which can exceed the default. |
+| `TIKA_WORKER_MAX_EMBEDDED_RESOURCES` | `1000` | Maximum number of embedded documents Tika parses per job, sent as the `X-Tika-MaxEmbeddedResources` header. Bounds the size of the JSON response, which has one entry per embedded document. A response larger than 32 MiB fails the job. |
 | `TIKA_WORKER_S3_BUCKET` | (none) | S3 bucket name for S3-tiered blobs. |
 | `TIKA_WORKER_S3_ENDPOINT_URL` | (none) | S3 endpoint URL (for MinIO or compatible). |
 | `TIKA_WORKER_S3_REGION` | (none) | S3 region name. |
