@@ -6,6 +6,7 @@ differ in ways that break code: see tests/fixtures/tika/README.md.
 
 from plone.pgcatalog.tika_rmeta import extract_text
 from plone.pgcatalog.tika_rmeta import METADATA_FIELDS_DEFAULT
+from plone.pgcatalog.tika_rmeta import metadata_fields_from_env
 
 import json
 import pytest
@@ -109,3 +110,27 @@ def test_list_valued_metadata_is_joined():
     text = extract_text(payload, ("dc:subject",))
     assert "Vertrag" in text
     assert "Attersee" in text
+
+
+# ── The whitelist must reach both worker modes ──────────────────────
+
+
+def test_unset_environment_gives_the_default_fields():
+    assert metadata_fields_from_env({}) == METADATA_FIELDS_DEFAULT
+
+
+def test_configured_fields_are_parsed_and_blanks_dropped():
+    fields = metadata_fields_from_env(
+        {"PGCATALOG_TIKA_METADATA_FIELDS": " dc:title ,, meta:keyword "}
+    )
+    assert fields == ("dc:title", "meta:keyword")
+
+
+def test_the_in_process_worker_honours_the_setting(monkeypatch):
+    """PGCATALOG_* settings apply to Zope and the in-process worker, which
+    startup.py builds without passing metadata_fields. Reading the variable
+    only in main() left the in-process worker on the default."""
+    from plone.pgcatalog.tika_worker import TikaWorker
+
+    monkeypatch.setenv("PGCATALOG_TIKA_METADATA_FIELDS", "dc:title")
+    assert TikaWorker(dsn="x", tika_url="y").metadata_fields == ("dc:title",)

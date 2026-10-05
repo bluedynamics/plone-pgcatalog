@@ -82,6 +82,15 @@
   change.
   #235
 
+- `PGCATALOG_TIKA_METADATA_FIELDS` is now honoured by the in-process
+  extraction worker too. It was read only by the standalone worker's
+  `main()`, so a site running the worker inside Zope with
+  `PGCATALOG_TIKA_INPROCESS` always harvested the default metadata fields.
+  The worker's constructor now reads it, as it already did for
+  `PGCATALOG_TIKA_CONTENT_TYPES`, which restores the package's convention:
+  `PGCATALOG_*` settings apply to Zope and the in-process worker,
+  `TIKA_WORKER_*` settings to the standalone worker.
+
 
 ### Documentation
 

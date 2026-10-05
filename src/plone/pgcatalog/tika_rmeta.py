@@ -26,6 +26,7 @@ __all__ = [
     "MAX_RESPONSE_BYTES",
     "METADATA_FIELDS_DEFAULT",
     "extract_text",
+    "metadata_fields_from_env",
 ]
 
 # Tika 4 renamed the metadata namespace: X-TIKA:content became
@@ -43,6 +44,22 @@ METADATA_FIELDS_DEFAULT = (
     "dc:creator",
     "meta:keyword",
 )
+
+METADATA_FIELDS_ENV = "PGCATALOG_TIKA_METADATA_FIELDS"
+
+
+def metadata_fields_from_env(environ):
+    """The metadata whitelist from *environ*, or the default when unset.
+
+    Read by the worker's constructor rather than by ``main()``, so the
+    in-process worker honours it too: ``PGCATALOG_*`` settings apply to
+    Zope and the in-process worker, ``TIKA_WORKER_*`` to the standalone one.
+    """
+    raw = environ.get(METADATA_FIELDS_ENV)
+    if raw is None:
+        return METADATA_FIELDS_DEFAULT
+    return tuple(f.strip() for f in raw.split(",") if f.strip())
+
 
 # A document with many embedded resources produces one entry per resource,
 # three for a two-file ZIP, so the body is not bounded by the source size.
