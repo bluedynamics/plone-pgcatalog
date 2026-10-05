@@ -73,6 +73,23 @@ CPU- and memory-heavy and much slower per document; size the Tika service
 accordingly and raise `TIKA_WORKER_HTTP_TIMEOUT` (see below) so large scanned
 PDFs do not time out.
 
+Cap the Java heap below the container's memory limit.
+Then a document that exhausts memory fails with a Java `OutOfMemoryError` for that one request, instead of the kernel killing a process and Tika restarting:
+
+```yaml
+environment:
+  JAVA_TOOL_OPTIONS: "-XX:MaxRAMPercentage=50"
+```
+
+Pin the image by digest as well as by tag.
+A floating tag such as `latest` can change the major Tika version on any restart, and Apache republishes version tags too, so only the digest fixes the image you tested:
+
+```yaml
+image: apache/tika:4.1.0@sha256:<digest>
+```
+
+Look up the digest with `docker manifest inspect apache/tika:4.1.0`.
+
 ## Step 2: configure environment variables
 
 Set `PGCATALOG_TIKA_URL` before starting Zope:
@@ -108,6 +125,28 @@ Override with a comma-separated list:
 export PGCATALOG_TIKA_CONTENT_TYPES=application/pdf,application/msword,image/jpeg
 ```
 
+Matching ignores case and MIME parameters, so `application/pdf` also matches `APPLICATION/PDF` and `application/pdf; charset=binary`.
+
+```{important}
+If you run the standalone worker, set `PGCATALOG_TIKA_CONTENT_TYPES` on the worker too, to the same value.
+The worker checks the allowlist again before it fetches each blob.
+Without the variable it uses the default list, which includes image types, and logs a warning at startup.
+```
+
+### Optional: choose which metadata is indexed
+
+Besides the body text, the worker merges a short list of Tika metadata fields into `searchable_text`.
+By default these are the title, description, subject, creator, and keywords.
+An image's EXIF caption arrives as `dc:description`, so photos become searchable by their captions even without OCR.
+
+To change the list, set `PGCATALOG_TIKA_METADATA_FIELDS`:
+
+```shell
+export PGCATALOG_TIKA_METADATA_FIELDS=dc:title,dc:description
+```
+
+See {doc}`../reference/configuration` for the full list of settings.
+
 ## Step 3: start the extraction worker
 
 The worker dequeues jobs, fetches blobs, sends them to Tika, and writes
@@ -141,6 +180,7 @@ Run the worker as a separate process or container:
 ```bash
 export TIKA_WORKER_DSN="dbname=zodb host=localhost port=5432 user=zodb password=zodb"
 export TIKA_WORKER_URL=http://tika:9998
+export PGCATALOG_TIKA_CONTENT_TYPES=application/pdf,application/msword
 pgcatalog-tika-worker
 ```
 
@@ -172,13 +212,13 @@ standard `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` environment variables,
 See {doc}`../reference/configuration` for the full list of worker
 environment variables.
 
+(ocr-for-images-and-scanned-pdfs)=
+
 ## OCR for images and scanned PDFs
 
-OCR is **not** part of the default Tika image. The minimal `apache/tika`
-image bundles no OCR engine, so plain images, photos, and scanned
-(image-only) PDFs are extracted as **empty text**: the queue row still
-completes as `done`, but no body lexemes are merged into `searchable_text`.
-The full-text index then silently lacks their content.
+OCR is **not** part of the default Tika image.
+The minimal `apache/tika` image bundles no OCR engine, so the text *inside* images, photos, and scanned (image-only) PDFs is not extracted.
+The queue row still completes as `done`, and an image still contributes its metadata, such as an EXIF caption, but the words visible in the picture do not reach `searchable_text`.
 
 To enable OCR:
 
@@ -188,8 +228,8 @@ To enable OCR:
    docker run -d --name tika -p 9998:9998 apache/tika:3.2.3.0-full
    ```
 
-2. **Configure OCR server-side.** The worker sends a plain `PUT /tika` with
-   no OCR headers, so the OCR strategy and languages are set on the Tika
+2. **Configure OCR server-side.** The worker sends a plain `PUT /rmeta/text`
+   with no OCR headers, so the OCR strategy and languages are set on the Tika
    service via a mounted `tika-config.xml`—for example OCR language
    `deu+eng`, and a PDF `ocrStrategy` of `auto` (or `ocr_and_text`) so
    image-only PDFs are run through OCR. See the
@@ -264,6 +304,37 @@ the right behavior.
 
 See {doc}`../explanation/tika-extraction` for a detailed architecture
 explanation.
+
+## Recover failed extractions
+
+Find out what failed, and why, before you retry anything:
+
+```sql
+SELECT content_type, left(error, 70) AS error, count(*)
+  FROM text_extraction_queue
+ WHERE status = 'failed'
+ GROUP BY 1, 2
+ ORDER BY 3 DESC;
+```
+
+Errors such as `Connection refused` or `Operation not permitted` mean the job never reached Tika.
+Current versions of the worker defer those jobs instead of failing them, so you see them only from older versions or from a long outage.
+
+To retry, set the failed jobs back to `pending`:
+
+```sql
+UPDATE text_extraction_queue
+   SET status = 'pending', attempts = 0, error = NULL
+ WHERE status = 'failed';
+```
+
+The worker checks the allowlist when it claims each job.
+Jobs whose content type is no longer allowed become `skipped` without their blob being fetched, so you do not need to exclude them in the statement.
+This works only if the worker has the same `PGCATALOG_TIKA_CONTENT_TYPES` as Zope.
+
+Retry while Tika is up and settled, not while a new version is being deployed.
+Do not reset `skipped` jobs unless you have widened the allowlist, because the worker refuses them again.
+See {ref}`queue-status-values` for what each status means.
 
 ## Disabling extraction
 

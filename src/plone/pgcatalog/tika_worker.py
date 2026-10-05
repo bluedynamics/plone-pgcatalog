@@ -34,7 +34,7 @@ from plone.pgcatalog.mimetypes import content_types_from_env
 from plone.pgcatalog.mimetypes import matches
 from plone.pgcatalog.tika_rmeta import extract_text
 from plone.pgcatalog.tika_rmeta import MAX_RESPONSE_BYTES
-from plone.pgcatalog.tika_rmeta import METADATA_FIELDS_DEFAULT
+from plone.pgcatalog.tika_rmeta import metadata_fields_from_env
 from psycopg.rows import dict_row
 
 import logging
@@ -107,7 +107,7 @@ class TikaWorker:
         s3_config=None,
         poll_interval=5,
         http_timeout=120.0,
-        metadata_fields=METADATA_FIELDS_DEFAULT,
+        metadata_fields=None,
         max_embedded_resources=1000,
         content_types=None,
     ):
@@ -116,7 +116,11 @@ class TikaWorker:
         self.s3_config = s3_config
         self.poll_interval = poll_interval
         self.http_timeout = http_timeout
-        self.metadata_fields = metadata_fields
+        self.metadata_fields = (
+            metadata_fields
+            if metadata_fields is not None
+            else metadata_fields_from_env(os.environ)
+        )
         self.max_embedded_resources = max_embedded_resources
         # Same allowlist and same meaning of "unset" as the enqueue side
         # (#235).  The in-process worker inherits Zope's environment; the
@@ -478,14 +482,6 @@ def main():
             "extracted here.",
             CONTENT_TYPES_ENV,
         )
-    metadata_fields = tuple(
-        f.strip()
-        for f in os.environ.get(
-            "PGCATALOG_TIKA_METADATA_FIELDS",
-            ",".join(METADATA_FIELDS_DEFAULT),
-        ).split(",")
-        if f.strip()
-    )
     max_embedded = int(os.environ.get("TIKA_WORKER_MAX_EMBEDDED_RESOURCES", "1000"))
     poll_interval = int(os.environ.get("TIKA_WORKER_POLL_INTERVAL", "5"))
     http_timeout = float(os.environ.get("TIKA_WORKER_HTTP_TIMEOUT", "120"))
@@ -495,7 +491,6 @@ def main():
         tika_url=tika_url,
         s3_config=s3_config,
         poll_interval=poll_interval,
-        metadata_fields=metadata_fields,
         max_embedded_resources=max_embedded,
         http_timeout=http_timeout,
     )

@@ -230,24 +230,47 @@ job queue for asynchronous text extraction via Apache Tika.
 | Column | Type | Default | Purpose |
 |---|---|---|---|
 | `id` | `BIGSERIAL` | auto | Primary key |
-| `zoid` | `BIGINT` |—| Object zoid (references `object_state`) |
+| `zoid` | `BIGINT` |—| Zoid of the cataloged content object whose `searchable_text` receives the extracted text |
+| `blob_zoid` | `BIGINT` |—| Zoid of the blob to extract, which differs from `zoid` because a file field's blob is its own persistent object |
 | `tid` | `BIGINT` |—| Transaction ID (identifies the blob version) |
-| `content_type` | `TEXT` |—| MIME type (for example, `application/pdf`) |
-| `status` | `TEXT` | `'pending'` | Job status: `pending`, `processing`, `done`, or `failed` |
-| `attempts` | `INTEGER` | `0` | Number of processing attempts |
-| `max_attempts` | `INTEGER` | `3` | Maximum retry attempts before marking as `failed` |
-| `error` | `TEXT` |—| Error message from the last failed attempt |
+| `content_type` | `TEXT` |—| MIME type (for example, `application/pdf`), re-checked against the allowlist when the worker claims the job |
+| `status` | `TEXT` | `'pending'` | Job status, one of the values in {ref}`queue-status-values` |
+| `attempts` | `INTEGER` | `0` | Number of processing attempts, not counting transport deferrals |
+| `max_attempts` | `INTEGER` | `3` | Maximum attempts before the job becomes `failed` |
+| `error` | `TEXT` |—| Error message from the last failed attempt, or the reason a job was deferred or skipped |
+| `not_before` | `TIMESTAMPTZ` | `now()` | Earliest time the worker may claim the job, pushed forward by a transport deferral |
+| `deferrals` | `INTEGER` | `0` | Number of transport deferrals, which sets the delay before the next claim |
 | `created_at` | `TIMESTAMPTZ` | `now()` | Job creation timestamp |
 | `updated_at` | `TIMESTAMPTZ` | `now()` | Last status change timestamp |
 
-Constraints: `UNIQUE(zoid, tid)` prevents duplicate jobs for the same
-object version.
+Constraints: `UNIQUE(blob_zoid, tid)` prevents duplicate jobs for the same
+blob version.
+
+(queue-status-values)=
+
+### Queue status values
+
+| Status | Terminal | Meaning |
+|---|---|---|
+| `pending` | no | Waiting to be claimed, once `not_before` has passed |
+| `processing` | no | Claimed by a worker |
+| `done` | yes | Text extracted and merged into `searchable_text` |
+| `failed` | yes | Exhausted `max_attempts` on errors that concern the document itself |
+| `skipped` | yes | Refused on purpose, without an extraction attempt; `error` starts with `skipped: <code>:` |
+
+`skipped` is not an error.
+A reset of stuck work targets `failed`.
+Reset `skipped` jobs only after you widen the allowlist, because the worker refuses them again otherwise.
+
+| `skipped` code | Cause |
+|---|---|
+| `content-type-not-allowed` | The job's `content_type` is not in `PGCATALOG_TIKA_CONTENT_TYPES` as the worker sees it, or it is missing |
 
 ### Queue Indexes
 
 | Index Name | Type | Expression | Purpose |
 |---|---|---|---|
-| `idx_teq_pending` | B-tree (partial) | `id WHERE status = 'pending'` | Fast dequeue of pending jobs |
+| `idx_teq_pending` | B-tree (partial) | `(not_before, id) WHERE status = 'pending'` | Fast dequeue of pending jobs that are due, ordered by `id` |
 
 ### Queue Trigger
 
