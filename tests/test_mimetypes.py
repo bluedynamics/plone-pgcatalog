@@ -1,5 +1,7 @@
 """Tests for MIME type normalisation used by the Tika enqueue gate."""
 
+from plone.pgcatalog.mimetypes import content_types_from_env
+from plone.pgcatalog.mimetypes import DEFAULT_CONTENT_TYPES
 from plone.pgcatalog.mimetypes import matches
 from plone.pgcatalog.mimetypes import normalise
 
@@ -38,3 +40,25 @@ def test_bare_type_still_matches_exactly():
 
 def test_no_content_type_never_matches():
     assert not matches(None, {"application/pdf"})
+
+
+# ── The allowlist, shared by the enqueue side and the worker (#235) ──
+
+
+def test_unset_environment_gives_the_default_allowlist():
+    types = content_types_from_env({})
+    assert "application/pdf" in types
+    assert "image/jpeg" in types, "the default deliberately includes images"
+
+
+def test_configured_allowlist_is_normalised_and_drops_blanks():
+    types = content_types_from_env(
+        {"PGCATALOG_TIKA_CONTENT_TYPES": " Application/PDF , application/msword,, "}
+    )
+    assert types == {"application/pdf", "application/msword"}
+
+
+def test_default_constant_and_the_unset_case_agree():
+    """The enqueue side and the worker must mean the same thing by 'unset'."""
+    expected = {normalise(t) for t in DEFAULT_CONTENT_TYPES.split(",") if t.strip()}
+    assert content_types_from_env({}) == expected

@@ -320,3 +320,42 @@ def test_pg_bytea_blob_sent_as_bytes(monkeypatch):
     assert out == "ok"
     assert captured["content"] == b"PDFBYTES"
     assert "Content-Length" not in (captured["headers"] or {})
+
+
+# ---------------------------------------------------------------------------
+# #235: the standalone worker must say so when it has no allowlist of its
+# own, because it then silently uses the default, which includes images.
+# ---------------------------------------------------------------------------
+
+
+def _run_main_capturing(monkeypatch, caplog):
+    from plone.pgcatalog import tika_worker
+
+    monkeypatch.setenv("TIKA_WORKER_DSN", "dsn")
+    monkeypatch.setenv("TIKA_WORKER_URL", "http://tika")
+
+    class _FakeWorker:
+        def __init__(self, **kw):
+            pass
+
+        def run(self):
+            pass
+
+    monkeypatch.setattr(tika_worker, "TikaWorker", _FakeWorker)
+    monkeypatch.setattr(tika_worker, "httpx", object())
+    with caplog.at_level("WARNING", logger="plone.pgcatalog.tika_worker"):
+        tika_worker.main()
+    return caplog.text
+
+
+def test_main_warns_when_the_worker_has_no_allowlist(monkeypatch, caplog):
+    monkeypatch.delenv("PGCATALOG_TIKA_CONTENT_TYPES", raising=False)
+    text = _run_main_capturing(monkeypatch, caplog)
+    assert "PGCATALOG_TIKA_CONTENT_TYPES is not set" in text
+    assert "includes image types" in text
+
+
+def test_main_is_quiet_when_the_allowlist_is_set(monkeypatch, caplog):
+    monkeypatch.setenv("PGCATALOG_TIKA_CONTENT_TYPES", "application/pdf")
+    text = _run_main_capturing(monkeypatch, caplog)
+    assert "PGCATALOG_TIKA_CONTENT_TYPES" not in text
