@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- Replace MinIO with [Garage](https://garagehq.deuxfleurs.fr/) in the Docker
+  Compose setups (`example/`, `development/`, `tryout/`) and the docs: MinIO is
+  no longer maintained and its images are no longer published on Docker Hub.
+  Garage runs in single-node mode and creates the `zodb-blobs` bucket and its
+  access key on startup, so the `createbucket` bootstrap container is gone.
+
 ## 1.0.0rc5 (2026-10-05)
 
 ### Added

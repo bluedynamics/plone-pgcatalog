@@ -84,7 +84,7 @@ Give it the same `PGCATALOG_TIKA_CONTENT_TYPES` as the Zope processes.
 | `TIKA_WORKER_HTTP_TIMEOUT` | `120` | Seconds to wait for a Tika HTTP response. Raise it for OCR of large scanned PDFs, which can exceed the default. |
 | `TIKA_WORKER_MAX_EMBEDDED_RESOURCES` | `1000` | Maximum number of embedded documents Tika parses per job, sent as the `X-Tika-MaxEmbeddedResources` header. Bounds the size of the JSON response, which has one entry per embedded document. A response larger than 32 MiB fails the job. |
 | `TIKA_WORKER_S3_BUCKET` | (none) | S3 bucket name for S3-tiered blobs. |
-| `TIKA_WORKER_S3_ENDPOINT_URL` | (none) | S3 endpoint URL (for MinIO or compatible). |
+| `TIKA_WORKER_S3_ENDPOINT_URL` | (none) | S3 endpoint URL (for Garage or compatible). |
 | `TIKA_WORKER_S3_REGION` | (none) | S3 region name. |
 | `TIKA_WORKER_S3_ACCESS_KEY` | (none) | S3 access key id. When unset, boto3 falls back to its default credential chain (`AWS_*` environment variables, `~/.aws`, IAM role). |
 | `TIKA_WORKER_S3_SECRET_KEY` | (none) | S3 secret access key. See `TIKA_WORKER_S3_ACCESS_KEY`. |

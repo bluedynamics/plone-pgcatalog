@@ -1,0 +1,21 @@
+# Garage S3-compatible object storage, LOCAL DEMO configuration only.
+# Used by the `garage` service in docker-compose.yml to store large blobs.
+metadata_dir = "/var/lib/garage/meta"
+data_dir = "/var/lib/garage/data"
+db_engine = "lmdb"
+
+replication_factor = 1
+
+rpc_bind_addr = "[::]:3901"
+rpc_public_addr = "127.0.0.1:3901"
+# Local demo only, NOT a real secret. Regenerate with: openssl rand -hex 32
+rpc_secret = "dc42a86dfd15dfe68a419a3d9a247ae753ec55b747667fda72b3ce1ec1149806"
+
+[s3_api]
+# Keep in sync with `s3-region` in plone/zope.conf.
+s3_region = "garage"
+api_bind_addr = "[::]:3900"
+root_domain = ".s3.garage.localhost"
+
+[admin]
+api_bind_addr = "[::]:3903"
