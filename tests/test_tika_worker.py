@@ -696,3 +696,135 @@ class TestDequeueAllowlist:
         monkeypatch.setenv("PGCATALOG_TIKA_CONTENT_TYPES", "Application/PDF")
         worker = TikaWorker(dsn="x", tika_url="y")
         assert worker.content_types == {"application/pdf"}
+
+
+class TestRequeuedWhileProcessing:
+    """A full reindex during extraction must not end as 'done without text' (#244).
+
+    The reindex rewrites searchable_text and (with the processor's upsert)
+    sets the claimed job back to pending.  Whatever the worker does next must
+    leave the job pending, so it runs again on the fresh column.
+    """
+
+    def _reindex(self, zoid):
+        """What a concurrent full reindex commits, on its own connection."""
+        other = psycopg.connect(DSN, row_factory=dict_row)
+        try:
+            other.execute(
+                "UPDATE text_extraction_queue SET status = 'pending', "
+                "attempts = 0, deferrals = 0, error = NULL WHERE zoid = %s",
+                (zoid,),
+            )
+            other.execute(
+                "UPDATE object_state "
+                "SET searchable_text = to_tsvector('simple', 'reindexed') "
+                "WHERE zoid = %s",
+                (zoid,),
+            )
+            other.commit()
+        finally:
+            other.close()
+
+    def _setup(self, worker_db, zoid):
+        _insert_object_with_blob(worker_db, zoid=zoid)
+        _enqueue_job(worker_db, zoid=zoid)
+        return TikaWorker(dsn=DSN, tika_url="http://tika:9998")
+
+    def _text(self, conn, zoid):
+        row = conn.execute(
+            "SELECT searchable_text::text AS t FROM object_state WHERE zoid = %s",
+            (zoid,),
+        ).fetchone()
+        conn.commit()
+        return row["t"]
+
+    def test_result_is_dropped_when_job_was_repended(self, worker_db):
+        zoid = 901
+        worker = self._setup(worker_db, zoid)
+
+        def extract_then_reindex(conn, blob_zoid, tid, content_type):
+            self._reindex(zoid)
+            return "late words"
+
+        with patch.object(worker, "_extract", side_effect=extract_then_reindex):
+            assert worker._process_one() is True
+
+        status = _get_queue_status(worker_db, zoid)
+        assert status["status"] == "pending"
+        assert "late" not in self._text(worker_db, zoid)
+
+    def test_success_still_marks_done_and_merges(self, worker_db):
+        zoid = 902
+        worker = self._setup(worker_db, zoid)
+
+        with patch.object(worker, "_extract", return_value="pdf words"):
+            assert worker._process_one() is True
+
+        assert _get_queue_status(worker_db, zoid)["status"] == "done"
+        assert "pdf" in self._text(worker_db, zoid)
+
+    def test_failure_does_not_overwrite_a_repended_job(self, worker_db):
+        zoid = 903
+        worker = self._setup(worker_db, zoid)
+
+        def reindex_then_fail(conn, blob_zoid, tid, content_type):
+            self._reindex(zoid)
+            raise ValueError("broken document")
+
+        with patch.object(worker, "_extract", side_effect=reindex_then_fail):
+            worker._process_one()
+
+        status = _get_queue_status(worker_db, zoid)
+        assert (status["status"], status["error"]) == ("pending", None)
+
+    def test_deferral_does_not_overwrite_a_repended_job(self, worker_db):
+        zoid = 904
+        worker = self._setup(worker_db, zoid)
+
+        def reindex_then_unreachable(conn, blob_zoid, tid, content_type):
+            self._reindex(zoid)
+            raise httpx.ConnectError("tika down")
+
+        with patch.object(worker, "_extract", side_effect=reindex_then_unreachable):
+            worker._process_one()
+
+        status = _get_queue_status(worker_db, zoid)
+        assert (status["status"], status["deferrals"], status["error"]) == (
+            "pending",
+            0,
+            None,
+        )
+
+    def test_skip_does_not_overwrite_a_repended_job(self, worker_db):
+        zoid = 905
+        worker = self._setup(worker_db, zoid)
+
+        def reindex_then_refuse(content_type, allowed):
+            self._reindex(zoid)
+            return False
+
+        with patch(
+            "plone.pgcatalog.tika_worker.matches", side_effect=reindex_then_refuse
+        ):
+            worker._process_one()
+
+        assert _get_queue_status(worker_db, zoid)["status"] == "pending"
+
+    def test_database_error_in_merge_does_not_strand_the_job(self, worker_db):
+        """A failed merge leaves the transaction aborted; the job must not
+        stay in 'processing' forever."""
+        zoid = 906
+        worker = self._setup(worker_db, zoid)
+
+        def broken_merge(conn, zoid_, text):
+            conn.execute("SELECT 1/0")
+
+        with (
+            patch.object(worker, "_extract", return_value="pdf words"),
+            patch.object(worker, "_update_searchable_text", side_effect=broken_merge),
+        ):
+            worker._process_one()
+
+        status = _get_queue_status(worker_db, zoid)
+        assert status["status"] == "pending"  # one attempt spent, will retry
+        assert "division by zero" in status["error"]

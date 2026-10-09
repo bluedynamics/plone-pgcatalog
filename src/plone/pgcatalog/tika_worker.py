@@ -220,15 +220,29 @@ class TikaWorker:
 
             try:
                 text = self._extract(conn, blob_zoid, tid, content_type)
+                # One transaction, object_state first and the queue row
+                # second: the same lock order as a Zope commit (row write in
+                # tpc_vote, queue upsert in finalize), so the two cannot
+                # deadlock.  A full reindex during extraction re-pended the
+                # job (#244); then the guard matches nothing and the merge is
+                # rolled back, and the job runs again on the fresh column.
                 self._update_searchable_text(conn, zoid, text)
                 with conn.cursor() as cur:
                     cur.execute(
                         "UPDATE text_extraction_queue SET "
                         "  status = 'done', error = NULL, updated_at = now() "
-                        "WHERE id = %(id)s",
+                        "WHERE id = %(id)s AND status = 'processing'",
                         {"id": job_id},
                     )
-                    conn.commit()
+                    finished = cur.rowcount == 1
+                if not finished:
+                    conn.rollback()
+                    log.info(
+                        "Job %d was re-queued during extraction; result dropped",
+                        job_id,
+                    )
+                    return True
+                conn.commit()
                 log.info(
                     "Extracted text for zoid=%d blob_zoid=%d tid=%d (%d chars, job %d)",
                     zoid,
@@ -238,6 +252,9 @@ class TikaWorker:
                     job_id,
                 )
             except Exception as exc:
+                # Drop a half-done merge and leave an aborted transaction,
+                # so the status updates below can run.
+                conn.rollback()
                 if httpx is not None and isinstance(exc, _TRANSPORT_ERRORS):
                     delay = BACKOFF_LADDER[
                         min(row["deferrals"], len(BACKOFF_LADDER) - 1)
@@ -265,7 +282,7 @@ class TikaWorker:
                             "  status = CASE WHEN attempts >= max_attempts "
                             "    THEN 'failed' ELSE 'pending' END, "
                             "  error = %(error)s, updated_at = now() "
-                            "WHERE id = %(id)s",
+                            "WHERE id = %(id)s AND status = 'processing'",
                             {"error": str(exc)[:1000], "id": job_id},
                         )
                         conn.commit()
@@ -402,7 +419,7 @@ class TikaWorker:
             cur.execute(
                 "UPDATE text_extraction_queue SET "
                 "  status = 'skipped', error = %(reason)s, updated_at = now() "
-                "WHERE id = %(id)s",
+                "WHERE id = %(id)s AND status = 'processing'",
                 {"reason": reason[:1000], "id": job_id},
             )
             conn.commit()
@@ -425,19 +442,22 @@ class TikaWorker:
                 "  deferrals = deferrals + 1, "
                 "  not_before = now() + make_interval(secs => %(delay)s), "
                 "  error = %(reason)s, updated_at = now() "
-                "WHERE id = %(id)s",
+                "WHERE id = %(id)s AND status = 'processing'",
                 {"delay": delay, "reason": reason[:1000], "id": job_id},
             )
             conn.commit()
 
     def _update_searchable_text(self, conn, zoid, extracted_text):
-        """Merge extracted text into searchable_text via PL/pgSQL function."""
+        """Merge extracted text into searchable_text via PL/pgSQL function.
+
+        Does not commit: the caller commits together with the job's
+        ``done`` status, or rolls both back.
+        """
         with conn.cursor() as cur:
             cur.execute(
                 "SELECT pgcatalog_merge_extracted_text(%(zoid)s, %(text)s)",
                 {"zoid": zoid, "text": extracted_text},
             )
-            conn.commit()
 
     def shutdown(self):
         """Signal the worker to stop."""
