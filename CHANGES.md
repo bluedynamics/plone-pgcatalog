@@ -10,6 +10,43 @@
   Garage runs in single-node mode and creates the `zodb-blobs` bucket and its
   access key on startup, so the `createbucket` bootstrap container is gone.
 
+### Fixed
+
+- Recatalog content that zodb-pgjsonb before the fix for
+  bluedynamics/zodb-pgjsonb#120 left without catalog data. Any write of a
+  cataloged object without a full reindex NULLed its catalog columns, for
+  example opening the edit form (edit lock), the sharing tab, or a write
+  followed by a partial reindex. The object stayed in the ZODB but vanished
+  from listings and search, and partial reindexes skipped it. New
+  `maintenance.repair_uncataloged()` walks the site without clearing the
+  catalog and recatalogs only content whose row lacks catalog data. The
+  upgrade step to profile version 4 runs it once; the how-to "Rebuild or
+  reindex the catalog" shows how to run it from the command line with a
+  dry run. Requires zodb-pgjsonb >= 1.17.0, so repaired content cannot be
+  wiped again. The repair also checks the installed version at runtime,
+  retries a batch once on a write conflict, and runs `ANALYZE` at the end;
+  the upgrade step skips the site walk when no row can be damaged. With
+  Tika enabled, the repair enqueues extraction for every repaired file, so
+  the worker's allowlist and the Tika image pin must be in place before the
+  upgrade. #244
+
+- A full reindex of a file (title edit, workflow transition,
+  `clearFindAndRebuild()`) no longer drops its Tika-extracted text: the
+  finished extraction job is queued again. The worker only finishes jobs
+  that are still in `processing`, so a reindex during extraction cannot
+  leave a job marked done without its text, and a database error while
+  merging the text no longer leaves the job stuck in `processing`. Stopgap
+  until #247. #244
+
+- New `maintenance.requeue_lost_extractions()` finds files whose extracted
+  text was already lost and queues their extraction again. Run it after the
+  upgrade, once the worker's allowlist and the Tika image pin are in place,
+  and with Zope's environment: it refuses to run without
+  `PGCATALOG_TIKA_URL`. #244
+
+- The catalog's site walk (`clearFindAndRebuild()`, the repair) no longer
+  takes quadratic time in the number of objects.
+
 ## 1.0.0rc5 (2026-10-05)
 
 ### Added

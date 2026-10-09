@@ -9,23 +9,46 @@ from Acquisition import aq_base
 from Acquisition import aq_inner
 from Acquisition import aq_parent
 from Acquisition import Implicit
+from importlib.metadata import version as _dist_version
 from Persistence import Persistent
 from persistent.mapping import PersistentMapping
 from plone.folder.interfaces import IExplicitOrdering
+from plone.pgcatalog import processor
 from plone.pgcatalog.backends import get_backend
 from plone.pgcatalog.gopip import sync_folder_ranks
 from plone.pgcatalog.indexing import reindex_object as _sql_reindex
 from plone.pgcatalog.pgindex import _maybe_wrap_index
+from plone.pgcatalog.pool import get_pool
 from psycopg import sql as pgsql
+from typing import NamedTuple
+from ZODB.POSException import ConflictError
+from ZODB.utils import u64
 from zope.component.hooks import getSite
+from zope.component.hooks import site as site_context
 
+import importlib
 import logging
+import re
+import transaction
 
 
 log = logging.getLogger(__name__)
 
 
 _REINDEX_BATCH_SIZE = 500
+_REBUILD_BATCH = 500  # commit + cache-minimize every N objects during rebuild
+
+
+def _commit_and_minimize(jar):
+    """Commit the current transaction and minimize the ZODB cache.
+
+    Committing flushes dirty objects to storage and clears the
+    thread-local pending catalog data, allowing ``cacheMinimize()``
+    to actually ghost them and reclaim memory.
+    """
+    transaction.commit()
+    if jar is not None:
+        jar.cacheMinimize()
 
 
 def reindex_index(conn, name, batch_size=_REINDEX_BATCH_SIZE):
@@ -180,6 +203,341 @@ def resync_gopip(root, conn):
 
     log.info("resync_gopip: %d folders updated, %d rank rows total", folders, rows)
     return folders, rows
+
+
+_PGJSONB_FIXED = (1, 17, 0)  # zodb-pgjsonb#120: plain writes no longer wipe columns
+
+
+def _check_storage_fixed():
+    """Refuse to repair against a zodb-pgjsonb that wipes catalog columns.
+
+    The version pin in pyproject.toml only binds at install time; a build
+    with --no-deps or overridden constraints can still run the old storage,
+    which would uncatalog repaired objects again on their next plain write.
+    """
+    installed = _dist_version("zodb-pgjsonb")
+    match = re.match(r"(\d+)\.(\d+)\.(\d+)", installed)
+    if match is None or tuple(map(int, match.groups())) < _PGJSONB_FIXED:
+        raise RuntimeError(
+            f"zodb-pgjsonb {installed} still wipes catalog columns on plain "
+            "writes (zodb-pgjsonb#120); upgrade to >= 1.17.0 before repairing"
+        )
+
+
+def _commit_batch(jar, done, broken, redo):
+    """Commit a repaired batch; on a write conflict abort and redo it once.
+
+    *done* and *broken* are the first attempt's results; ``redo()`` repeats
+    the batch (including any health check, since a concurrent editor may
+    have recataloged meanwhile) and returns new ones.  Returns the results
+    of the attempt that committed, or ``([], all paths)`` after a second
+    conflict or any other commit error.  Other errors are not retried:
+    they are deterministic, so the operator re-runs with a small batch
+    size to find the object.
+    """
+    for attempt in (1, 2):
+        try:
+            _commit_and_minimize(jar)
+            return done, broken
+        except ConflictError:
+            transaction.abort()
+            if attempt == 2:
+                log.warning(
+                    "batch conflicted twice; %d paths reported as failed", len(done)
+                )
+                return [], broken + done
+            log.info("conflict on batch commit; retrying the batch once")
+            done, broken = redo()
+        except Exception:
+            transaction.abort()
+            log.warning(
+                "batch commit failed; %d paths reported as failed",
+                len(done),
+                exc_info=True,
+            )
+            return [], broken + done
+
+
+def _catalogable_class(class_mod, class_name):
+    """True when instances of the class could be cataloged (or unknown)."""
+    try:
+        cls = getattr(importlib.import_module(class_mod), class_name)
+    except Exception:
+        return True  # unknown or broken class: count it, the walk decides
+    return callable(getattr(cls, "reindexObject", None))
+
+
+def count_uncataloged_candidates(conn):
+    """Upper bound for what :func:`repair_uncataloged` can find.
+
+    Counts rows without catalog data whose class has ``reindexObject``.
+    Deleted but unpacked objects and catalog-aware objects Plone never
+    catalogs are included, so a positive count does not prove damage.
+    Zero proves there is none, and the site walk can be skipped.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT class_mod, class_name, count(*) AS n FROM object_state "
+            "WHERE idx IS NULL OR path IS NULL GROUP BY class_mod, class_name"
+        )
+        rows = cur.fetchall()
+    return sum(
+        row["n"]
+        for row in rows
+        if _catalogable_class(row["class_mod"], row["class_name"])
+    )
+
+
+class RepairResult(NamedTuple):
+    """Outcome of :func:`repair_uncataloged`."""
+
+    checked: int  # catalogable objects visited
+    paths: list[str]  # recataloged paths (in a dry run: would be recataloged)
+    failed: list[str]  # paths whose catalog_object() raised
+
+
+def _is_catalogable(obj, catalog):
+    """Plone's own rebuild criterion: CMF-catalog-aware, never the catalog."""
+    base = aq_base(obj)
+    if base is aq_base(catalog):
+        return False
+    return callable(getattr(base, "reindexObject", None))
+
+
+def _healthy_zoids(conn, zoids):
+    """Return the subset of *zoids* whose rows carry catalog data."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT zoid FROM object_state WHERE zoid = ANY(%s) "
+            "AND path IS NOT NULL AND idx IS NOT NULL",
+            (zoids,),
+        )
+        return {row["zoid"] for row in cur.fetchall()}
+
+
+def _repair_batch(catalog, conn, batch, dry_run, all_objects):
+    """Recatalog the damaged entries of *batch*; return (paths, failed)."""
+    if all_objects:
+        todo = batch
+    else:
+        healthy = _healthy_zoids(conn, [zoid for zoid, _, _ in batch])
+        todo = [entry for entry in batch if entry[0] not in healthy]
+    paths, failed = [], []
+    for _, obj, path in todo:
+        if dry_run:
+            paths.append(path)
+            continue
+        try:
+            catalog.catalog_object(obj, path)
+        except Exception:
+            log.warning("repair_uncataloged: failed to catalog %s", path, exc_info=True)
+            failed.append(path)
+        else:
+            paths.append(path)
+    return paths, failed
+
+
+def repair_uncataloged(
+    catalog, site, *, dry_run=False, all_objects=False, batch_size=_REBUILD_BATCH
+):
+    """Recatalog content whose catalog columns are missing, without clearing.
+
+    Repairs rows wiped by zodb-pgjsonb#120: the object exists in the ZODB,
+    but ``path`` or ``idx`` is NULL, so it is invisible to catalog queries
+    and partial reindexes skip it.  Walks *site* like
+    ``clearFindAndRebuild()`` but only touches catalog-aware objects whose
+    row lacks catalog data (or every catalog-aware object with
+    ``all_objects=True``).  Commits every *batch_size* objects; idempotent,
+    so an interrupted run is simply repeated.  With ``dry_run=True`` it
+    only reports and writes nothing.
+
+    Returns:
+        RepairResult(checked, paths, failed)
+    """
+    _check_storage_fixed()
+    jar = catalog._p_jar
+    checked = 0
+    paths, failed = [], []
+    batch = []
+
+    def flush():
+        nonlocal checked, batch
+        current, batch = batch, []
+        checked += len(current)
+        done, broken = _repair_batch(catalog, conn, current, dry_run, all_objects)
+        if dry_run:
+            jar.cacheMinimize()
+        else:
+            done, broken = _commit_batch(
+                jar,
+                done,
+                broken,
+                lambda: _repair_batch(catalog, conn, current, False, all_objects),
+            )
+        for path in done:
+            log.info(
+                "repair_uncataloged: %s %s",
+                "would recatalog" if dry_run else "recataloged",
+                path,
+            )
+        for path in broken:
+            log.warning("repair_uncataloged: not repaired %s", path)
+        paths.extend(done)
+        failed.extend(broken)
+
+    pool = get_pool(catalog)
+    conn = pool.getconn()
+    try:
+        with site_context(site):
+            for obj, path in catalog._walk_site_paths(site):
+                oid = getattr(aq_base(obj), "_p_oid", None)
+                if oid is None or not _is_catalogable(obj, catalog):
+                    continue
+                batch.append((u64(oid), obj, path))
+                if len(batch) >= batch_size:
+                    flush()
+            if batch:
+                flush()
+        if paths and not dry_run:
+            # Bulk writes leave the planner statistics stale (#224).
+            with conn.cursor() as cur:
+                cur.execute("ANALYZE object_state")
+            log.info("repair_uncataloged: ANALYZE object_state done")
+    finally:
+        pool.putconn(conn)
+
+    log.info(
+        "repair_uncataloged: %d checked, %d %s, %d failed",
+        checked,
+        len(paths),
+        "would be recataloged" if dry_run else "recataloged",
+        len(failed),
+    )
+    return RepairResult(checked, paths, failed)
+
+
+# Weight 'C' in searchable_text comes only from the Tika merge
+# (pgcatalog_merge_extracted_text); title is A, description B, body D.
+_LOST_EXTRACTION_SQL = """
+SELECT o.zoid, o.path FROM object_state o
+WHERE o.idx IS NOT NULL AND o.path IS NOT NULL
+  AND (
+    (EXISTS (SELECT 1 FROM text_extraction_queue q
+             WHERE q.zoid = o.zoid AND q.status = 'done')
+     AND (o.searchable_text IS NULL
+          OR length(ts_filter(o.searchable_text, '{c}')) = 0))
+    OR (%(include_failed)s AND EXISTS (
+          SELECT 1 FROM text_extraction_queue q
+          WHERE q.zoid = o.zoid AND q.status = 'failed'))
+  )
+ORDER BY o.zoid
+"""
+
+
+def _lost_extraction_paths(conn, include_failed):
+    """Paths of cataloged objects whose extracted text is gone."""
+    with conn.cursor() as cur:
+        cur.execute("SELECT to_regclass('text_extraction_queue') AS t")
+        if cur.fetchone()["t"] is None:
+            log.info("requeue_lost_extractions: no extraction queue; nothing to do")
+            return []
+        cur.execute(_LOST_EXTRACTION_SQL, {"include_failed": include_failed})
+        return [row["path"] for row in cur.fetchall()]
+
+
+def _recatalog_paths(catalog, paths, dry_run):
+    """Recatalog *paths*; return (done, failed).  Missing objects fail."""
+    done, failed = [], []
+    for path in paths:
+        obj = catalog.unrestrictedTraverse(path, None)
+        if obj is None:
+            log.warning("requeue_lost_extractions: %s not found", path)
+            failed.append(path)
+            continue
+        if dry_run:
+            done.append(path)
+            continue
+        try:
+            catalog.catalog_object(obj, path)
+        except Exception:
+            log.warning(
+                "requeue_lost_extractions: failed to catalog %s", path, exc_info=True
+            )
+            failed.append(path)
+        else:
+            done.append(path)
+    return done, failed
+
+
+def requeue_lost_extractions(
+    catalog, *, dry_run=False, include_failed=False, batch_size=_REBUILD_BATCH
+):
+    """Queue text extraction again for files whose extracted text is lost.
+
+    A full reindex used to overwrite ``searchable_text`` without the
+    Tika-extracted text and without queueing a new job (#244), and so did
+    ``clearFindAndRebuild()``.  Such files have a ``done`` job but no
+    weight-``'C'`` lexeme left.  They are recataloged, and the processor
+    re-pends the jobs of exactly the blobs the object references now.
+    Queue rows are never re-pended by SQL: an object can have several
+    blob fields, and a replaced blob stays in ``blob_state`` until the
+    next pack.  With ``include_failed=True``, objects with ``failed`` jobs
+    are handled the same way.
+
+    Files whose extraction legitimately produced no text (scanned PDFs or
+    images without OCR, empty files) look exactly like lost ones and are
+    recataloged on every run; the dry run shows how many.  Telling them
+    apart needs #247.
+
+    Not called from any upgrade step: requeueing against Tika is an
+    operator decision, after the worker's allowlist and the Tika image
+    pin are checked.
+
+    Returns:
+        RepairResult(checked, paths, failed)
+    """
+    _check_storage_fixed()
+    pool = get_pool(catalog)
+    conn = pool.getconn()
+    try:
+        candidates = _lost_extraction_paths(conn, include_failed)
+    finally:
+        pool.putconn(conn)
+    if candidates and not dry_run and not processor.TIKA_URL:
+        # Without it the processor queues nothing, and the SearchableText
+        # indexers fall back to running portal_transforms on every blob.
+        raise RuntimeError(
+            "PGCATALOG_TIKA_URL is not set in this process; recataloging "
+            "would queue no extraction.  Run with Zope's environment."
+        )
+
+    jar = catalog._p_jar
+    paths, failed = [], []
+    site = catalog._find_site_root()
+    with site_context(site):
+        for start in range(0, len(candidates), batch_size):
+            chunk = candidates[start : start + batch_size]
+            done, broken = _recatalog_paths(catalog, chunk, dry_run)
+            if dry_run:
+                jar.cacheMinimize()
+            else:
+                done, broken = _commit_batch(
+                    jar,
+                    done,
+                    broken,
+                    lambda chunk=chunk: _recatalog_paths(catalog, chunk, False),
+                )
+            paths.extend(done)
+            failed.extend(broken)
+
+    log.info(
+        "requeue_lost_extractions: %d candidates, %d %s, %d failed",
+        len(candidates),
+        len(paths),
+        "would be recataloged" if dry_run else "recataloged",
+        len(failed),
+    )
+    return RepairResult(len(candidates), paths, failed)
 
 
 # ---------------------------------------------------------------------------

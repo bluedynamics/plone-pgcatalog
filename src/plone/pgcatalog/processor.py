@@ -432,11 +432,19 @@ class CatalogStateProcessor:
                         )
 
     def _insert_queue_row(self, cursor, zoid, blob_zoid, tid, content_type):
+        # A full reindex rewrote searchable_text without the extracted text,
+        # so a finished job for the same blob version has to run again (#244).
+        # pending: already queued.  skipped: the allowlist would refuse it
+        # again.  Replaced by a stored extraction column in #247.
         cursor.execute(
             "INSERT INTO text_extraction_queue "
             "  (zoid, blob_zoid, tid, content_type) "
             "VALUES (%(zoid)s, %(blob_zoid)s, %(tid)s, %(ct)s) "
-            "ON CONFLICT (blob_zoid, tid) DO NOTHING",
+            "ON CONFLICT (blob_zoid, tid) DO UPDATE SET "
+            "  zoid = EXCLUDED.zoid, content_type = EXCLUDED.content_type, "
+            "  status = 'pending', attempts = 0, deferrals = 0, error = NULL, "
+            "  not_before = now(), updated_at = now() "
+            "WHERE text_extraction_queue.status NOT IN ('pending', 'skipped')",
             {
                 "zoid": zoid,
                 "blob_zoid": blob_zoid,

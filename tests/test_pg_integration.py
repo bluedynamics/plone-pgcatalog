@@ -1389,7 +1389,7 @@ class TestMaintenanceOps:
         assert row is not None
         assert row[3]["Title"] == "Original"
 
-        # Change title in memory (do NOT commit — that would NULL idx)
+        # Change title in memory only; refreshCatalog must pick it up from ZODB
         portal["rc-doc"].setTitle("Refreshed")
 
         # refreshCatalog re-catalogs from live ZODB objects
@@ -1863,3 +1863,568 @@ class TestGopipMaintenanceResync:
 
         assert (folders, rows) == (0, 0)
         assert _stored_ranks(pg_functional, folder_path) == before
+
+
+# ---------------------------------------------------------------------------
+# Repair of content uncataloged by zodb-pgjsonb#120 (#244)
+# ---------------------------------------------------------------------------
+
+
+def _wipe_catalog_row(pg_functional, path):
+    """Simulate zodb-pgjsonb#120 damage: catalog columns NULL, row kept."""
+    test_db = pg_functional["pgTestDB"]
+    with test_db.connection.cursor() as cur:
+        cur.execute(
+            "UPDATE object_state SET path = NULL, parent_path = NULL, "
+            "path_depth = NULL, idx = NULL, searchable_text = NULL "
+            "WHERE path = %s",
+            (path,),
+        )
+        assert cur.rowcount == 1
+
+
+def _row_by_zoid(pg_functional, obj):
+    from ZODB.utils import u64
+
+    rows = _query_pg(
+        pg_functional,
+        "SELECT path, idx IS NOT NULL, tid FROM object_state WHERE zoid = %s",
+        (u64(obj._p_oid),),
+    )
+    return rows[0]
+
+
+class TestRepairUncataloged:
+    def _setup(self, pg_functional):
+        portal = pg_functional["portal"]
+        setRoles(portal, TEST_USER_ID, ["Manager"])
+        portal.invokeFactory("Folder", "rep-folder", title="Folder")
+        portal["rep-folder"].invokeFactory("Document", "broken", title="Broken")
+        portal.invokeFactory("Document", "intact", title="Intact")
+        transaction.commit()
+        _wipe_catalog_row(pg_functional, "/plone/rep-folder/broken")
+        return portal, portal["portal_catalog"]
+
+    def test_repairs_only_damaged_content(self, pg_functional):
+        from plone.pgcatalog.maintenance import repair_uncataloged
+
+        portal, catalog = self._setup(pg_functional)
+        intact_before = _row_by_zoid(pg_functional, portal["intact"])
+
+        result = repair_uncataloged(catalog, portal)
+        transaction.commit()
+
+        assert result.paths == ["/plone/rep-folder/broken"]
+        assert result.failed == []
+        assert result.checked >= 3
+        path, has_idx, _ = _row_by_zoid(pg_functional, portal["rep-folder"]["broken"])
+        assert (path, has_idx) == ("/plone/rep-folder/broken", True)
+        # intact content is not rewritten
+        assert _row_by_zoid(pg_functional, portal["intact"]) == intact_before
+
+    def test_second_run_repairs_nothing(self, pg_functional):
+        from plone.pgcatalog.maintenance import repair_uncataloged
+
+        portal, catalog = self._setup(pg_functional)
+        repair_uncataloged(catalog, portal)
+        transaction.commit()
+        assert repair_uncataloged(catalog, portal).paths == []
+
+    def test_dry_run_writes_nothing(self, pg_functional):
+        from plone.pgcatalog.maintenance import repair_uncataloged
+
+        portal, catalog = self._setup(pg_functional)
+        result = repair_uncataloged(catalog, portal, dry_run=True)
+        transaction.commit()
+
+        assert result.paths == ["/plone/rep-folder/broken"]
+        path, has_idx, _ = _row_by_zoid(pg_functional, portal["rep-folder"]["broken"])
+        assert (path, has_idx) == (None, False)
+
+    def test_all_objects_recatalogs_intact_content_too(self, pg_functional):
+        from plone.pgcatalog.maintenance import repair_uncataloged
+
+        portal, catalog = self._setup(pg_functional)
+        result = repair_uncataloged(catalog, portal, all_objects=True)
+        transaction.commit()
+
+        assert "/plone/intact" in result.paths
+        assert "/plone/rep-folder/broken" in result.paths
+
+    def test_never_catalogs_tools_or_the_catalog(self, pg_functional):
+        from plone.pgcatalog.maintenance import repair_uncataloged
+
+        portal, catalog = self._setup(pg_functional)
+        result = repair_uncataloged(catalog, portal, all_objects=True, dry_run=True)
+
+        for tool in ("portal_catalog", "portal_setup", "acl_users"):
+            assert not any(p.startswith(f"/plone/{tool}") for p in result.paths), tool
+
+    def test_one_failing_object_does_not_abort(self, pg_functional, monkeypatch):
+        from plone.pgcatalog.maintenance import repair_uncataloged
+
+        portal, catalog = self._setup(pg_functional)
+        _wipe_catalog_row(pg_functional, "/plone/intact")
+        from Acquisition import aq_base
+
+        tool_class = type(aq_base(catalog))
+        original = tool_class.catalog_object
+
+        def flaky(self, obj, uid=None, *args, **kw):
+            if uid == "/plone/rep-folder/broken":
+                raise RuntimeError("boom")
+            return original(self, obj, uid, *args, **kw)
+
+        monkeypatch.setattr(tool_class, "catalog_object", flaky)
+        result = repair_uncataloged(catalog, portal)
+        transaction.commit()
+
+        assert result.failed == ["/plone/rep-folder/broken"]
+        assert result.paths == ["/plone/intact"]
+
+
+class TestRepairUpgradeStep:
+    def test_upgrade_step_repairs(self, pg_functional):
+        from plone.pgcatalog.upgrades.profile_4 import repair_uncataloged_content
+
+        portal = pg_functional["portal"]
+        setRoles(portal, TEST_USER_ID, ["Manager"])
+        portal.invokeFactory("Document", "upg-doc", title="Upgrade")
+        transaction.commit()
+        _wipe_catalog_row(pg_functional, "/plone/upg-doc")
+
+        repair_uncataloged_content(portal["portal_setup"])
+        transaction.commit()
+
+        path, has_idx, _ = _row_by_zoid(pg_functional, portal["upg-doc"])
+        assert (path, has_idx) == ("/plone/upg-doc", True)
+
+    def test_upgrade_step_noop_without_pg_catalog(self, caplog):
+        from plone.pgcatalog.upgrades.profile_4 import repair_uncataloged_content
+
+        class FakeSite:
+            portal_catalog = object()
+
+        class FakeContext:
+            def getSite(self):
+                return FakeSite()
+
+        with caplog.at_level("INFO"):
+            repair_uncataloged_content(FakeContext())
+        assert "PG catalog not active" in caplog.text
+
+    def test_upgrade_step_skips_walk_without_candidates(
+        self, pg_functional, monkeypatch
+    ):
+        from plone.pgcatalog.upgrades import profile_4
+
+        portal = pg_functional["portal"]
+        monkeypatch.setattr(profile_4, "count_uncataloged_candidates", lambda conn: 0)
+        monkeypatch.setattr(
+            profile_4,
+            "repair_uncataloged",
+            lambda *a, **kw: pytest.fail("walk must be skipped"),
+        )
+        profile_4.repair_uncataloged_content(portal["portal_setup"])
+
+    def test_profile_version_is_4(self):
+        from pathlib import Path
+
+        import plone.pgcatalog
+
+        metadata = (
+            Path(plone.pgcatalog.__file__).parent / "profiles/default/metadata.xml"
+        ).read_text()
+        assert "<version>4</version>" in metadata
+
+
+class TestRepairHardening:
+    def test_refuses_unfixed_storage(self, pg_functional, monkeypatch):
+        from plone.pgcatalog import maintenance
+
+        portal = pg_functional["portal"]
+        monkeypatch.setattr(maintenance, "_dist_version", lambda name: "1.16.2")
+        with pytest.raises(RuntimeError, match="zodb-pgjsonb"):
+            maintenance.repair_uncataloged(portal["portal_catalog"], portal)
+
+    def test_accepts_fixed_storage(self, monkeypatch):
+        from plone.pgcatalog import maintenance
+
+        monkeypatch.setattr(maintenance, "_dist_version", lambda name: "1.17.0")
+        maintenance._check_storage_fixed()
+
+    def test_conflict_retries_batch_once(self, pg_functional, monkeypatch):
+        from plone.pgcatalog import maintenance
+        from ZODB.POSException import ConflictError
+
+        portal, catalog = TestRepairUncataloged()._setup(pg_functional)
+        original = maintenance._commit_and_minimize
+        calls = []
+
+        def conflict_once(jar):
+            calls.append(1)
+            if len(calls) == 1:
+                raise ConflictError("simulated")
+            return original(jar)
+
+        monkeypatch.setattr(maintenance, "_commit_and_minimize", conflict_once)
+        result = maintenance.repair_uncataloged(catalog, portal)
+
+        assert len(calls) == 2
+        assert result.paths == ["/plone/rep-folder/broken"]
+        assert result.failed == []
+        path, has_idx, _ = _row_by_zoid(pg_functional, portal["rep-folder"]["broken"])
+        assert (path, has_idx) == ("/plone/rep-folder/broken", True)
+
+    def test_second_conflict_reports_batch_as_failed(self, pg_functional, monkeypatch):
+        from plone.pgcatalog import maintenance
+        from ZODB.POSException import ConflictError
+
+        portal, catalog = TestRepairUncataloged()._setup(pg_functional)
+
+        def always_conflict(jar):
+            raise ConflictError("simulated")
+
+        monkeypatch.setattr(maintenance, "_commit_and_minimize", always_conflict)
+        result = maintenance.repair_uncataloged(catalog, portal)
+
+        assert result.paths == []
+        assert result.failed == ["/plone/rep-folder/broken"]
+        path, has_idx, _ = _row_by_zoid(pg_functional, portal["rep-folder"]["broken"])
+        assert (path, has_idx) == (None, False)
+
+    def test_analyze_after_repair(self, pg_functional, caplog):
+        from plone.pgcatalog.maintenance import repair_uncataloged
+
+        portal, catalog = TestRepairUncataloged()._setup(pg_functional)
+        with caplog.at_level("INFO"):
+            repair_uncataloged(catalog, portal)
+        assert "ANALYZE object_state" in caplog.text
+
+    def test_no_analyze_in_dry_run(self, pg_functional, caplog):
+        from plone.pgcatalog.maintenance import repair_uncataloged
+
+        portal, catalog = TestRepairUncataloged()._setup(pg_functional)
+        with caplog.at_level("INFO"):
+            repair_uncataloged(catalog, portal, dry_run=True)
+        assert "ANALYZE object_state" not in caplog.text
+
+    def test_candidate_count_sees_a_wiped_row(self, pg_functional):
+        from plone.pgcatalog.maintenance import count_uncataloged_candidates
+        from plone.pgcatalog.pool import get_pool
+
+        portal = pg_functional["portal"]
+        setRoles(portal, TEST_USER_ID, ["Manager"])
+        portal.invokeFactory("Document", "cnt-doc", title="Count")
+        transaction.commit()
+        pool = get_pool(portal["portal_catalog"])
+        conn = pool.getconn()
+        try:
+            before = count_uncataloged_candidates(conn)
+            _wipe_catalog_row(pg_functional, "/plone/cnt-doc")
+            # Delta, not absolute: other tests leave unpacked deleted objects.
+            assert count_uncataloged_candidates(conn) == before + 1
+        finally:
+            pool.putconn(conn)
+
+    def test_walk_uses_a_deque(self, pg_functional):
+        """_walk_site_paths must not pop(0) from a list (quadratic)."""
+        from plone.pgcatalog.catalog import PlonePGCatalogTool
+
+        import inspect
+
+        source = inspect.getsource(PlonePGCatalogTool._walk_site_paths)
+        assert "popleft()" in source
+        assert "pop(0)" not in source
+
+
+class TestRepairCommitErrors:
+    """Separate class: the PG layer keeps one pool connection per test until
+    the class ends, and the pool has 10 (see the #244 ledger)."""
+
+    def test_non_conflict_commit_error_fails_only_that_batch(
+        self, pg_functional, monkeypatch
+    ):
+        from Acquisition import aq_base
+        from plone.pgcatalog import maintenance
+
+        portal, catalog = TestRepairUncataloged()._setup(pg_functional)
+        _wipe_catalog_row(pg_functional, "/plone/intact")
+        tool_class = type(aq_base(catalog))
+        original_catalog = tool_class.catalog_object
+        original_commit = maintenance._commit_and_minimize
+        poisoned = []
+
+        def catalog_and_mark(self, obj, uid=None, *args, **kw):
+            if uid == "/plone/rep-folder/broken":
+                poisoned.append(uid)
+            return original_catalog(self, obj, uid, *args, **kw)
+
+        def commit_fails_when_poisoned(jar):
+            if poisoned:
+                poisoned.clear()
+                raise ValueError("cannot serialize this object")
+            return original_commit(jar)
+
+        monkeypatch.setattr(tool_class, "catalog_object", catalog_and_mark)
+        monkeypatch.setattr(
+            maintenance, "_commit_and_minimize", commit_fails_when_poisoned
+        )
+        result = maintenance.repair_uncataloged(catalog, portal, batch_size=1)
+
+        assert result.failed == ["/plone/rep-folder/broken"]
+        assert result.paths == ["/plone/intact"]
+        assert _row_by_zoid(pg_functional, portal["intact"])[:2] == (
+            "/plone/intact",
+            True,
+        )
+
+    def test_repaired_and_failed_paths_are_logged(
+        self, pg_functional, monkeypatch, caplog
+    ):
+        from plone.pgcatalog import maintenance
+        from ZODB.POSException import ConflictError
+
+        portal, catalog = TestRepairUncataloged()._setup(pg_functional)
+        with caplog.at_level("INFO"):
+            maintenance.repair_uncataloged(catalog, portal)
+        assert "/plone/rep-folder/broken" in caplog.text
+
+        _wipe_catalog_row(pg_functional, "/plone/rep-folder/broken")
+        caplog.clear()
+
+        def always_conflict(jar):
+            raise ConflictError("simulated")
+
+        monkeypatch.setattr(maintenance, "_commit_and_minimize", always_conflict)
+        with caplog.at_level("INFO"):
+            maintenance.repair_uncataloged(catalog, portal)
+        failed_lines = [r for r in caplog.records if r.levelname == "WARNING"]
+        assert any("/plone/rep-folder/broken" in r.getMessage() for r in failed_lines)
+
+
+def _png_bytes():
+    from io import BytesIO
+    from PIL import Image
+
+    buffer = BytesIO()
+    Image.new("RGB", (64, 64), (200, 30, 30)).save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+class TestPlainWritesKeepCatalogData:
+    """Writes without a full reindex must not uncatalog (zodb-pgjsonb#120)."""
+
+    def _doc(self, pg_functional, doc_id, portal_type="Document"):
+        portal = pg_functional["portal"]
+        setRoles(portal, TEST_USER_ID, ["Manager"])
+        login(portal, TEST_USER_NAME)
+        portal.invokeFactory(portal_type, doc_id, title="Doc")
+        transaction.commit()
+        doc = portal[doc_id]
+        assert _row_by_zoid(pg_functional, doc)[:2] == (f"/plone/{doc_id}", True)
+        return portal, doc
+
+    def _assert_cataloged(self, pg_functional, doc, doc_id):
+        assert _row_by_zoid(pg_functional, doc)[:2] == (f"/plone/{doc_id}", True)
+        logout()
+
+    def test_plain_attribute_write(self, pg_functional):
+        portal, doc = self._doc(pg_functional, "pw-plain")
+        doc.some_attr = 1
+        transaction.commit()
+        self._assert_cataloged(pg_functional, doc, "pw-plain")
+
+    def test_write_plus_partial_reindex(self, pg_functional):
+        portal, doc = self._doc(pg_functional, "pw-partial")
+        doc.some_attr = 1
+        doc.notifyModified()
+        doc.reindexObject(idxs=["modified"])
+        transaction.commit()
+        self._assert_cataloged(pg_functional, doc, "pw-partial")
+
+    def test_local_roles_plus_security_reindex(self, pg_functional):
+        portal, doc = self._doc(pg_functional, "pw-sharing")
+        doc.manage_setLocalRoles("someone", ["Reader"])
+        doc.reindexObjectSecurity()
+        transaction.commit()
+        self._assert_cataloged(pg_functional, doc, "pw-sharing")
+
+    def test_edit_lock(self, pg_functional):
+        from plone.locking.interfaces import ILockable
+
+        portal, doc = self._doc(pg_functional, "pw-lock")
+        ILockable(doc).lock()
+        transaction.commit()
+        self._assert_cataloged(pg_functional, doc, "pw-lock")
+
+    def test_display_menu_layout(self, pg_functional):
+        portal, doc = self._doc(pg_functional, "pw-layout")
+        doc.setLayout("document_view")
+        transaction.commit()
+        self._assert_cataloged(pg_functional, doc, "pw-layout")
+
+    def test_workflow_transition(self, pg_functional):
+        portal, doc = self._doc(pg_functional, "pw-transition")
+        # The test fixture has no workflow chain for Document.
+        portal.portal_workflow.setChainForPortalTypes(
+            ("Document",), ("simple_publication_workflow",)
+        )
+        portal.portal_workflow.doActionFor(doc, "publish")
+        assert portal.portal_workflow.getInfoFor(doc, "review_state") == "published"
+        transaction.commit()
+        self._assert_cataloged(pg_functional, doc, "pw-transition")
+
+    def test_image_scale_in_listing(self, pg_functional):
+        """Live search / listings create scales: plone.scale annotation + safeWrite."""
+        from plone.namedfile.file import NamedBlobImage
+
+        portal, img = self._doc(pg_functional, "pw-img", portal_type="Image")
+        img.image = NamedBlobImage(data=_png_bytes(), filename="x.png")
+        img.reindexObject()
+        transaction.commit()
+        assert _row_by_zoid(pg_functional, img)[:2] == ("/plone/pw-img", True)
+
+        scale = img.restrictedTraverse("@@images").scale("image", scale="thumb")
+        assert scale is not None
+        transaction.commit()
+        self._assert_cataloged(pg_functional, img, "pw-img")
+
+
+@pytest.fixture
+def tika_queue(pg_functional, monkeypatch):
+    """Enable Tika enqueueing in the processor and provide the queue table."""
+    from plone.pgcatalog import processor
+    from plone.pgcatalog.schema import TEXT_EXTRACTION_QUEUE
+
+    test_db = pg_functional["pgTestDB"]
+    with test_db.connection.cursor() as cur:
+        cur.execute(TEXT_EXTRACTION_QUEUE)
+        cur.execute("DELETE FROM text_extraction_queue")
+    monkeypatch.setattr(processor, "TIKA_URL", "http://tika.invalid:9998")
+    yield test_db.connection
+    with test_db.connection.cursor() as cur:
+        cur.execute("DROP TABLE IF EXISTS text_extraction_queue")
+
+
+class TestRequeueLostExtractions:
+    def _file(self, pg_functional, tika_queue, file_id):
+        from plone.namedfile.file import NamedBlobFile
+
+        portal = pg_functional["portal"]
+        setRoles(portal, TEST_USER_ID, ["Manager"])
+        portal.invokeFactory("File", file_id, title="A file")
+        portal[file_id].file = NamedBlobFile(
+            data=b"%PDF-1.4 fake", filename=f"{file_id}.pdf"
+        )
+        portal[file_id].reindexObject()
+        transaction.commit()
+        return portal, portal["portal_catalog"]
+
+    def _queue(self, tika_queue, file_obj):
+        from ZODB.utils import u64
+
+        with tika_queue.cursor() as cur:
+            cur.execute(
+                "SELECT status, attempts FROM text_extraction_queue WHERE zoid = %s",
+                (u64(file_obj._p_oid),),
+            )
+            return cur.fetchall()
+
+    def _set_status(self, tika_queue, file_obj, status):
+        from ZODB.utils import u64
+
+        with tika_queue.cursor() as cur:
+            cur.execute(
+                "UPDATE text_extraction_queue SET status = %s, attempts = 3 "
+                "WHERE zoid = %s",
+                (status, u64(file_obj._p_oid)),
+            )
+
+    def test_file_is_enqueued_on_creation(self, pg_functional, tika_queue):
+        portal, _ = self._file(pg_functional, tika_queue, "rq-enq")
+        assert self._queue(tika_queue, portal["rq-enq"]) == [("pending", 0)]
+
+    def test_dry_run_lists_lost_text_and_writes_nothing(
+        self, pg_functional, tika_queue
+    ):
+        from plone.pgcatalog.maintenance import requeue_lost_extractions
+
+        portal, catalog = self._file(pg_functional, tika_queue, "rq-dry")
+        self._set_status(tika_queue, portal["rq-dry"], "done")
+
+        result = requeue_lost_extractions(catalog, dry_run=True)
+        transaction.commit()
+
+        assert result.paths == ["/plone/rq-dry"]
+        assert self._queue(tika_queue, portal["rq-dry"]) == [("done", 3)]
+
+    def test_requeues_lost_text(self, pg_functional, tika_queue):
+        from plone.pgcatalog.maintenance import requeue_lost_extractions
+
+        portal, catalog = self._file(pg_functional, tika_queue, "rq-lost")
+        self._set_status(tika_queue, portal["rq-lost"], "done")
+
+        result = requeue_lost_extractions(catalog)
+        transaction.commit()
+
+        assert result.paths == ["/plone/rq-lost"]
+        assert result.failed == []
+        assert self._queue(tika_queue, portal["rq-lost"]) == [("pending", 0)]
+
+    def test_leaves_files_with_extracted_text_alone(self, pg_functional, tika_queue):
+        from plone.pgcatalog.maintenance import requeue_lost_extractions
+        from ZODB.utils import u64
+
+        portal, catalog = self._file(pg_functional, tika_queue, "rq-ok")
+        self._set_status(tika_queue, portal["rq-ok"], "done")
+        with tika_queue.cursor() as cur:
+            cur.execute(
+                "UPDATE object_state SET searchable_text = "
+                "COALESCE(searchable_text, ''::tsvector) || "
+                "setweight(to_tsvector('simple', 'pdf words'), 'C') "
+                "WHERE zoid = %s",
+                (u64(portal["rq-ok"]._p_oid),),
+            )
+
+        result = requeue_lost_extractions(catalog)
+        transaction.commit()
+
+        assert result.paths == []
+        assert self._queue(tika_queue, portal["rq-ok"]) == [("done", 3)]
+
+    def test_failed_jobs_only_with_include_failed(self, pg_functional, tika_queue):
+        from plone.pgcatalog.maintenance import requeue_lost_extractions
+
+        portal, catalog = self._file(pg_functional, tika_queue, "rq-failed")
+        self._set_status(tika_queue, portal["rq-failed"], "failed")
+
+        assert requeue_lost_extractions(catalog).paths == []
+        assert self._queue(tika_queue, portal["rq-failed"]) == [("failed", 3)]
+
+        result = requeue_lost_extractions(catalog, include_failed=True)
+        transaction.commit()
+        assert result.paths == ["/plone/rq-failed"]
+        assert self._queue(tika_queue, portal["rq-failed"]) == [("pending", 0)]
+
+    def test_no_queue_table_is_a_noop(self, pg_functional):
+        from plone.pgcatalog.maintenance import requeue_lost_extractions
+
+        portal = pg_functional["portal"]
+        with pg_functional["pgTestDB"].connection.cursor() as cur:
+            cur.execute("DROP TABLE IF EXISTS text_extraction_queue")
+
+        result = requeue_lost_extractions(portal["portal_catalog"])
+        assert (result.checked, result.paths, result.failed) == (0, [], [])
+
+    def test_refuses_without_tika_url(self, pg_functional, tika_queue, monkeypatch):
+        from plone.pgcatalog import processor
+        from plone.pgcatalog.maintenance import requeue_lost_extractions
+
+        portal, catalog = self._file(pg_functional, tika_queue, "rq-env")
+        self._set_status(tika_queue, portal["rq-env"], "done")
+        monkeypatch.setattr(processor, "TIKA_URL", "")
+
+        with pytest.raises(RuntimeError, match="PGCATALOG_TIKA_URL"):
+            requeue_lost_extractions(catalog)
+        assert self._queue(tika_queue, portal["rq-env"]) == [("done", 3)]

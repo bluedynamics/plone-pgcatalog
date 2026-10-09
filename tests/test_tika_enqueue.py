@@ -1,5 +1,7 @@
 """Tests for Tika extraction enqueue logic in CatalogStateProcessor."""
 
+from datetime import datetime
+from datetime import UTC
 from plone.pgcatalog.processor import _should_extract
 from plone.pgcatalog.processor import CatalogStateProcessor
 from plone.pgcatalog.processor import TIKA_URL
@@ -636,6 +638,53 @@ class TestEnqueueUnit:
         assert rows[0]["tid"] == 7
         assert rows[0]["content_type"] == "image/png"
         assert rows[0]["status"] == "pending"
+
+    @pytest.mark.parametrize("status", ["done", "failed", "processing"])
+    def test_insert_queue_row_repends_finished_rows(self, pg_conn_with_queue, status):
+        """A full reindex rewrote searchable_text, so the job must run again."""
+        conn = pg_conn_with_queue
+        proc = CatalogStateProcessor()
+        with conn.cursor(row_factory=dict_row) as cur:
+            proc._insert_queue_row(
+                cur, zoid=42, blob_zoid=43, tid=7, content_type="application/pdf"
+            )
+            cur.execute(
+                "UPDATE text_extraction_queue SET status = %s, attempts = 3, "
+                "deferrals = 2, error = 'x', not_before = now() + interval '1 hour'",
+                (status,),
+            )
+            proc._insert_queue_row(
+                cur, zoid=42, blob_zoid=43, tid=7, content_type="application/pdf"
+            )
+        conn.commit()
+
+        (row,) = self._get_queue(conn)
+        assert row["status"] == "pending"
+        assert (row["attempts"], row["deferrals"], row["error"]) == (0, 0, None)
+        assert row["not_before"] <= datetime.now(UTC)
+
+    @pytest.mark.parametrize("status", ["pending", "skipped"])
+    def test_insert_queue_row_leaves_pending_and_skipped_alone(
+        self, pg_conn_with_queue, status
+    ):
+        conn = pg_conn_with_queue
+        proc = CatalogStateProcessor()
+        with conn.cursor(row_factory=dict_row) as cur:
+            proc._insert_queue_row(
+                cur, zoid=42, blob_zoid=43, tid=7, content_type="image/png"
+            )
+            cur.execute(
+                "UPDATE text_extraction_queue SET status = %s, attempts = 2, "
+                "error = 'kept'",
+                (status,),
+            )
+            proc._insert_queue_row(
+                cur, zoid=42, blob_zoid=43, tid=7, content_type="image/png"
+            )
+        conn.commit()
+
+        (row,) = self._get_queue(conn)
+        assert (row["status"], row["attempts"], row["error"]) == (status, 2, "kept")
 
 
 class TestQueueSchema:
