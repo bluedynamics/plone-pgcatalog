@@ -1389,7 +1389,7 @@ class TestMaintenanceOps:
         assert row is not None
         assert row[3]["Title"] == "Original"
 
-        # Change title in memory (do NOT commit — that would NULL idx)
+        # Change title in memory only; refreshCatalog must pick it up from ZODB
         portal["rc-doc"].setTitle("Refreshed")
 
         # refreshCatalog re-catalogs from live ZODB objects
@@ -2136,3 +2136,91 @@ class TestRepairHardening:
         source = inspect.getsource(PlonePGCatalogTool._walk_site_paths)
         assert "popleft()" in source
         assert "pop(0)" not in source
+
+
+def _png_bytes():
+    from io import BytesIO
+    from PIL import Image
+
+    buffer = BytesIO()
+    Image.new("RGB", (64, 64), (200, 30, 30)).save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+class TestPlainWritesKeepCatalogData:
+    """Writes without a full reindex must not uncatalog (zodb-pgjsonb#120)."""
+
+    def _doc(self, pg_functional, doc_id, portal_type="Document"):
+        portal = pg_functional["portal"]
+        setRoles(portal, TEST_USER_ID, ["Manager"])
+        login(portal, TEST_USER_NAME)
+        portal.invokeFactory(portal_type, doc_id, title="Doc")
+        transaction.commit()
+        doc = portal[doc_id]
+        assert _row_by_zoid(pg_functional, doc)[:2] == (f"/plone/{doc_id}", True)
+        return portal, doc
+
+    def _assert_cataloged(self, pg_functional, doc, doc_id):
+        assert _row_by_zoid(pg_functional, doc)[:2] == (f"/plone/{doc_id}", True)
+        logout()
+
+    def test_plain_attribute_write(self, pg_functional):
+        portal, doc = self._doc(pg_functional, "pw-plain")
+        doc.some_attr = 1
+        transaction.commit()
+        self._assert_cataloged(pg_functional, doc, "pw-plain")
+
+    def test_write_plus_partial_reindex(self, pg_functional):
+        portal, doc = self._doc(pg_functional, "pw-partial")
+        doc.some_attr = 1
+        doc.notifyModified()
+        doc.reindexObject(idxs=["modified"])
+        transaction.commit()
+        self._assert_cataloged(pg_functional, doc, "pw-partial")
+
+    def test_local_roles_plus_security_reindex(self, pg_functional):
+        portal, doc = self._doc(pg_functional, "pw-sharing")
+        doc.manage_setLocalRoles("someone", ["Reader"])
+        doc.reindexObjectSecurity()
+        transaction.commit()
+        self._assert_cataloged(pg_functional, doc, "pw-sharing")
+
+    def test_edit_lock(self, pg_functional):
+        from plone.locking.interfaces import ILockable
+
+        portal, doc = self._doc(pg_functional, "pw-lock")
+        ILockable(doc).lock()
+        transaction.commit()
+        self._assert_cataloged(pg_functional, doc, "pw-lock")
+
+    def test_display_menu_layout(self, pg_functional):
+        portal, doc = self._doc(pg_functional, "pw-layout")
+        doc.setLayout("document_view")
+        transaction.commit()
+        self._assert_cataloged(pg_functional, doc, "pw-layout")
+
+    def test_workflow_transition(self, pg_functional):
+        portal, doc = self._doc(pg_functional, "pw-transition")
+        # The test fixture has no workflow chain for Document.
+        portal.portal_workflow.setChainForPortalTypes(
+            ("Document",), ("simple_publication_workflow",)
+        )
+        portal.portal_workflow.doActionFor(doc, "publish")
+        assert portal.portal_workflow.getInfoFor(doc, "review_state") == "published"
+        transaction.commit()
+        self._assert_cataloged(pg_functional, doc, "pw-transition")
+
+    def test_image_scale_in_listing(self, pg_functional):
+        """Live search / listings create scales: plone.scale annotation + safeWrite."""
+        from plone.namedfile.file import NamedBlobImage
+
+        portal, img = self._doc(pg_functional, "pw-img", portal_type="Image")
+        img.image = NamedBlobImage(data=_png_bytes(), filename="x.png")
+        img.reindexObject()
+        transaction.commit()
+        assert _row_by_zoid(pg_functional, img)[:2] == ("/plone/pw-img", True)
+
+        scale = img.restrictedTraverse("@@images").scale("image", scale="thumb")
+        assert scale is not None
+        transaction.commit()
+        self._assert_cataloged(pg_functional, img, "pw-img")

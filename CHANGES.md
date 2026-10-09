@@ -22,8 +22,8 @@
   catalog and recatalogs only content whose row lacks catalog data. The
   upgrade step to profile version 4 runs it once; the how-to "Rebuild or
   reindex the catalog" shows how to run it from the command line with a
-  dry run. Requires the zodb-pgjsonb release with the fix, so repaired
-  content cannot be wiped again. #244
+  dry run. Requires zodb-pgjsonb >= 1.17.0, so repaired content cannot be
+  wiped again. #244
 
 ## 1.0.0rc5 (2026-10-05)
 
