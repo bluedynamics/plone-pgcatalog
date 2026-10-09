@@ -24,6 +24,7 @@ from AccessControl.Permissions import manage_zcatalog_indexes
 from AccessControl.Permissions import search_zcatalog
 from Acquisition import aq_base
 from App.special_dtml import DTMLFile
+from collections import deque
 from contextlib import contextmanager
 from OFS.Folder import Folder
 from plone.pgcatalog.backends import BM25Backend
@@ -1054,11 +1055,11 @@ class PlonePGCatalogTool(UniqueObject, Folder):
         content without conversations.
         """
         site_path = "/".join(site.getPhysicalPath())
-        queue = [site_path]
+        queue = deque([site_path])
         seen = set()  # guard against acquisition-based loops
 
         while queue:
-            path = queue.pop(0)
+            path = queue.popleft()
             if path in seen:
                 continue
             seen.add(path)

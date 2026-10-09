@@ -9,6 +9,7 @@ from Acquisition import aq_base
 from Acquisition import aq_inner
 from Acquisition import aq_parent
 from Acquisition import Implicit
+from importlib.metadata import version as _dist_version
 from Persistence import Persistent
 from persistent.mapping import PersistentMapping
 from plone.folder.interfaces import IExplicitOrdering
@@ -19,11 +20,14 @@ from plone.pgcatalog.pgindex import _maybe_wrap_index
 from plone.pgcatalog.pool import get_pool
 from psycopg import sql as pgsql
 from typing import NamedTuple
+from ZODB.POSException import ConflictError
 from ZODB.utils import u64
 from zope.component.hooks import getSite
 from zope.component.hooks import site as site_context
 
+import importlib
 import logging
+import re
 import transaction
 
 
@@ -200,6 +204,80 @@ def resync_gopip(root, conn):
     return folders, rows
 
 
+_PGJSONB_FIXED = (1, 17, 0)  # zodb-pgjsonb#120: plain writes no longer wipe columns
+
+
+def _check_storage_fixed():
+    """Refuse to repair against a zodb-pgjsonb that wipes catalog columns.
+
+    The version pin in pyproject.toml only binds at install time; a build
+    with --no-deps or overridden constraints can still run the old storage,
+    which would uncatalog repaired objects again on their next plain write.
+    """
+    installed = _dist_version("zodb-pgjsonb")
+    match = re.match(r"(\d+)\.(\d+)\.(\d+)", installed)
+    if match is None or tuple(map(int, match.groups())) < _PGJSONB_FIXED:
+        raise RuntimeError(
+            f"zodb-pgjsonb {installed} still wipes catalog columns on plain "
+            "writes (zodb-pgjsonb#120); upgrade to >= 1.17.0 before repairing"
+        )
+
+
+def _commit_batch(jar, done, broken, redo):
+    """Commit a repaired batch; on a write conflict abort and redo it once.
+
+    *done* and *broken* are the first attempt's results; ``redo()`` repeats
+    the batch (including any health check, since a concurrent editor may
+    have recataloged meanwhile) and returns new ones.  Returns the results
+    of the attempt that committed, or ``([], all paths)`` after a second
+    conflict.
+    """
+    try:
+        _commit_and_minimize(jar)
+        return done, broken
+    except ConflictError:
+        transaction.abort()
+        log.info("conflict on batch commit; retrying the batch once")
+    done, broken = redo()
+    try:
+        _commit_and_minimize(jar)
+        return done, broken
+    except ConflictError:
+        transaction.abort()
+        log.warning("batch conflicted twice; %d paths reported as failed", len(done))
+        return [], broken + done
+
+
+def _catalogable_class(class_mod, class_name):
+    """True when instances of the class could be cataloged (or unknown)."""
+    try:
+        cls = getattr(importlib.import_module(class_mod), class_name)
+    except Exception:
+        return True  # unknown or broken class: count it, the walk decides
+    return callable(getattr(cls, "reindexObject", None))
+
+
+def count_uncataloged_candidates(conn):
+    """Upper bound for what :func:`repair_uncataloged` can find.
+
+    Counts rows without catalog data whose class has ``reindexObject``.
+    Deleted but unpacked objects and catalog-aware objects Plone never
+    catalogs are included, so a positive count does not prove damage.
+    Zero proves there is none, and the site walk can be skipped.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT class_mod, class_name, count(*) AS n FROM object_state "
+            "WHERE idx IS NULL OR path IS NULL GROUP BY class_mod, class_name"
+        )
+        rows = cur.fetchall()
+    return sum(
+        row["n"]
+        for row in rows
+        if _catalogable_class(row["class_mod"], row["class_name"])
+    )
+
+
 class RepairResult(NamedTuple):
     """Outcome of :func:`repair_uncataloged`."""
 
@@ -266,6 +344,7 @@ def repair_uncataloged(
     Returns:
         RepairResult(checked, paths, failed)
     """
+    _check_storage_fixed()
     jar = catalog._p_jar
     checked = 0
     paths, failed = [], []
@@ -273,15 +352,20 @@ def repair_uncataloged(
 
     def flush():
         nonlocal checked, batch
-        checked += len(batch)
-        done, broken = _repair_batch(catalog, conn, batch, dry_run, all_objects)
-        paths.extend(done)
-        failed.extend(broken)
-        batch = []
+        current, batch = batch, []
+        checked += len(current)
+        done, broken = _repair_batch(catalog, conn, current, dry_run, all_objects)
         if dry_run:
             jar.cacheMinimize()
         else:
-            _commit_and_minimize(jar)
+            done, broken = _commit_batch(
+                jar,
+                done,
+                broken,
+                lambda: _repair_batch(catalog, conn, current, False, all_objects),
+            )
+        paths.extend(done)
+        failed.extend(broken)
 
     pool = get_pool(catalog)
     conn = pool.getconn()
@@ -296,6 +380,11 @@ def repair_uncataloged(
                     flush()
             if batch:
                 flush()
+        if paths and not dry_run:
+            # Bulk writes leave the planner statistics stale (#224).
+            with conn.cursor() as cur:
+                cur.execute("ANALYZE object_state")
+            log.info("repair_uncataloged: ANALYZE object_state done")
     finally:
         pool.putconn(conn)
 

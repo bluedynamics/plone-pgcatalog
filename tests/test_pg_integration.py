@@ -2013,6 +2013,20 @@ class TestRepairUpgradeStep:
             repair_uncataloged_content(FakeContext())
         assert "PG catalog not active" in caplog.text
 
+    def test_upgrade_step_skips_walk_without_candidates(
+        self, pg_functional, monkeypatch
+    ):
+        from plone.pgcatalog.upgrades import profile_4
+
+        portal = pg_functional["portal"]
+        monkeypatch.setattr(profile_4, "count_uncataloged_candidates", lambda conn: 0)
+        monkeypatch.setattr(
+            profile_4,
+            "repair_uncataloged",
+            lambda *a, **kw: pytest.fail("walk must be skipped"),
+        )
+        profile_4.repair_uncataloged_content(portal["portal_setup"])
+
     def test_profile_version_is_4(self):
         from pathlib import Path
 
@@ -2022,3 +2036,103 @@ class TestRepairUpgradeStep:
             Path(plone.pgcatalog.__file__).parent / "profiles/default/metadata.xml"
         ).read_text()
         assert "<version>4</version>" in metadata
+
+
+class TestRepairHardening:
+    def test_refuses_unfixed_storage(self, pg_functional, monkeypatch):
+        from plone.pgcatalog import maintenance
+
+        portal = pg_functional["portal"]
+        monkeypatch.setattr(maintenance, "_dist_version", lambda name: "1.16.2")
+        with pytest.raises(RuntimeError, match="zodb-pgjsonb"):
+            maintenance.repair_uncataloged(portal["portal_catalog"], portal)
+
+    def test_accepts_fixed_storage(self, monkeypatch):
+        from plone.pgcatalog import maintenance
+
+        monkeypatch.setattr(maintenance, "_dist_version", lambda name: "1.17.0")
+        maintenance._check_storage_fixed()
+
+    def test_conflict_retries_batch_once(self, pg_functional, monkeypatch):
+        from plone.pgcatalog import maintenance
+        from ZODB.POSException import ConflictError
+
+        portal, catalog = TestRepairUncataloged()._setup(pg_functional)
+        original = maintenance._commit_and_minimize
+        calls = []
+
+        def conflict_once(jar):
+            calls.append(1)
+            if len(calls) == 1:
+                raise ConflictError("simulated")
+            return original(jar)
+
+        monkeypatch.setattr(maintenance, "_commit_and_minimize", conflict_once)
+        result = maintenance.repair_uncataloged(catalog, portal)
+
+        assert len(calls) == 2
+        assert result.paths == ["/plone/rep-folder/broken"]
+        assert result.failed == []
+        path, has_idx, _ = _row_by_zoid(pg_functional, portal["rep-folder"]["broken"])
+        assert (path, has_idx) == ("/plone/rep-folder/broken", True)
+
+    def test_second_conflict_reports_batch_as_failed(self, pg_functional, monkeypatch):
+        from plone.pgcatalog import maintenance
+        from ZODB.POSException import ConflictError
+
+        portal, catalog = TestRepairUncataloged()._setup(pg_functional)
+
+        def always_conflict(jar):
+            raise ConflictError("simulated")
+
+        monkeypatch.setattr(maintenance, "_commit_and_minimize", always_conflict)
+        result = maintenance.repair_uncataloged(catalog, portal)
+
+        assert result.paths == []
+        assert result.failed == ["/plone/rep-folder/broken"]
+        path, has_idx, _ = _row_by_zoid(pg_functional, portal["rep-folder"]["broken"])
+        assert (path, has_idx) == (None, False)
+
+    def test_analyze_after_repair(self, pg_functional, caplog):
+        from plone.pgcatalog.maintenance import repair_uncataloged
+
+        portal, catalog = TestRepairUncataloged()._setup(pg_functional)
+        with caplog.at_level("INFO"):
+            repair_uncataloged(catalog, portal)
+        assert "ANALYZE object_state" in caplog.text
+
+    def test_no_analyze_in_dry_run(self, pg_functional, caplog):
+        from plone.pgcatalog.maintenance import repair_uncataloged
+
+        portal, catalog = TestRepairUncataloged()._setup(pg_functional)
+        with caplog.at_level("INFO"):
+            repair_uncataloged(catalog, portal, dry_run=True)
+        assert "ANALYZE object_state" not in caplog.text
+
+    def test_candidate_count_sees_a_wiped_row(self, pg_functional):
+        from plone.pgcatalog.maintenance import count_uncataloged_candidates
+        from plone.pgcatalog.pool import get_pool
+
+        portal = pg_functional["portal"]
+        setRoles(portal, TEST_USER_ID, ["Manager"])
+        portal.invokeFactory("Document", "cnt-doc", title="Count")
+        transaction.commit()
+        pool = get_pool(portal["portal_catalog"])
+        conn = pool.getconn()
+        try:
+            before = count_uncataloged_candidates(conn)
+            _wipe_catalog_row(pg_functional, "/plone/cnt-doc")
+            # Delta, not absolute: other tests leave unpacked deleted objects.
+            assert count_uncataloged_candidates(conn) == before + 1
+        finally:
+            pool.putconn(conn)
+
+    def test_walk_uses_a_deque(self, pg_functional):
+        """_walk_site_paths must not pop(0) from a list (quadratic)."""
+        from plone.pgcatalog.catalog import PlonePGCatalogTool
+
+        import inspect
+
+        source = inspect.getsource(PlonePGCatalogTool._walk_site_paths)
+        assert "popleft()" in source
+        assert "pop(0)" not in source

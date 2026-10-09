@@ -10,7 +10,9 @@ zodb-pgjsonb release, so the repaired rows cannot be wiped again.
 
 from Acquisition import aq_parent
 from plone.pgcatalog.interfaces import IPGCatalogTool
+from plone.pgcatalog.maintenance import count_uncataloged_candidates
 from plone.pgcatalog.maintenance import repair_uncataloged
+from plone.pgcatalog.pool import get_pool
 
 import logging
 
@@ -34,6 +36,16 @@ def repair_uncataloged_content(context):
     catalog = getattr(site, "portal_catalog", None)
     if catalog is None or not IPGCatalogTool.providedBy(catalog):
         log.info("repair_uncataloged_content: PG catalog not active; skipping")
+        return
+
+    pool = get_pool(catalog)
+    conn = pool.getconn()
+    try:
+        candidates = count_uncataloged_candidates(conn)
+    finally:
+        pool.putconn(conn)
+    if not candidates:
+        log.info("repair_uncataloged_content: no candidates; skipping site walk")
         return
 
     result = repair_uncataloged(catalog, site)
