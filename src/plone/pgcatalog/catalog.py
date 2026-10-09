@@ -38,7 +38,9 @@ from plone.pgcatalog.extraction import wrap_object
 from plone.pgcatalog.indexing import uncatalog_object as _sql_uncatalog
 from plone.pgcatalog.interfaces import IPGCatalogTool
 from plone.pgcatalog.maintenance import _CatalogCompat
+from plone.pgcatalog.maintenance import _commit_and_minimize
 from plone.pgcatalog.maintenance import _make_unsupported
+from plone.pgcatalog.maintenance import _REBUILD_BATCH
 from plone.pgcatalog.maintenance import _UNSUPPORTED
 from plone.pgcatalog.maintenance import clear_catalog_data
 from plone.pgcatalog.pending import _get_pending
@@ -63,13 +65,10 @@ from zope.component.hooks import getSite
 from zope.interface import implementer
 
 import logging
-import transaction
 import warnings
 
 
 log = logging.getLogger(__name__)
-
-_REBUILD_BATCH = 500  # commit + cache-minimize every N objects during rebuild
 
 # class_mod prefixes that are never content objects — safe to skip during
 # catalog rebuild.  These cover ~96% of rows in a typical Plone database.
@@ -85,18 +84,6 @@ _EXCLUDE_CLASS_MODS = (
     "plone.contentrules.engine.assignments",
     "plone.app.textfield.value",
 )
-
-
-def _commit_and_minimize(jar):
-    """Commit the current transaction and minimize the ZODB cache.
-
-    Committing flushes dirty objects to storage and clears the
-    thread-local pending catalog data, allowing ``cacheMinimize()``
-    to actually ghost them and reclaim memory.
-    """
-    transaction.commit()
-    if jar is not None:
-        jar.cacheMinimize()
 
 
 # ---------------------------------------------------------------------------

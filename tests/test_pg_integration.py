@@ -1863,3 +1863,121 @@ class TestGopipMaintenanceResync:
 
         assert (folders, rows) == (0, 0)
         assert _stored_ranks(pg_functional, folder_path) == before
+
+
+# ---------------------------------------------------------------------------
+# Repair of content uncataloged by zodb-pgjsonb#120 (#244)
+# ---------------------------------------------------------------------------
+
+
+def _wipe_catalog_row(pg_functional, path):
+    """Simulate zodb-pgjsonb#120 damage: catalog columns NULL, row kept."""
+    test_db = pg_functional["pgTestDB"]
+    with test_db.connection.cursor() as cur:
+        cur.execute(
+            "UPDATE object_state SET path = NULL, parent_path = NULL, "
+            "path_depth = NULL, idx = NULL, searchable_text = NULL "
+            "WHERE path = %s",
+            (path,),
+        )
+        assert cur.rowcount == 1
+
+
+def _row_by_zoid(pg_functional, obj):
+    from ZODB.utils import u64
+
+    rows = _query_pg(
+        pg_functional,
+        "SELECT path, idx IS NOT NULL, tid FROM object_state WHERE zoid = %s",
+        (u64(obj._p_oid),),
+    )
+    return rows[0]
+
+
+class TestRepairUncataloged:
+    def _setup(self, pg_functional):
+        portal = pg_functional["portal"]
+        setRoles(portal, TEST_USER_ID, ["Manager"])
+        portal.invokeFactory("Folder", "rep-folder", title="Folder")
+        portal["rep-folder"].invokeFactory("Document", "broken", title="Broken")
+        portal.invokeFactory("Document", "intact", title="Intact")
+        transaction.commit()
+        _wipe_catalog_row(pg_functional, "/plone/rep-folder/broken")
+        return portal, portal["portal_catalog"]
+
+    def test_repairs_only_damaged_content(self, pg_functional):
+        from plone.pgcatalog.maintenance import repair_uncataloged
+
+        portal, catalog = self._setup(pg_functional)
+        intact_before = _row_by_zoid(pg_functional, portal["intact"])
+
+        result = repair_uncataloged(catalog, portal)
+        transaction.commit()
+
+        assert result.paths == ["/plone/rep-folder/broken"]
+        assert result.failed == []
+        assert result.checked >= 3
+        path, has_idx, _ = _row_by_zoid(pg_functional, portal["rep-folder"]["broken"])
+        assert (path, has_idx) == ("/plone/rep-folder/broken", True)
+        # intact content is not rewritten
+        assert _row_by_zoid(pg_functional, portal["intact"]) == intact_before
+
+    def test_second_run_repairs_nothing(self, pg_functional):
+        from plone.pgcatalog.maintenance import repair_uncataloged
+
+        portal, catalog = self._setup(pg_functional)
+        repair_uncataloged(catalog, portal)
+        transaction.commit()
+        assert repair_uncataloged(catalog, portal).paths == []
+
+    def test_dry_run_writes_nothing(self, pg_functional):
+        from plone.pgcatalog.maintenance import repair_uncataloged
+
+        portal, catalog = self._setup(pg_functional)
+        result = repair_uncataloged(catalog, portal, dry_run=True)
+        transaction.commit()
+
+        assert result.paths == ["/plone/rep-folder/broken"]
+        path, has_idx, _ = _row_by_zoid(pg_functional, portal["rep-folder"]["broken"])
+        assert (path, has_idx) == (None, False)
+
+    def test_all_objects_recatalogs_intact_content_too(self, pg_functional):
+        from plone.pgcatalog.maintenance import repair_uncataloged
+
+        portal, catalog = self._setup(pg_functional)
+        result = repair_uncataloged(catalog, portal, all_objects=True)
+        transaction.commit()
+
+        assert "/plone/intact" in result.paths
+        assert "/plone/rep-folder/broken" in result.paths
+
+    def test_never_catalogs_tools_or_the_catalog(self, pg_functional):
+        from plone.pgcatalog.maintenance import repair_uncataloged
+
+        portal, catalog = self._setup(pg_functional)
+        result = repair_uncataloged(catalog, portal, all_objects=True, dry_run=True)
+
+        for tool in ("portal_catalog", "portal_setup", "acl_users"):
+            assert not any(p.startswith(f"/plone/{tool}") for p in result.paths), tool
+
+    def test_one_failing_object_does_not_abort(self, pg_functional, monkeypatch):
+        from plone.pgcatalog.maintenance import repair_uncataloged
+
+        portal, catalog = self._setup(pg_functional)
+        _wipe_catalog_row(pg_functional, "/plone/intact")
+        from Acquisition import aq_base
+
+        tool_class = type(aq_base(catalog))
+        original = tool_class.catalog_object
+
+        def flaky(self, obj, uid=None, *args, **kw):
+            if uid == "/plone/rep-folder/broken":
+                raise RuntimeError("boom")
+            return original(self, obj, uid, *args, **kw)
+
+        monkeypatch.setattr(tool_class, "catalog_object", flaky)
+        result = repair_uncataloged(catalog, portal)
+        transaction.commit()
+
+        assert result.failed == ["/plone/rep-folder/broken"]
+        assert result.paths == ["/plone/intact"]

@@ -16,16 +16,34 @@ from plone.pgcatalog.backends import get_backend
 from plone.pgcatalog.gopip import sync_folder_ranks
 from plone.pgcatalog.indexing import reindex_object as _sql_reindex
 from plone.pgcatalog.pgindex import _maybe_wrap_index
+from plone.pgcatalog.pool import get_pool
 from psycopg import sql as pgsql
+from typing import NamedTuple
+from ZODB.utils import u64
 from zope.component.hooks import getSite
+from zope.component.hooks import site as site_context
 
 import logging
+import transaction
 
 
 log = logging.getLogger(__name__)
 
 
 _REINDEX_BATCH_SIZE = 500
+_REBUILD_BATCH = 500  # commit + cache-minimize every N objects during rebuild
+
+
+def _commit_and_minimize(jar):
+    """Commit the current transaction and minimize the ZODB cache.
+
+    Committing flushes dirty objects to storage and clears the
+    thread-local pending catalog data, allowing ``cacheMinimize()``
+    to actually ghost them and reclaim memory.
+    """
+    transaction.commit()
+    if jar is not None:
+        jar.cacheMinimize()
 
 
 def reindex_index(conn, name, batch_size=_REINDEX_BATCH_SIZE):
@@ -180,6 +198,115 @@ def resync_gopip(root, conn):
 
     log.info("resync_gopip: %d folders updated, %d rank rows total", folders, rows)
     return folders, rows
+
+
+class RepairResult(NamedTuple):
+    """Outcome of :func:`repair_uncataloged`."""
+
+    checked: int  # catalogable objects visited
+    paths: list[str]  # recataloged paths (in a dry run: would be recataloged)
+    failed: list[str]  # paths whose catalog_object() raised
+
+
+def _is_catalogable(obj, catalog):
+    """Plone's own rebuild criterion: CMF-catalog-aware, never the catalog."""
+    base = aq_base(obj)
+    if base is aq_base(catalog):
+        return False
+    return callable(getattr(base, "reindexObject", None))
+
+
+def _healthy_zoids(conn, zoids):
+    """Return the subset of *zoids* whose rows carry catalog data."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT zoid FROM object_state WHERE zoid = ANY(%s) "
+            "AND path IS NOT NULL AND idx IS NOT NULL",
+            (zoids,),
+        )
+        return {row["zoid"] for row in cur.fetchall()}
+
+
+def _repair_batch(catalog, conn, batch, dry_run, all_objects):
+    """Recatalog the damaged entries of *batch*; return (paths, failed)."""
+    if all_objects:
+        todo = batch
+    else:
+        healthy = _healthy_zoids(conn, [zoid for zoid, _, _ in batch])
+        todo = [entry for entry in batch if entry[0] not in healthy]
+    paths, failed = [], []
+    for _, obj, path in todo:
+        if dry_run:
+            paths.append(path)
+            continue
+        try:
+            catalog.catalog_object(obj, path)
+        except Exception:
+            log.warning("repair_uncataloged: failed to catalog %s", path, exc_info=True)
+            failed.append(path)
+        else:
+            paths.append(path)
+    return paths, failed
+
+
+def repair_uncataloged(
+    catalog, site, *, dry_run=False, all_objects=False, batch_size=_REBUILD_BATCH
+):
+    """Recatalog content whose catalog columns are missing, without clearing.
+
+    Repairs rows wiped by zodb-pgjsonb#120: the object exists in the ZODB,
+    but ``path`` or ``idx`` is NULL, so it is invisible to catalog queries
+    and partial reindexes skip it.  Walks *site* like
+    ``clearFindAndRebuild()`` but only touches catalog-aware objects whose
+    row lacks catalog data (or every catalog-aware object with
+    ``all_objects=True``).  Commits every *batch_size* objects; idempotent,
+    so an interrupted run is simply repeated.  With ``dry_run=True`` it
+    only reports and writes nothing.
+
+    Returns:
+        RepairResult(checked, paths, failed)
+    """
+    jar = catalog._p_jar
+    checked = 0
+    paths, failed = [], []
+    batch = []
+
+    def flush():
+        nonlocal checked, batch
+        checked += len(batch)
+        done, broken = _repair_batch(catalog, conn, batch, dry_run, all_objects)
+        paths.extend(done)
+        failed.extend(broken)
+        batch = []
+        if dry_run:
+            jar.cacheMinimize()
+        else:
+            _commit_and_minimize(jar)
+
+    pool = get_pool(catalog)
+    conn = pool.getconn()
+    try:
+        with site_context(site):
+            for obj, path in catalog._walk_site_paths(site):
+                oid = getattr(aq_base(obj), "_p_oid", None)
+                if oid is None or not _is_catalogable(obj, catalog):
+                    continue
+                batch.append((u64(oid), obj, path))
+                if len(batch) >= batch_size:
+                    flush()
+            if batch:
+                flush()
+    finally:
+        pool.putconn(conn)
+
+    log.info(
+        "repair_uncataloged: %d checked, %d %s, %d failed",
+        checked,
+        len(paths),
+        "would be recataloged" if dry_run else "recataloged",
+        len(failed),
+    )
+    return RepairResult(checked, paths, failed)
 
 
 # ---------------------------------------------------------------------------
