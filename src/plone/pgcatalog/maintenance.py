@@ -398,6 +398,123 @@ def repair_uncataloged(
     return RepairResult(checked, paths, failed)
 
 
+# Weight 'C' in searchable_text comes only from the Tika merge
+# (pgcatalog_merge_extracted_text); title is A, description B, body D.
+_LOST_EXTRACTION_SQL = """
+SELECT o.zoid, o.path FROM object_state o
+WHERE o.idx IS NOT NULL AND o.path IS NOT NULL
+  AND (
+    (EXISTS (SELECT 1 FROM text_extraction_queue q
+             WHERE q.zoid = o.zoid AND q.status = 'done')
+     AND (o.searchable_text IS NULL
+          OR length(ts_filter(o.searchable_text, '{c}')) = 0))
+    OR (%(include_failed)s AND EXISTS (
+          SELECT 1 FROM text_extraction_queue q
+          WHERE q.zoid = o.zoid AND q.status = 'failed'))
+  )
+ORDER BY o.zoid
+"""
+
+
+def _lost_extraction_paths(conn, include_failed):
+    """Paths of cataloged objects whose extracted text is gone."""
+    with conn.cursor() as cur:
+        cur.execute("SELECT to_regclass('text_extraction_queue') AS t")
+        if cur.fetchone()["t"] is None:
+            log.info("requeue_lost_extractions: no extraction queue; nothing to do")
+            return []
+        cur.execute(_LOST_EXTRACTION_SQL, {"include_failed": include_failed})
+        return [row["path"] for row in cur.fetchall()]
+
+
+def _recatalog_paths(catalog, paths, dry_run):
+    """Recatalog *paths*; return (done, failed).  Missing objects fail."""
+    done, failed = [], []
+    for path in paths:
+        obj = catalog.unrestrictedTraverse(path, None)
+        if obj is None:
+            log.warning("requeue_lost_extractions: %s not found", path)
+            failed.append(path)
+            continue
+        if dry_run:
+            done.append(path)
+            continue
+        try:
+            catalog.catalog_object(obj, path)
+        except Exception:
+            log.warning(
+                "requeue_lost_extractions: failed to catalog %s", path, exc_info=True
+            )
+            failed.append(path)
+        else:
+            done.append(path)
+    return done, failed
+
+
+def requeue_lost_extractions(
+    catalog, *, dry_run=False, include_failed=False, batch_size=_REBUILD_BATCH
+):
+    """Queue text extraction again for files whose extracted text is lost.
+
+    A full reindex used to overwrite ``searchable_text`` without the
+    Tika-extracted text and without queueing a new job (#244), and so did
+    ``clearFindAndRebuild()``.  Such files have a ``done`` job but no
+    weight-``'C'`` lexeme left.  They are recataloged, and the processor
+    re-pends the jobs of exactly the blobs the object references now.
+    Queue rows are never re-pended by SQL: an object can have several
+    blob fields, and a replaced blob stays in ``blob_state`` until the
+    next pack.  With ``include_failed=True``, objects with ``failed`` jobs
+    are handled the same way.
+
+    Files whose extraction legitimately produced no text (scanned PDFs or
+    images without OCR, empty files) look exactly like lost ones and are
+    recataloged on every run; the dry run shows how many.  Telling them
+    apart needs #247.
+
+    Not called from any upgrade step: requeueing against Tika is an
+    operator decision, after the worker's allowlist and the Tika image
+    pin are checked.
+
+    Returns:
+        RepairResult(checked, paths, failed)
+    """
+    _check_storage_fixed()
+    pool = get_pool(catalog)
+    conn = pool.getconn()
+    try:
+        candidates = _lost_extraction_paths(conn, include_failed)
+    finally:
+        pool.putconn(conn)
+
+    jar = catalog._p_jar
+    paths, failed = [], []
+    site = catalog._find_site_root()
+    with site_context(site):
+        for start in range(0, len(candidates), batch_size):
+            chunk = candidates[start : start + batch_size]
+            done, broken = _recatalog_paths(catalog, chunk, dry_run)
+            if dry_run:
+                jar.cacheMinimize()
+            else:
+                done, broken = _commit_batch(
+                    jar,
+                    done,
+                    broken,
+                    lambda chunk=chunk: _recatalog_paths(catalog, chunk, False),
+                )
+            paths.extend(done)
+            failed.extend(broken)
+
+    log.info(
+        "requeue_lost_extractions: %d candidates, %d %s, %d failed",
+        len(candidates),
+        len(paths),
+        "would be recataloged" if dry_run else "recataloged",
+        len(failed),
+    )
+    return RepairResult(len(candidates), paths, failed)
+
+
 # ---------------------------------------------------------------------------
 # _CatalogCompat: minimal shim for ZCatalogIndexes and addons
 # ---------------------------------------------------------------------------

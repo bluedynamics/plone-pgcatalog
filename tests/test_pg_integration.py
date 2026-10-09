@@ -2224,3 +2224,130 @@ class TestPlainWritesKeepCatalogData:
         assert scale is not None
         transaction.commit()
         self._assert_cataloged(pg_functional, img, "pw-img")
+
+
+@pytest.fixture
+def tika_queue(pg_functional, monkeypatch):
+    """Enable Tika enqueueing in the processor and provide the queue table."""
+    from plone.pgcatalog import processor
+    from plone.pgcatalog.schema import TEXT_EXTRACTION_QUEUE
+
+    test_db = pg_functional["pgTestDB"]
+    with test_db.connection.cursor() as cur:
+        cur.execute(TEXT_EXTRACTION_QUEUE)
+        cur.execute("DELETE FROM text_extraction_queue")
+    monkeypatch.setattr(processor, "TIKA_URL", "http://tika.invalid:9998")
+    yield test_db.connection
+    with test_db.connection.cursor() as cur:
+        cur.execute("DROP TABLE IF EXISTS text_extraction_queue")
+
+
+class TestRequeueLostExtractions:
+    def _file(self, pg_functional, tika_queue, file_id):
+        from plone.namedfile.file import NamedBlobFile
+
+        portal = pg_functional["portal"]
+        setRoles(portal, TEST_USER_ID, ["Manager"])
+        portal.invokeFactory("File", file_id, title="A file")
+        portal[file_id].file = NamedBlobFile(
+            data=b"%PDF-1.4 fake", filename=f"{file_id}.pdf"
+        )
+        portal[file_id].reindexObject()
+        transaction.commit()
+        return portal, portal["portal_catalog"]
+
+    def _queue(self, tika_queue, file_obj):
+        from ZODB.utils import u64
+
+        with tika_queue.cursor() as cur:
+            cur.execute(
+                "SELECT status, attempts FROM text_extraction_queue WHERE zoid = %s",
+                (u64(file_obj._p_oid),),
+            )
+            return cur.fetchall()
+
+    def _set_status(self, tika_queue, file_obj, status):
+        from ZODB.utils import u64
+
+        with tika_queue.cursor() as cur:
+            cur.execute(
+                "UPDATE text_extraction_queue SET status = %s, attempts = 3 "
+                "WHERE zoid = %s",
+                (status, u64(file_obj._p_oid)),
+            )
+
+    def test_file_is_enqueued_on_creation(self, pg_functional, tika_queue):
+        portal, _ = self._file(pg_functional, tika_queue, "rq-enq")
+        assert self._queue(tika_queue, portal["rq-enq"]) == [("pending", 0)]
+
+    def test_dry_run_lists_lost_text_and_writes_nothing(
+        self, pg_functional, tika_queue
+    ):
+        from plone.pgcatalog.maintenance import requeue_lost_extractions
+
+        portal, catalog = self._file(pg_functional, tika_queue, "rq-dry")
+        self._set_status(tika_queue, portal["rq-dry"], "done")
+
+        result = requeue_lost_extractions(catalog, dry_run=True)
+        transaction.commit()
+
+        assert result.paths == ["/plone/rq-dry"]
+        assert self._queue(tika_queue, portal["rq-dry"]) == [("done", 3)]
+
+    def test_requeues_lost_text(self, pg_functional, tika_queue):
+        from plone.pgcatalog.maintenance import requeue_lost_extractions
+
+        portal, catalog = self._file(pg_functional, tika_queue, "rq-lost")
+        self._set_status(tika_queue, portal["rq-lost"], "done")
+
+        result = requeue_lost_extractions(catalog)
+        transaction.commit()
+
+        assert result.paths == ["/plone/rq-lost"]
+        assert result.failed == []
+        assert self._queue(tika_queue, portal["rq-lost"]) == [("pending", 0)]
+
+    def test_leaves_files_with_extracted_text_alone(self, pg_functional, tika_queue):
+        from plone.pgcatalog.maintenance import requeue_lost_extractions
+        from ZODB.utils import u64
+
+        portal, catalog = self._file(pg_functional, tika_queue, "rq-ok")
+        self._set_status(tika_queue, portal["rq-ok"], "done")
+        with tika_queue.cursor() as cur:
+            cur.execute(
+                "UPDATE object_state SET searchable_text = "
+                "COALESCE(searchable_text, ''::tsvector) || "
+                "setweight(to_tsvector('simple', 'pdf words'), 'C') "
+                "WHERE zoid = %s",
+                (u64(portal["rq-ok"]._p_oid),),
+            )
+
+        result = requeue_lost_extractions(catalog)
+        transaction.commit()
+
+        assert result.paths == []
+        assert self._queue(tika_queue, portal["rq-ok"]) == [("done", 3)]
+
+    def test_failed_jobs_only_with_include_failed(self, pg_functional, tika_queue):
+        from plone.pgcatalog.maintenance import requeue_lost_extractions
+
+        portal, catalog = self._file(pg_functional, tika_queue, "rq-failed")
+        self._set_status(tika_queue, portal["rq-failed"], "failed")
+
+        assert requeue_lost_extractions(catalog).paths == []
+        assert self._queue(tika_queue, portal["rq-failed"]) == [("failed", 3)]
+
+        result = requeue_lost_extractions(catalog, include_failed=True)
+        transaction.commit()
+        assert result.paths == ["/plone/rq-failed"]
+        assert self._queue(tika_queue, portal["rq-failed"]) == [("pending", 0)]
+
+    def test_no_queue_table_is_a_noop(self, pg_functional):
+        from plone.pgcatalog.maintenance import requeue_lost_extractions
+
+        portal = pg_functional["portal"]
+        with pg_functional["pgTestDB"].connection.cursor() as cur:
+            cur.execute("DROP TABLE IF EXISTS text_extraction_queue")
+
+        result = requeue_lost_extractions(portal["portal_catalog"])
+        assert (result.checked, result.paths, result.failed) == (0, [], [])
