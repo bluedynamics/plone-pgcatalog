@@ -198,8 +198,8 @@ For S3-tiered blobs:
 
 ```bash
 export TIKA_WORKER_S3_BUCKET=zodb-blobs
-export TIKA_WORKER_S3_ENDPOINT_URL=http://minio:9000
-export TIKA_WORKER_S3_REGION=us-east-1
+export TIKA_WORKER_S3_ENDPOINT_URL=http://garage:3900
+export TIKA_WORKER_S3_REGION=garage
 export TIKA_WORKER_S3_ACCESS_KEY=...
 export TIKA_WORKER_S3_SECRET_KEY=...
 ```
