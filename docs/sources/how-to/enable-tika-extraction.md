@@ -261,6 +261,8 @@ import transaction
 transaction.commit()
 ```
 
+A rebuild, like any full reindex of a file, also queues the extraction again for files that were extracted before, because the reindex replaces their searchable text.
+
 After the rebuild, the worker processes enqueued jobs.
 You can monitor
 progress:
@@ -305,6 +307,8 @@ the right behavior.
 See {doc}`../explanation/tika-extraction` for a detailed architecture
 explanation.
 
+(recover-failed-extractions)=
+
 ## Recover failed extractions
 
 Find out what failed, and why, before you retry anything:
@@ -335,6 +339,65 @@ This works only if the worker has the same `PGCATALOG_TIKA_CONTENT_TYPES` as Zop
 Retry while Tika is up and settled, not while a new version is being deployed.
 Do not reset `skipped` jobs unless you have widened the allowlist, because the worker refuses them again.
 See {ref}`queue-status-values` for what each status means.
+
+(restore-lost-extracted-text)=
+
+## Restore lost extracted text
+
+Before plone.pgcatalog with the fix for [#244](https://github.com/bluedynamics/plone-pgcatalog/issues/244), a full reindex of a file dropped its extracted text and did not queue the extraction again.
+A title edit, a workflow transition or "Clear and Rebuild" was enough.
+Content that [zodb-pgjsonb#120](https://github.com/bluedynamics/zodb-pgjsonb/issues/120) had uncataloged and that was later edited normally is affected as well.
+Such files are listed and found by title, but not by the words inside them.
+
+`maintenance.requeue_lost_extractions()` finds them: their extraction job is `done`, but `searchable_text` has no text from Tika left.
+It recatalogs them, which queues the extraction for the file versions they hold now.
+
+Before you run it, make sure the worker has the same `PGCATALOG_TIKA_CONTENT_TYPES` as Zope and that Tika is pinned and settled.
+Save this as `requeue_lost_extractions.py`:
+
+```python
+"""Run: zconsole run etc/zope.conf requeue_lost_extractions.py SITE_ID [--dry-run] [--include-failed]"""
+
+from AccessControl.SecurityManagement import newSecurityManager
+from AccessControl.SpecialUsers import system
+from plone.pgcatalog.maintenance import requeue_lost_extractions
+from zope.component.hooks import setSite
+
+import sys
+import transaction
+
+# zconsole does not reset sys.argv: [zconsole, run, zope.conf, script, *args]
+args = sys.argv[4:]
+site_id = next(a for a in args if not a.startswith("--"))
+dry_run = "--dry-run" in args
+
+site = app[site_id]  # noqa: F821  (app is provided by zconsole)
+setSite(site)
+newSecurityManager(None, system)
+
+result = requeue_lost_extractions(
+    site.portal_catalog, dry_run=dry_run, include_failed="--include-failed" in args
+)
+for path in result.paths:
+    print(path)
+print(
+    f"{result.checked} candidates, {len(result.paths)} "
+    f"{'would be requeued' if dry_run else 'requeued'}, "
+    f"{len(result.failed)} failed"
+)
+if dry_run:
+    transaction.abort()
+else:
+    transaction.commit()
+```
+
+Count first with `--dry-run`, then run without it.
+`--include-failed` also retries files whose job is `failed`.
+It replaces the `UPDATE` statement in {ref}`the section above <recover-failed-extractions>` and only retries the file versions the content holds now, not replaced ones.
+
+Files whose extraction legitimately produced no text, such as scanned PDFs or images without OCR, look the same as files whose text was lost.
+They are queued again on every run, which costs a Tika call each but does no harm.
+Telling them apart needs [#247](https://github.com/bluedynamics/plone-pgcatalog/issues/247).
 
 ## Disabling extraction
 

@@ -57,6 +57,15 @@ opening the edit form, the sharing tab, or any write without a full reindex.
 The upgrade step to profile version 4 runs it once.
 `refreshCatalog(clear=0)` cannot repair these objects, because it only visits rows that still have catalog data.
 
+The repair refuses to run with zodb-pgjsonb older than 1.17.0, because that version would uncatalog the repaired objects again on their next plain write.
+The upgrade step first counts rows that could be damaged and skips the site walk when there are none.
+
+```{important}
+With Tika extraction configured, the repair enqueues extraction for every repaired file, and so does the upgrade step.
+Before you upgrade, make sure the extraction worker has the same `PGCATALOG_TIKA_CONTENT_TYPES` as Zope and that the Tika image is pinned.
+See {doc}`enable-tika-extraction`.
+```
+
 On large sites, run it from the command line instead of `@@plone-upgrade`, which can hit proxy timeouts.
 Save this as `repair_uncataloged.py`:
 
@@ -98,10 +107,13 @@ else:
 
 Count first with `--dry-run` (on a copy of production if possible), then run without it.
 The run commits every 500 objects and can be repeated after an interruption.
+When a batch hits a write conflict with an editor, it is retried once; paths that conflict a second time are reported as failed, and you run the repair again later.
+At the end, it runs `ANALYZE object_state`, so that the query planner sees the new rows.
 `--all` recatalogs every content object, not only the damaged ones.
 
 When Tika extraction is configured, recataloged files are enqueued for extraction again, which restores their extracted text.
 Expect a burst of extraction jobs.
+Text that was lost on files that look intact is restored separately, see {ref}`restore-lost-extracted-text`.
 
 ## Partial reindex (automatic)
 

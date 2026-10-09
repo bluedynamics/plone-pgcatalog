@@ -254,9 +254,11 @@ blob version.
 |---|---|---|
 | `pending` | no | Waiting to be claimed, once `not_before` has passed |
 | `processing` | no | Claimed by a worker |
-| `done` | yes | Text extracted and merged into `searchable_text` |
-| `failed` | yes | Exhausted `max_attempts` on errors that concern the document itself |
+| `done` | until the next full reindex | Text extracted and merged into `searchable_text` |
+| `failed` | until the next full reindex | Exhausted `max_attempts` on errors that concern the document itself |
 | `skipped` | yes | Refused on purpose, without an extraction attempt; `error` starts with `skipped: <code>:` |
+
+A full reindex of the content sets `done`, `failed` and `processing` jobs for the same blob version back to `pending`, because it replaces `searchable_text`.
 
 `skipped` is not an error.
 A reset of stuck work targets `failed`.

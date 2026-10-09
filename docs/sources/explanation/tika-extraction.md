@@ -250,6 +250,17 @@ Key design choices:
 
 - **UNIQUE(blob_zoid, tid)**: Prevents duplicate jobs for the same blob
   version.
+  A full reindex replaces `searchable_text` with the indexer's text, which
+  does not contain the extracted text.
+  It therefore sets a finished job for the same blob version back to
+  `pending`, so the text is extracted again.
+  The worker only finishes a job that is still in `processing`, so a
+  reindex during extraction cannot leave the job `done` without its text.
+  Re-queued jobs are picked up by the worker's poll, since the NOTIFY
+  trigger fires on INSERT only.
+  [#247](https://github.com/bluedynamics/plone-pgcatalog/issues/247) plans
+  to store the extracted text instead, so an edit no longer costs an
+  extraction.
 - **Partial index on `(not_before, id) WHERE status = 'pending'`**: Makes
   dequeue queries fast regardless of how many completed jobs exist, and
   lets the dequeue skip jobs that are deferred until later.
