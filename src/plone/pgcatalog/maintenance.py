@@ -13,6 +13,7 @@ from importlib.metadata import version as _dist_version
 from Persistence import Persistent
 from persistent.mapping import PersistentMapping
 from plone.folder.interfaces import IExplicitOrdering
+from plone.pgcatalog import processor
 from plone.pgcatalog.backends import get_backend
 from plone.pgcatalog.gopip import sync_folder_ranks
 from plone.pgcatalog.indexing import reindex_object as _sql_reindex
@@ -230,22 +231,31 @@ def _commit_batch(jar, done, broken, redo):
     the batch (including any health check, since a concurrent editor may
     have recataloged meanwhile) and returns new ones.  Returns the results
     of the attempt that committed, or ``([], all paths)`` after a second
-    conflict.
+    conflict or any other commit error.  Other errors are not retried:
+    they are deterministic, so the operator re-runs with a small batch
+    size to find the object.
     """
-    try:
-        _commit_and_minimize(jar)
-        return done, broken
-    except ConflictError:
-        transaction.abort()
-        log.info("conflict on batch commit; retrying the batch once")
-    done, broken = redo()
-    try:
-        _commit_and_minimize(jar)
-        return done, broken
-    except ConflictError:
-        transaction.abort()
-        log.warning("batch conflicted twice; %d paths reported as failed", len(done))
-        return [], broken + done
+    for attempt in (1, 2):
+        try:
+            _commit_and_minimize(jar)
+            return done, broken
+        except ConflictError:
+            transaction.abort()
+            if attempt == 2:
+                log.warning(
+                    "batch conflicted twice; %d paths reported as failed", len(done)
+                )
+                return [], broken + done
+            log.info("conflict on batch commit; retrying the batch once")
+            done, broken = redo()
+        except Exception:
+            transaction.abort()
+            log.warning(
+                "batch commit failed; %d paths reported as failed",
+                len(done),
+                exc_info=True,
+            )
+            return [], broken + done
 
 
 def _catalogable_class(class_mod, class_name):
@@ -364,6 +374,14 @@ def repair_uncataloged(
                 broken,
                 lambda: _repair_batch(catalog, conn, current, False, all_objects),
             )
+        for path in done:
+            log.info(
+                "repair_uncataloged: %s %s",
+                "would recatalog" if dry_run else "recataloged",
+                path,
+            )
+        for path in broken:
+            log.warning("repair_uncataloged: not repaired %s", path)
         paths.extend(done)
         failed.extend(broken)
 
@@ -485,6 +503,13 @@ def requeue_lost_extractions(
         candidates = _lost_extraction_paths(conn, include_failed)
     finally:
         pool.putconn(conn)
+    if candidates and not dry_run and not processor.TIKA_URL:
+        # Without it the processor queues nothing, and the SearchableText
+        # indexers fall back to running portal_transforms on every blob.
+        raise RuntimeError(
+            "PGCATALOG_TIKA_URL is not set in this process; recataloging "
+            "would queue no extraction.  Run with Zope's environment."
+        )
 
     jar = catalog._p_jar
     paths, failed = [], []

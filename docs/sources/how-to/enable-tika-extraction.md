@@ -392,6 +392,8 @@ else:
 ```
 
 Count first with `--dry-run`, then run without it.
+Run it with the same environment variables as Zope.
+Without `PGCATALOG_TIKA_URL`, nothing can be queued, and the function refuses to run.
 `--include-failed` also retries files whose job is `failed`.
 It replaces the `UPDATE` statement in {ref}`the section above <recover-failed-extractions>` and only retries the file versions the content holds now, not replaced ones.
 

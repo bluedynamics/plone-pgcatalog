@@ -37,6 +37,7 @@ from plone.pgcatalog.tika_rmeta import MAX_RESPONSE_BYTES
 from plone.pgcatalog.tika_rmeta import metadata_fields_from_env
 from psycopg.rows import dict_row
 
+import contextlib
 import logging
 import os
 import psycopg
@@ -253,8 +254,10 @@ class TikaWorker:
                 )
             except Exception as exc:
                 # Drop a half-done merge and leave an aborted transaction,
-                # so the status updates below can run.
-                conn.rollback()
+                # so the status updates below can run.  A lost connection
+                # makes rollback() raise too; that must not end the loop.
+                with contextlib.suppress(psycopg.Error):
+                    conn.rollback()
                 if httpx is not None and isinstance(exc, _TRANSPORT_ERRORS):
                     delay = BACKOFF_LADDER[
                         min(row["deferrals"], len(BACKOFF_LADDER) - 1)

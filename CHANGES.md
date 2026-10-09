@@ -40,8 +40,9 @@
 
 - New `maintenance.requeue_lost_extractions()` finds files whose extracted
   text was already lost and queues their extraction again. Run it after the
-  upgrade, once the worker's allowlist and the Tika image pin are in place.
-  #244
+  upgrade, once the worker's allowlist and the Tika image pin are in place,
+  and with Zope's environment: it refuses to run without
+  `PGCATALOG_TIKA_URL`. #244
 
 - The catalog's site walk (`clearFindAndRebuild()`, the repair) no longer
   takes quadratic time in the number of objects.

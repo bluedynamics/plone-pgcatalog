@@ -828,3 +828,16 @@ class TestRequeuedWhileProcessing:
         status = _get_queue_status(worker_db, zoid)
         assert status["status"] == "pending"  # one attempt spent, will retry
         assert "division by zero" in status["error"]
+
+    def test_lost_connection_does_not_kill_the_worker(self, worker_db):
+        """The in-process worker is a thread; an exception escaping
+        _process_one() would end extraction until Zope restarts."""
+        zoid = 907
+        worker = self._setup(worker_db, zoid)
+
+        def connection_dies(conn, blob_zoid, tid, content_type):
+            conn.close()
+            raise psycopg.OperationalError("server closed the connection")
+
+        with patch.object(worker, "_extract", side_effect=connection_dies):
+            assert worker._process_one() is True

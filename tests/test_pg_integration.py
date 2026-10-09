@@ -2138,6 +2138,71 @@ class TestRepairHardening:
         assert "pop(0)" not in source
 
 
+class TestRepairCommitErrors:
+    """Separate class: the PG layer keeps one pool connection per test until
+    the class ends, and the pool has 10 (see the #244 ledger)."""
+
+    def test_non_conflict_commit_error_fails_only_that_batch(
+        self, pg_functional, monkeypatch
+    ):
+        from Acquisition import aq_base
+        from plone.pgcatalog import maintenance
+
+        portal, catalog = TestRepairUncataloged()._setup(pg_functional)
+        _wipe_catalog_row(pg_functional, "/plone/intact")
+        tool_class = type(aq_base(catalog))
+        original_catalog = tool_class.catalog_object
+        original_commit = maintenance._commit_and_minimize
+        poisoned = []
+
+        def catalog_and_mark(self, obj, uid=None, *args, **kw):
+            if uid == "/plone/rep-folder/broken":
+                poisoned.append(uid)
+            return original_catalog(self, obj, uid, *args, **kw)
+
+        def commit_fails_when_poisoned(jar):
+            if poisoned:
+                poisoned.clear()
+                raise ValueError("cannot serialize this object")
+            return original_commit(jar)
+
+        monkeypatch.setattr(tool_class, "catalog_object", catalog_and_mark)
+        monkeypatch.setattr(
+            maintenance, "_commit_and_minimize", commit_fails_when_poisoned
+        )
+        result = maintenance.repair_uncataloged(catalog, portal, batch_size=1)
+
+        assert result.failed == ["/plone/rep-folder/broken"]
+        assert result.paths == ["/plone/intact"]
+        assert _row_by_zoid(pg_functional, portal["intact"])[:2] == (
+            "/plone/intact",
+            True,
+        )
+
+    def test_repaired_and_failed_paths_are_logged(
+        self, pg_functional, monkeypatch, caplog
+    ):
+        from plone.pgcatalog import maintenance
+        from ZODB.POSException import ConflictError
+
+        portal, catalog = TestRepairUncataloged()._setup(pg_functional)
+        with caplog.at_level("INFO"):
+            maintenance.repair_uncataloged(catalog, portal)
+        assert "/plone/rep-folder/broken" in caplog.text
+
+        _wipe_catalog_row(pg_functional, "/plone/rep-folder/broken")
+        caplog.clear()
+
+        def always_conflict(jar):
+            raise ConflictError("simulated")
+
+        monkeypatch.setattr(maintenance, "_commit_and_minimize", always_conflict)
+        with caplog.at_level("INFO"):
+            maintenance.repair_uncataloged(catalog, portal)
+        failed_lines = [r for r in caplog.records if r.levelname == "WARNING"]
+        assert any("/plone/rep-folder/broken" in r.getMessage() for r in failed_lines)
+
+
 def _png_bytes():
     from io import BytesIO
     from PIL import Image
@@ -2351,3 +2416,15 @@ class TestRequeueLostExtractions:
 
         result = requeue_lost_extractions(portal["portal_catalog"])
         assert (result.checked, result.paths, result.failed) == (0, [], [])
+
+    def test_refuses_without_tika_url(self, pg_functional, tika_queue, monkeypatch):
+        from plone.pgcatalog import processor
+        from plone.pgcatalog.maintenance import requeue_lost_extractions
+
+        portal, catalog = self._file(pg_functional, tika_queue, "rq-env")
+        self._set_status(tika_queue, portal["rq-env"], "done")
+        monkeypatch.setattr(processor, "TIKA_URL", "")
+
+        with pytest.raises(RuntimeError, match="PGCATALOG_TIKA_URL"):
+            requeue_lost_extractions(catalog)
+        assert self._queue(tika_queue, portal["rq-env"]) == [("done", 3)]

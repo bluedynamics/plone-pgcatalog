@@ -106,6 +106,9 @@ else:
 ```
 
 Count first with `--dry-run` (on a copy of production if possible), then run without it.
+Run it with the same environment variables as Zope, in particular `PGCATALOG_TIKA_URL` and `PGCATALOG_TIKA_CONTENT_TYPES`.
+Without them, repaired files are not queued for extraction, and their text is extracted in-process by `portal_transforms` instead.
+The log names every recataloged path and every path that could not be repaired.
 The run commits every 500 objects and can be repeated after an interruption.
 When a batch hits a write conflict with an editor, it is retried once; paths that conflict a second time are reported as failed, and you run the repair again later.
 At the end, it runs `ANALYZE object_state`, so that the query planner sees the new rows.
