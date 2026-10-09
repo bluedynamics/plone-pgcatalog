@@ -206,6 +206,9 @@ portlets
 zconsole
 effectiveRange
 reindexIndex
+repair_uncataloged
+requeue_lost_extractions
+[Rr]ecatalog(s|ed|ing)?
 [Ss]egmenter[s]?
 tsvectors
 pg_search

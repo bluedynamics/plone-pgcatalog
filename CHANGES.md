@@ -10,6 +10,21 @@
   Garage runs in single-node mode and creates the `zodb-blobs` bucket and its
   access key on startup, so the `createbucket` bootstrap container is gone.
 
+### Fixed
+
+- Recatalog content that zodb-pgjsonb before the fix for
+  bluedynamics/zodb-pgjsonb#120 left without catalog data. Any write of a
+  cataloged object without a full reindex NULLed its catalog columns, for
+  example opening the edit form (edit lock), the sharing tab, or a write
+  followed by a partial reindex. The object stayed in the ZODB but vanished
+  from listings and search, and partial reindexes skipped it. New
+  `maintenance.repair_uncataloged()` walks the site without clearing the
+  catalog and recatalogs only content whose row lacks catalog data. The
+  upgrade step to profile version 4 runs it once; the how-to "Rebuild or
+  reindex the catalog" shows how to run it from the command line with a
+  dry run. Requires the zodb-pgjsonb release with the fix, so repaired
+  content cannot be wiped again. #244
+
 ## 1.0.0rc5 (2026-10-05)
 
 ### Added
