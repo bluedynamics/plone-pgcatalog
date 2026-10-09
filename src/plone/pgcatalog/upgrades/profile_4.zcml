@@ -1,0 +1,21 @@
+<configure
+    xmlns="http://namespaces.zope.org/zope"
+    xmlns:gs="http://namespaces.zope.org/genericsetup"
+    i18n_domain="plone.pgcatalog"
+    >
+
+  <gs:upgradeStep
+      profile="plone.pgcatalog:default"
+      source="3"
+      destination="4"
+      title="Recatalog content uncataloged by zodb-pgjsonb#120"
+      description="Writes without a full reindex (edit lock, sharing tab,
+                   write plus partial reindex) used to NULL the catalog
+                   columns, so the content vanished from listings and
+                   search.  Recatalog every content object whose row
+                   lacks catalog data.  Walks the whole site; on large
+                   sites run it from the command line.  See #244."
+      handler=".profile_4.repair_uncataloged_content"
+      />
+
+</configure>

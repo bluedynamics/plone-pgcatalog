@@ -1981,3 +1981,44 @@ class TestRepairUncataloged:
 
         assert result.failed == ["/plone/rep-folder/broken"]
         assert result.paths == ["/plone/intact"]
+
+
+class TestRepairUpgradeStep:
+    def test_upgrade_step_repairs(self, pg_functional):
+        from plone.pgcatalog.upgrades.profile_4 import repair_uncataloged_content
+
+        portal = pg_functional["portal"]
+        setRoles(portal, TEST_USER_ID, ["Manager"])
+        portal.invokeFactory("Document", "upg-doc", title="Upgrade")
+        transaction.commit()
+        _wipe_catalog_row(pg_functional, "/plone/upg-doc")
+
+        repair_uncataloged_content(portal["portal_setup"])
+        transaction.commit()
+
+        path, has_idx, _ = _row_by_zoid(pg_functional, portal["upg-doc"])
+        assert (path, has_idx) == ("/plone/upg-doc", True)
+
+    def test_upgrade_step_noop_without_pg_catalog(self, caplog):
+        from plone.pgcatalog.upgrades.profile_4 import repair_uncataloged_content
+
+        class FakeSite:
+            portal_catalog = object()
+
+        class FakeContext:
+            def getSite(self):
+                return FakeSite()
+
+        with caplog.at_level("INFO"):
+            repair_uncataloged_content(FakeContext())
+        assert "PG catalog not active" in caplog.text
+
+    def test_profile_version_is_4(self):
+        from pathlib import Path
+
+        import plone.pgcatalog
+
+        metadata = (
+            Path(plone.pgcatalog.__file__).parent / "profiles/default/metadata.xml"
+        ).read_text()
+        assert "<version>4</version>" in metadata
