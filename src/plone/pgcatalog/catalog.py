@@ -36,6 +36,7 @@ from plone.pgcatalog.extraction import extract_idx
 from plone.pgcatalog.extraction import extract_searchable_text
 from plone.pgcatalog.extraction import obj_to_zoid
 from plone.pgcatalog.extraction import wrap_object
+from plone.pgcatalog.gopip import register_parent
 from plone.pgcatalog.indexing import uncatalog_object as _sql_uncatalog
 from plone.pgcatalog.interfaces import IPGCatalogTool
 from plone.pgcatalog.maintenance import _CatalogCompat
@@ -531,6 +532,9 @@ class PlonePGCatalogTool(UniqueObject, Folder):
         set_pending(zoid, pending_data)
         # Mark the object as dirty so ZODB stores it (triggering the processor)
         obj._p_changed = True
+        # The indexer wrote the dense position; let the folder's rank sync
+        # put the row back in order (#245).
+        register_parent(obj)
         log.debug(
             "_set_pg_annotation: SET on %s zoid=%d path=%s",
             type(obj).__name__,
@@ -573,6 +577,8 @@ class PlonePGCatalogTool(UniqueObject, Folder):
             return True  # Nothing to update, but partial path handled it
 
         set_partial_pending(zoid, idx_updates)
+        if "getObjPositionInParent" in idx_updates:
+            register_parent(obj)  # dense position, see _set_pg_annotation
         return True
 
     def __url(self, ob):

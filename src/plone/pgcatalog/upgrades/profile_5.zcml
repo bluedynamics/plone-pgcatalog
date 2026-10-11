@@ -1,0 +1,20 @@
+<configure
+    xmlns="http://namespaces.zope.org/zope"
+    xmlns:gs="http://namespaces.zope.org/genericsetup"
+    i18n_domain="plone.pgcatalog"
+    >
+
+  <gs:upgradeStep
+      profile="plone.pgcatalog:default"
+      source="4"
+      destination="5"
+      title="Resync getObjPositionInParent ranks after reindexes"
+      description="Every reindex of a child used to overwrite its rank with
+                   the dense indexer position, so folders whose items were
+                   edited after a reordering are out of order and
+                   folder_contents drag &amp; drop aborts.  Resync all ordered
+                   folders against their ZODB ordering once.  See #245."
+      handler=".profile_3.resync_gopip_ranks"
+      />
+
+</configure>

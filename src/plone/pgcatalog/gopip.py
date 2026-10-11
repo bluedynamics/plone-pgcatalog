@@ -8,11 +8,16 @@ reorder — and on every delete, which shifts all following siblings (#216).
 
 Design (see docs/plans/gopip-resync-on-reorder.md):
 
-Nothing outside the SQL ``ORDER BY`` can observe the stored *value* —
+Nothing outside the SQL ``ORDER BY`` reads the stored *value* —
 ZCatalog's GopipIndex is a StubIndex (``getEntryForObject`` returns ``[]``)
 and getObjPositionInParent is not metadata.  So stored values need not be
 dense ordinals 0..n-1, only correctly *ordered* integers.  This module
-maintains them as sparse ranks (LexoRank-style, step 1024):
+maintains them as sparse ranks (LexoRank-style, step 1024).
+
+One writer does not know about ranks: every catalog write of a child runs
+the CMFPlone indexer, which stores the *dense* position.  So the catalog
+registers the child's folder for the same sync on every write
+(:func:`register_parent`, #245); an edit fires no container event.
 
 1. A subscriber on ``(IOrderableFolder, IContainerModifiedEvent)`` records
    the container.  DefaultOrdering.moveObjectsByDelta (all moveObjects*
@@ -35,6 +40,8 @@ no event in plone.folder; no Plone UI path calls it.
 """
 
 from Acquisition import aq_base
+from Acquisition import aq_inner
+from Acquisition import aq_parent
 from plone.folder.interfaces import IExplicitOrdering
 from plone.pgcatalog.move import _is_pgcatalog_active
 from plone.pgcatalog.pending import _local
@@ -46,7 +53,13 @@ import logging
 import transaction
 
 
-__all__ = ["RANK_STEP", "assign_ranks", "container_modified", "sync_folder_ranks"]
+__all__ = [
+    "RANK_STEP",
+    "assign_ranks",
+    "container_modified",
+    "register_parent",
+    "sync_folder_ranks",
+]
 
 
 log = logging.getLogger(__name__)
@@ -222,12 +235,34 @@ def container_modified(container, event):
     """
     if not _is_pgcatalog_active():
         return
+    if _has_explicit_ordering(container):
+        _register_container(container)
+
+
+def register_parent(obj):
+    """Schedule a rank sync of *obj*'s folder for this transaction (#245).
+
+    Called on every catalog write of *obj*.  The indexer's
+    getObjPositionInParent is the dense position, which breaks sparse
+    ranks; an edit fires no IContainerModifiedEvent, so without this the
+    folder would stay out of order until its next reordering.  Deduplicated
+    per transaction, and the sync rewrites only rows that are out of order.
+    """
+    parent = aq_parent(aq_inner(obj))
+    if parent is not None and _has_explicit_ordering(parent):
+        _register_container(parent)
+
+
+def _has_explicit_ordering(container):
+    """Unordered/partial-unordered folders: positions never change."""
     if getattr(aq_base(container), "getOrdering", None) is None:
-        return
-    if not IExplicitOrdering.providedBy(container.getOrdering()):
-        # unordered/partial-unordered folders: positions never change
-        return
-    _register_container(container)
+        return False
+    try:
+        ordering = container.getOrdering()
+    except Exception:
+        log.debug("gopip: no ordering for %r", container, exc_info=True)
+        return False
+    return IExplicitOrdering.providedBy(ordering)
 
 
 def _register_container(container):

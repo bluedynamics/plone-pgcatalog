@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- Editing an item no longer breaks the order of its folder. Every reindex
+  overwrote the item's stored `getObjPositionInParent` rank with the dense
+  position from the indexer, while folders that were reordered keep sparse
+  ranks, so the item jumped to a wrong place in `sort_on`
+  `getObjPositionInParent` listings and folder_contents drag & drop aborted
+  with "Client/server ordering mismatch" until the next add, delete or move
+  in that folder. Folders with a prepend ordering broke on every save of a
+  new item. Every catalog write now schedules the folder's rank sync, which
+  rewrites only rows that are out of order. This also covers content
+  recataloged by `repair_uncataloged()` and `requeue_lost_extractions()`.
+  The upgrade step to profile version 5 resyncs all folders once. #245
+
 ## 1.0.0rc6 (2026-10-09)
 
 ### Changed
