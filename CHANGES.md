@@ -73,6 +73,16 @@
   ZCML overrides, replaced persistent objects, index proxies) and the hooks
   it adds.
 
+### Tests
+
+- Regression tests for renaming and moving (zodb-pgjsonb#122): folder_contents'
+  rename action on a folder and on a default page, cutting and pasting a
+  folder into a folder that was never ordered, and moving an item between
+  folders. Each checks every row involved, including source and target
+  containers. With stock Plone these paths reindex everything they write,
+  so they pass on zodb-pgjsonb 1.16.x too and guard the scenario rather than
+  reproduce it.
+
 ## 1.0.0rc6 (2026-10-09)
 
 ### Changed
