@@ -54,6 +54,25 @@
   full recatalog of 140k objects go unanalyzed, and search hung because the
   planner ignored the GIN indexes. #224
 
+- The keyword vocabulary (`plone.app.vocabularies.Keywords`, tag and
+  Subject autocomplete, Collection criteria) was empty when
+  `plone.subjects_of_navigation_root` is on. Plone intersects the `path`
+  index with each keyword via `_apply_index`, and the special indexes
+  (`path`, `effectiveRange`, `SearchableText`) were returned unwrapped,
+  so `_apply_index` silently found nothing. They now answer `_apply_index`
+  from PostgreSQL, which fixes project subclasses of `KeywordsVocabulary`
+  too. pgcatalog also overrides the Keywords vocabulary to list a
+  section's keywords in one query instead of one per keyword
+  (`PGKeywordsVocabulary`; subclass it for other keyword indexes), using
+  the new `path` argument of `PGIndex.uniqueValues()`. #234
+
+### Documentation
+
+- New reference page "Overrides and replaced behaviour": every place where
+  plone.pgcatalog replaces Plone, Zope or add-on behaviour (event handlers,
+  ZCML overrides, replaced persistent objects, index proxies) and the hooks
+  it adds.
+
 ## 1.0.0rc6 (2026-10-09)
 
 ### Changed

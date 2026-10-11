@@ -13,6 +13,12 @@
       handler="plone.pgcatalog.setuphandlers.importToolset"
       />
 
+  <!-- Keywords of a section in one query instead of one per keyword (#234) -->
+  <utility
+      name="plone.app.vocabularies.Keywords"
+      component=".vocabularies.PGKeywordsVocabularyFactory"
+      />
+
   <!-- eea.facetednavigation: PG-backed IFacetedCatalog adapter -->
   <include
       zcml:condition="installed eea.facetednavigation"

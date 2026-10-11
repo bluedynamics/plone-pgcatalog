@@ -126,7 +126,7 @@ class TestViewWithPgCatalog:
         assert isinstance(vs[0], PGIndex)
 
     def test_special_index_not_wrapped(self, pg_conn_with_catalog):
-        """`idx_key=None` indexes (path, SearchableText, effectiveRange) return raw."""
+        """`idx_key=None` indexes get PGSpecialIndex around the raw index (#234)."""
         from plone.pgcatalog.columns import get_registry
         from plone.pgcatalog.columns import IndexType
 
@@ -137,9 +137,12 @@ class TestViewWithPgCatalog:
         raw = mock.Mock(id="path", meta_type="ExtendedPathIndex")
         tool._catalog._raw_indexes["path"] = raw
 
-        # Special indexes skip wrapping — receive raw back
+        # Special indexes are not PGIndex, only PGSpecialIndex (_apply_index)
+        from plone.pgcatalog.pgindex import PGSpecialIndex
+
         result = tool._catalog.indexes["path"]
-        assert result is raw
+        assert isinstance(result, PGSpecialIndex)
+        assert result._wrapped is raw
 
 
 # ── Mutations go to raw mapping, no wrapping ────────────────────────────

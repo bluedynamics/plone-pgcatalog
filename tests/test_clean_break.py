@@ -177,10 +177,10 @@ class TestCatalogCompat:
         result = tool._catalog.getIndex("start")
         assert result.meta_type == "DateRecurringIndex"
 
-    def test_get_index_special_index_unwrapped(self, tool):
+    def test_get_index_special_index_gets_special_proxy(self, tool):
         """Special indexes (SearchableText, effectiveRange, path) with
-        ``idx_key=None`` return the raw index unchanged — they use
-        dedicated PG columns, not JSONB ->> access.
+        ``idx_key=None`` are not PGIndex — they use dedicated PG columns,
+        not JSONB ->> access — but PGSpecialIndex, for _apply_index (#234).
         """
         from unittest import mock
 
@@ -199,8 +199,12 @@ class TestCatalogCompat:
         )
 
         result = tool._catalog.getIndex("SearchableText")
-        # Special index → not wrapped
-        assert result is raw
+        from plone.pgcatalog.pgindex import PGIndex
+        from plone.pgcatalog.pgindex import PGSpecialIndex
+
+        assert isinstance(result, PGSpecialIndex)
+        assert not isinstance(result, PGIndex)
+        assert result._wrapped is raw
 
 
 # ---------------------------------------------------------------------------

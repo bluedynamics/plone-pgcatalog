@@ -206,6 +206,7 @@ portlets
 zconsole
 effectiveRange
 reindexIndex
+[Mm]onkeypatch(es|ed|ing)?
 [Cc]type
 [Aa]utoanalyze
 repair_uncataloged

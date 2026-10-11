@@ -2644,3 +2644,76 @@ class TestPartialOnlyTransactions:
 
         connection = pg_functional["portal"]._p_jar
         assert connection.sortKey() < PendingDataManager(None).sortKey()
+
+
+def _keyword_sections(portal):
+    """Two navigation roots with different keywords; section mode on (#234)."""
+    from plone.app.layout.navigation.interfaces import INavigationRoot
+    from plone.registry.interfaces import IRegistry
+    from zope.component import getUtility
+    from zope.interface import alsoProvides
+
+    setRoles(portal, TEST_USER_ID, ["Manager"])
+    for section, keywords in (("sec-a", ("alpha", "beta")), ("sec-b", ("gamma",))):
+        portal.invokeFactory("Folder", section, title=section)
+        alsoProvides(portal[section], INavigationRoot)
+        portal[section].invokeFactory("Document", "doc", title="Doc", subject=keywords)
+    portal.invokeFactory("Document", "top", title="Top", subject=("delta",))
+    transaction.commit()
+    getUtility(IRegistry)["plone.subjects_of_navigation_root"] = True
+    return portal["sec-a"]["doc"]
+
+
+class TestKeywordsOfSection:
+    def test_plone_vocabulary_lists_the_section_keywords(self, pg_functional):
+        """Plone's own class, via path _apply_index (works for subclasses)."""
+        from plone.app.vocabularies.catalog import KeywordsVocabulary
+
+        context = _keyword_sections(pg_functional["portal"])
+
+        vocab = KeywordsVocabulary()(context)
+
+        assert {term.value for term in vocab} == {"alpha", "beta"}
+
+    def test_pg_vocabulary_lists_the_section_keywords(self, pg_functional):
+        from plone.pgcatalog.vocabularies import PGKeywordsVocabulary
+
+        context = _keyword_sections(pg_functional["portal"])
+
+        assert {t.value for t in PGKeywordsVocabulary()(context)} == {"alpha", "beta"}
+        assert {t.value for t in PGKeywordsVocabulary()(context, "alp")} == {"alpha"}
+
+    def test_path_apply_index_returns_rows_below_the_path(self, pg_functional):
+        portal = pg_functional["portal"]
+        _keyword_sections(portal)
+        path_idx = portal.portal_catalog._catalog.indexes["path"]
+
+        zoids, _ = path_idx._apply_index(
+            {"path": {"query": "/plone/sec-b", "depth": -1}}
+        )
+
+        rows = _query_pg(
+            pg_functional,
+            "SELECT path FROM object_state WHERE zoid = ANY(%s)",
+            (list(zoids),),
+        )
+        assert sorted(r[0] for r in rows) == ["/plone/sec-b", "/plone/sec-b/doc"]
+
+    def test_unique_values_below_a_path(self, pg_functional):
+        portal = pg_functional["portal"]
+        _keyword_sections(portal)
+        subject = portal.portal_catalog._catalog.getIndex("Subject")
+
+        assert sorted(subject.uniqueValues(path="/plone/sec-a")) == ["alpha", "beta"]
+        assert "delta" in set(subject.uniqueValues())
+
+    def test_vocabulary_override_is_registered(self):
+        from pathlib import Path
+
+        import plone.pgcatalog
+
+        overrides = (
+            Path(plone.pgcatalog.__file__).parent / "overrides.zcml"
+        ).read_text()
+        assert 'name="plone.app.vocabularies.Keywords"' in overrides
+        assert "PGKeywordsVocabularyFactory" in overrides

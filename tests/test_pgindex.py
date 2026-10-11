@@ -7,6 +7,7 @@ uniqueValues() work correctly with PG-backed data.
 from plone.pgcatalog.indexing import catalog_object
 from plone.pgcatalog.pgindex import _PGIndexMapping
 from plone.pgcatalog.pgindex import PGIndex
+from plone.pgcatalog.pgindex import PGSpecialIndex
 from tests.conftest import insert_object
 from unittest import mock
 
@@ -655,9 +656,10 @@ class TestMaybeWrapIndex:
 
         assert _maybe_wrap_index(object(), "x", None) is None
 
-    def test_special_index_not_wrapped(self, pg_conn_with_catalog):
+    def test_special_index_gets_the_special_proxy(self, pg_conn_with_catalog):
         """Indexes registered with idx_key=None (SearchableText,
-        path, effectiveRange) return the raw index unchanged.
+        path, effectiveRange) are not PGIndex, but get PGSpecialIndex,
+        which answers _apply_index from PG and delegates the rest (#234).
         """
         from plone.pgcatalog.columns import get_registry
         from plone.pgcatalog.columns import IndexType
@@ -682,7 +684,9 @@ class TestMaybeWrapIndex:
         raw_index = mock.Mock()
 
         wrapped = _maybe_wrap_index(catalog, "SearchableText", raw_index)
-        assert wrapped is raw_index
+        assert isinstance(wrapped, PGSpecialIndex)
+        assert not isinstance(wrapped, PGIndex)
+        assert wrapped.meta_type is raw_index.meta_type  # delegated
 
 
 # ---------------------------------------------------------------------------
