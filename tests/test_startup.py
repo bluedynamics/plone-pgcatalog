@@ -7,6 +7,7 @@ from plone.pgcatalog.startup import _ctype_is_c
 from plone.pgcatalog.startup import _defer_index_actions
 from plone.pgcatalog.startup import _index_set_version
 from plone.pgcatalog.startup import _make_analyze_object_state_action
+from plone.pgcatalog.startup import _make_autovacuum_settings_action
 from plone.pgcatalog.startup import _schema_sql_version
 from plone.pgcatalog.startup import _text_index_targets
 from plone.pgcatalog.startup import check_lc_ctype
@@ -94,6 +95,55 @@ class TestAnalyzeObjectStateAction:
         action(DSN)
 
 
+def _reloptions(conn):
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT reloptions FROM pg_class WHERE oid = 'object_state'::regclass"
+        )
+        return cur.fetchone()["reloptions"] or []
+
+
+class TestAutovacuumSettingsAction:
+    """Per-table autoanalyze for object_state (#224)."""
+
+    def test_sets_analyze_thresholds(self, pg_conn_with_catalog):
+        _make_autovacuum_settings_action()(DSN)
+
+        assert sorted(_reloptions(pg_conn_with_catalog)) == [
+            "autovacuum_analyze_scale_factor=0.01",
+            "autovacuum_analyze_threshold=5000",
+        ]
+
+    def test_keeps_operator_settings(self, pg_conn_with_catalog):
+        pg_conn_with_catalog.execute(
+            "ALTER TABLE object_state SET (autovacuum_analyze_scale_factor = 0.05)"
+        )
+        pg_conn_with_catalog.commit()
+
+        _make_autovacuum_settings_action()(DSN)
+
+        assert _reloptions(pg_conn_with_catalog) == [
+            "autovacuum_analyze_scale_factor=0.05"
+        ]
+
+    def test_gives_up_quickly_when_the_table_is_locked(
+        self, pg_conn_with_catalog, caplog
+    ):
+        """A running autovacuum holds SHARE UPDATE EXCLUSIVE; don't wait."""
+        import time
+
+        with psycopg.connect(DSN) as blocker:
+            blocker.execute("LOCK TABLE object_state IN SHARE UPDATE EXCLUSIVE MODE")
+            started = time.monotonic()
+            with caplog.at_level("WARNING", logger="plone.pgcatalog.startup"):
+                _make_autovacuum_settings_action()(DSN)
+            assert time.monotonic() - started < 10
+            blocker.rollback()
+
+        assert _reloptions(pg_conn_with_catalog) == []
+        assert "autovacuum" in caplog.text
+
+
 class _RecordingStorage:
     """Fake storage recording defer_startup_action calls (version-aware)."""
 
@@ -126,6 +176,7 @@ class TestVersionTaggedDeferral:
             "ensure_text_indexes",
             "ensure_field_indexes",
             "analyze_object_state",
+            "autovacuum_settings",
         ]
         assert all(version is not None for _, version in storage.calls)
 
@@ -156,6 +207,7 @@ class TestVersionTaggedDeferral:
             "ensure_text_indexes",
             "ensure_field_indexes",
             "analyze_object_state",
+            "autovacuum_settings",
         ]
 
     def test_index_set_version_is_deterministic_and_order_independent(self):

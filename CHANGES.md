@@ -36,6 +36,16 @@
   documents the requirement, the CloudNativePG setting and how to move an
   affected database. #228
 
+- Planner statistics follow a bulk recatalog. `clearFindAndRebuild()` (and
+  with it the catalog install and `refreshCatalog(clear=1)`) now commits its
+  last batch and runs `ANALYZE object_state`, through the new
+  `maintenance.analyze_object_state()`, which `repair_uncataloged()` uses
+  too. At startup, `object_state` gets `autovacuum_analyze_scale_factor =
+  0.01` and `autovacuum_analyze_threshold = 5000`, unless an operator set
+  `autovacuum_analyze_*` options on it; the PostgreSQL default of 10 % let a
+  full recatalog of 140k objects go unanalyzed, and search hung because the
+  planner ignored the GIN indexes. #224
+
 ## 1.0.0rc6 (2026-10-09)
 
 ### Changed

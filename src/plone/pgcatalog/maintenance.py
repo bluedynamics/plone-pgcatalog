@@ -288,6 +288,20 @@ def count_uncataloged_candidates(conn):
     )
 
 
+def analyze_object_state(conn):
+    """Refresh the planner statistics after a bulk (re)catalog (#224).
+
+    Autoanalyze waits for 10 % of the rows to change by default, and
+    object_state also holds every non-content object, so a recatalog of
+    all content can stay below that.  The planner then still believes
+    almost no row has catalog data and ignores the GIN indexes.
+    """
+    log.info("ANALYZE object_state (may take a while on large tables)")
+    with conn.cursor() as cur:
+        cur.execute("ANALYZE object_state")
+    log.info("ANALYZE object_state done")
+
+
 class RepairResult(NamedTuple):
     """Outcome of :func:`repair_uncataloged`."""
 
@@ -399,10 +413,7 @@ def repair_uncataloged(
             if batch:
                 flush()
         if paths and not dry_run:
-            # Bulk writes leave the planner statistics stale (#224).
-            with conn.cursor() as cur:
-                cur.execute("ANALYZE object_state")
-            log.info("repair_uncataloged: ANALYZE object_state done")
+            analyze_object_state(conn)
     finally:
         pool.putconn(conn)
 

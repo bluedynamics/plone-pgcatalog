@@ -2561,3 +2561,13 @@ class TestGopipResyncUpgradeStep:
         (step,) = steps.iter(f"{gs}upgradeStep")
         assert (step.get("source"), step.get("destination")) == ("4", "5")
         assert step.get("handler") == ".profile_3.resync_gopip_ranks"
+
+
+class TestRebuildAnalyzes:
+    def test_clear_find_and_rebuild_runs_analyze(self, pg_functional, caplog):
+        """Planner statistics must follow a bulk recatalog (#224)."""
+        catalog = pg_functional["portal"]["portal_catalog"]
+        with caplog.at_level("INFO"):
+            catalog.clearFindAndRebuild()
+        transaction.commit()
+        assert "ANALYZE object_state" in caplog.text
