@@ -961,9 +961,12 @@ class TestMaintenanceMethods:
             mock.patch.object(
                 PlonePGCatalogTool, "_walk_site_paths", return_value=iter([])
             ),
+            mock.patch("plone.pgcatalog.catalog._commit_and_minimize"),
+            mock.patch("plone.pgcatalog.catalog.analyze_object_state") as analyze,
         ):
             tool.clearFindAndRebuild()
             clear_mock.assert_called_once_with(mock_pg_conn)
+            analyze.assert_called_once_with(mock_pg_conn)  # #224
 
     def test_clearFindAndRebuild_indexes_walked_objects(self):
         """clearFindAndRebuild calls catalog_object for each (obj, path)."""
@@ -987,6 +990,8 @@ class TestMaintenanceMethods:
                 return_value=iter([(obj1, "/plone/doc1"), (obj2, "/plone/doc2")]),
             ),
             mock.patch.object(PlonePGCatalogTool, "catalog_object") as cat_mock,
+            mock.patch("plone.pgcatalog.catalog._commit_and_minimize"),
+            mock.patch("plone.pgcatalog.catalog.analyze_object_state"),
         ):
             tool.clearFindAndRebuild()
             assert cat_mock.call_count == 2

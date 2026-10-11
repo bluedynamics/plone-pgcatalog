@@ -207,6 +207,7 @@ zconsole
 effectiveRange
 reindexIndex
 [Cc]type
+[Aa]utoanalyze
 repair_uncataloged
 requeue_lost_extractions
 [Rr]ecatalog(s|ed|ing)?

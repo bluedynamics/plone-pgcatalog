@@ -102,10 +102,14 @@ spec:
 - Set ZODB `cache-size` high (for example, 10000) -- no BTree pressure means more cache available for application objects.
 - PostgreSQL autocreates all necessary indexes at startup via the `CatalogStateProcessor` DDL. No manual index creation is needed.
 - Run `ANALYZE object_state` after large bulk imports to update planner statistics.
-- Configure `autovacuum` for the `object_state` table. With frequent catalog writes, increase `autovacuum_analyze_threshold`:
+  `clearFindAndRebuild()` and `repair_uncataloged()` do it themselves.
+- Autoanalyze for `object_state`: at startup, plone.pgcatalog sets
+  `autovacuum_analyze_scale_factor = 0.01` and `autovacuum_analyze_threshold = 5000` on the table.
+  The PostgreSQL default of 10 % is too coarse, because the table holds every ZODB object and a recatalog of all content can stay below it; the planner then ignores the GIN indexes and searches slow down by orders of magnitude.
+  If you set any `autovacuum_analyze_*` option on `object_state` yourself, plone.pgcatalog leaves the table alone:
 
   ```sql
-  ALTER TABLE object_state SET (autovacuum_analyze_threshold = 5000);
+  ALTER TABLE object_state SET (autovacuum_analyze_scale_factor = 0.02);
   ```
 
 - Deploy a reverse proxy (nginx, HAProxy) with rate limiting on search endpoints (`@@search`, `@@search-results`) to protect against query abuse.

@@ -44,6 +44,7 @@ from plone.pgcatalog.maintenance import _commit_and_minimize
 from plone.pgcatalog.maintenance import _make_unsupported
 from plone.pgcatalog.maintenance import _REBUILD_BATCH
 from plone.pgcatalog.maintenance import _UNSUPPORTED
+from plone.pgcatalog.maintenance import analyze_object_state
 from plone.pgcatalog.maintenance import clear_catalog_data
 from plone.pgcatalog.pending import _get_pending
 from plone.pgcatalog.pending import _local
@@ -1031,6 +1032,10 @@ class PlonePGCatalogTool(UniqueObject, Folder):
                 log.info("clearFindAndRebuild: %d objects indexed", count)
 
         log.info("clearFindAndRebuild: %d objects indexed total", count)
+        # Commit the last batch too, so ANALYZE sees the rebuilt rows (#224).
+        _commit_and_minimize(jar)
+        with self._pg_connection() as conn:
+            analyze_object_state(conn)
 
     # -- Traversal helpers for clearFindAndRebuild --------------------------
 

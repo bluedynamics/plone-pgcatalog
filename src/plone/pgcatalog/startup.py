@@ -308,6 +308,11 @@ def _defer_index_actions(storage, processor):
         "analyze_object_state",
         _schema_sql_version(processor),
     )
+    _defer(
+        _make_autovacuum_settings_action(),
+        "autovacuum_settings",
+        _AUTOVACUUM_SETTINGS_VERSION,
+    )
 
 
 def _make_ensure_text_indexes_action():
@@ -402,6 +407,49 @@ def _make_ensure_field_indexes_action():
                 "(lock timeout or other error) — "
                 "custom field queries may be slow until indexes are created. "
                 "Indexes will be retried on next startup.",
+                exc_info=True,
+            )
+
+    return _action
+
+
+# Bump when _AUTOVACUUM_SETTINGS changes, so replicas re-run the action.
+_AUTOVACUUM_SETTINGS_VERSION = "1"
+_AUTOVACUUM_SETTINGS = (
+    "autovacuum_analyze_scale_factor = 0.01, autovacuum_analyze_threshold = 5000"
+)
+
+
+def _make_autovacuum_settings_action():
+    """Return a callable(dsn) that tunes autoanalyze for object_state (#224).
+
+    The default scale factor (10 %) is far too coarse for this table: it
+    holds every ZODB object, and a recatalog changes the catalog columns of
+    a minority of rows while JSONB/GIN plans depend on them heavily.  Keeps
+    any ``autovacuum_analyze_*`` setting an operator made.
+
+    The ALTER needs SHARE UPDATE EXCLUSIVE, which waits for a running
+    (auto)vacuum.  This runs before the first write transaction, so it gives
+    up after two seconds and tries again at the next startup.
+    """
+
+    def _action(dsn):
+        try:
+            with psycopg.connect(dsn, autocommit=True) as conn:
+                (options,) = conn.execute(
+                    "SELECT coalesce(reloptions, '{}') FROM pg_class "
+                    "WHERE oid = 'object_state'::regclass"
+                ).fetchone()
+                if any(o.startswith("autovacuum_analyze_") for o in options):
+                    log.debug("object_state has its own autoanalyze settings")
+                    return
+                conn.execute("SET lock_timeout = '2s'")
+                conn.execute(f"ALTER TABLE object_state SET ({_AUTOVACUUM_SETTINGS})")
+                log.info("object_state autoanalyze set to %s", _AUTOVACUUM_SETTINGS)
+        except Exception:
+            log.warning(
+                "Could not set the autovacuum settings of object_state; "
+                "trying again at the next startup.",
                 exc_info=True,
             )
 

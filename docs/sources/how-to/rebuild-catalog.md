@@ -35,6 +35,10 @@ transaction.commit()
 
 Expected timing: approximately 15 ms per object.
 
+At the end, the rebuild runs `ANALYZE object_state`, so the query planner sees the new catalog data.
+If you write your own bulk (re)catalog tool, call `plone.pgcatalog.maintenance.analyze_object_state(conn)` (or run `ANALYZE object_state`) when it is done.
+Until then, queries can ignore the catalog indexes and become very slow.
+
 ## Selective reindex (reindexIndex)
 
 Re-extracts a single index from all ZODB objects:
