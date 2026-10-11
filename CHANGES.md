@@ -22,6 +22,12 @@
   zodb-pgjsonb's instance pool per occurrence until every `getconn()`
   timed out. #246
 
+- `maintenance.requeue_lost_extractions()` only recatalogs objects whose
+  current type passes `PGCATALOG_TIKA_CONTENT_TYPES`. Images and other types
+  excluded by a narrowed allowlist were rewritten on every run without
+  anything being queued, because their old `done` jobs with empty text look
+  like lost text. The skipped count is logged. #252
+
 ## 1.0.0rc6 (2026-10-09)
 
 ### Changed

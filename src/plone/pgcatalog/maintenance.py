@@ -419,7 +419,7 @@ def repair_uncataloged(
 # Weight 'C' in searchable_text comes only from the Tika merge
 # (pgcatalog_merge_extracted_text); title is A, description B, body D.
 _LOST_EXTRACTION_SQL = """
-SELECT o.zoid, o.path FROM object_state o
+SELECT o.zoid, o.path, o.idx->>'mime_type' AS mime_type FROM object_state o
 WHERE o.idx IS NOT NULL AND o.path IS NOT NULL
   AND (
     (EXISTS (SELECT 1 FROM text_extraction_queue q
@@ -435,14 +435,27 @@ ORDER BY o.zoid
 
 
 def _lost_extraction_paths(conn, include_failed):
-    """Paths of cataloged objects whose extracted text is gone."""
+    """Paths of cataloged objects whose extracted text is gone.
+
+    Only objects whose current ``mime_type`` passes the allowlist: for any
+    other the processor queues nothing, so recataloging them would rewrite
+    them on every run for nothing (#252).
+    """
     with conn.cursor() as cur:
         cur.execute("SELECT to_regclass('text_extraction_queue') AS t")
         if cur.fetchone()["t"] is None:
             log.info("requeue_lost_extractions: no extraction queue; nothing to do")
             return []
         cur.execute(_LOST_EXTRACTION_SQL, {"include_failed": include_failed})
-        return [row["path"] for row in cur.fetchall()]
+        rows = cur.fetchall()
+    paths = [row["path"] for row in rows if processor._should_extract(row["mime_type"])]
+    if len(paths) < len(rows):
+        log.info(
+            "requeue_lost_extractions: skipped %d candidates whose type is not "
+            "in PGCATALOG_TIKA_CONTENT_TYPES",
+            len(rows) - len(paths),
+        )
+    return paths
 
 
 def _recatalog_paths(catalog, paths, dry_run):

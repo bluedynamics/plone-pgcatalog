@@ -350,6 +350,7 @@ Content that [zodb-pgjsonb#120](https://github.com/bluedynamics/zodb-pgjsonb/iss
 Such files are listed and found by title, but not by the words inside them.
 
 `maintenance.requeue_lost_extractions()` finds them: their extraction job is `done`, but `searchable_text` has no text from Tika left.
+It only considers files whose type is in `PGCATALOG_TIKA_CONTENT_TYPES`, because nothing would be queued for any other type.
 It recatalogs them, which queues the extraction for the file versions they hold now.
 
 Before you run it, make sure the worker has the same `PGCATALOG_TIKA_CONTENT_TYPES` as Zope and that Tika is pinned and settled.
@@ -397,7 +398,7 @@ Without `PGCATALOG_TIKA_URL`, nothing can be queued, and the function refuses to
 `--include-failed` also retries files whose job is `failed`.
 It replaces the `UPDATE` statement in {ref}`the section above <recover-failed-extractions>` and only retries the file versions the content holds now, not replaced ones.
 
-Files whose extraction legitimately produced no text, such as scanned PDFs or images without OCR, look the same as files whose text was lost.
+Files whose extraction legitimately produced no text, such as scanned PDFs without OCR, look the same as files whose text was lost.
 They are queued again on every run, which costs a Tika call each but does no harm.
 Telling them apart needs [#247](https://github.com/bluedynamics/plone-pgcatalog/issues/247).
 
