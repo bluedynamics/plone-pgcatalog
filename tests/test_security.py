@@ -624,7 +624,7 @@ class TestReleaseRequestConnectionRobustness:
     """Tests that release_request_connection handles edge cases gracefully."""
 
     def test_handles_closed_connection(self):
-        """release_request_connection skips putconn for closed connections."""
+        """A closed connection is returned too: the pool frees its slot (#246)."""
         from plone.pgcatalog.pending import _local
         from plone.pgcatalog.pool import release_request_connection
         from unittest.mock import MagicMock
@@ -638,8 +638,10 @@ class TestReleaseRequestConnectionRobustness:
 
         release_request_connection()
 
-        # putconn should NOT be called for closed connections
-        mock_pool.putconn.assert_not_called()
+        # psycopg-pool discards a closed connection and frees its slot;
+        # skipping putconn leaked the slot forever (#246)
+        mock_pool.putconn.assert_called_once_with(mock_conn)
+        mock_conn.rollback.assert_not_called()
         # Thread-locals should be cleaned up
         assert _local.pgcat_conn is None
         assert _local.pgcat_pool is None

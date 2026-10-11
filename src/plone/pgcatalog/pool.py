@@ -16,6 +16,7 @@ import os
 
 
 __all__ = [
+    "discard_request_connection",
     "get_dsn",
     "get_pool",
     "get_request_connection",
@@ -53,19 +54,21 @@ def get_request_connection(pool):
     The connection is returned to the pool by ``release_request_connection()``,
     which is called by the IPubEnd subscriber at request end.
 
-    Falls back to normal pool getconn/putconn when no request-scoped
-    connection is active (e.g. in tests or background tasks).
+    A request connection the server closed meanwhile (failover,
+    ``pg_terminate_backend``, idle timeout) is returned to its pool before
+    a new one is checked out, so its slot is freed (#246).
 
     Note:
         If IPubEnd does not fire (e.g. SIGTERM, middleware crash), the
-        thread-local connection is never returned to the pool.  psycopg_pool
-        reclaims idle connections after ``max_idle`` seconds (default: 10 min),
-        so leaked connections are eventually recovered.  For stricter cleanup,
-        configure ``max_lifetime`` on the connection pool.
+        thread-local connection is never returned to the pool, and its
+        slot stays counted until the process ends: psycopg-pool's
+        ``max_idle`` only applies to connections idle *in* the pool.
     """
     conn = getattr(_local, "pgcat_conn", None)
     if conn is not None and not conn.closed:
         return conn
+    if conn is not None:
+        discard_request_connection()
     conn = pool.getconn()
     _local.pgcat_conn = conn
     _local.pgcat_pool = pool
@@ -84,20 +87,32 @@ def release_request_connection(event=None):
     that block ``CREATE INDEX CONCURRENTLY`` (#118).  ``rollback()``
     on a conn with no open transaction is a cheap no-op.
     """
+    discard_request_connection()
+
+
+def discard_request_connection():
+    """Return the request-scoped connection to its pool and forget it.
+
+    Clears the thread-local state first, so no path can return the same
+    connection twice.  A closed connection is returned too: psycopg-pool
+    discards it and frees its slot, while skipping ``putconn()`` would
+    leak the slot for good (#246).
+    """
     conn = getattr(_local, "pgcat_conn", None)
     pool = getattr(_local, "pgcat_pool", None)
-    if conn is not None and pool is not None:
-        try:
-            if not conn.closed:
-                # Close any implicit txn opened by prior SELECTs.
-                # Suppress exceptions — a dead conn shouldn't break pool return.
-                with contextlib.suppress(Exception):
-                    conn.rollback()
-                pool.putconn(conn)
-        except Exception:
-            log.warning("Failed to return connection to pool", exc_info=True)
     _local.pgcat_conn = None
     _local.pgcat_pool = None
+    if conn is None or pool is None:
+        return
+    if not conn.closed:
+        # Close any implicit txn opened by prior SELECTs.
+        # Suppress exceptions — a dead conn shouldn't break pool return.
+        with contextlib.suppress(Exception):
+            conn.rollback()
+    try:
+        pool.putconn(conn)
+    except Exception:
+        log.warning("Failed to return connection to pool", exc_info=True)
 
 
 def get_storage_connection(context):

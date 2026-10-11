@@ -50,6 +50,7 @@ from plone.pgcatalog.pending import _local
 from plone.pgcatalog.pending import set_partial_pending
 from plone.pgcatalog.pending import set_pending
 from plone.pgcatalog.pgindex import PGCatalogIndexes
+from plone.pgcatalog.pool import discard_request_connection
 from plone.pgcatalog.pool import get_pool
 from plone.pgcatalog.pool import get_request_connection
 from plone.pgcatalog.pool import get_storage_connection
@@ -440,6 +441,9 @@ class PlonePGCatalogTool(UniqueObject, Folder):
         if existing is not None and not existing.closed:
             yield existing
             return
+        if existing is not None:
+            # Closed server-side: free its pool slot before borrowing (#246)
+            discard_request_connection()
 
         # Fallback: borrow from pool (tests, maintenance, no request)
         pool = get_pool(self)
