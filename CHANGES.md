@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.0.0rc7 (2026-10-12)
 
 ### Fixed
 
