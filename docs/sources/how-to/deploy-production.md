@@ -16,6 +16,57 @@ maintenance_work_mem = 256MB    # For REINDEX/VACUUM
 max_connections = 100           # Match Zope thread count + overhead
 ```
 
+(database-locale)=
+
+### Database locale
+
+The database must not use `C` or `POSIX` as its character classification (`LC_CTYPE`).
+With a `C` ctype, PostgreSQL's text search parser treats every non-ASCII character as part of a word, so punctuation such as `»`, `–`, `…` or `©` sticks to the neighbouring word.
+Full-text queries then silently return fewer results; on one production site 22 % of the stored search text was affected.
+plone.pgcatalog logs an ERROR at startup when it finds such a database.
+
+Check it with:
+
+```sql
+SELECT datname, datctype FROM pg_database WHERE datname = current_database();
+```
+
+Only `datctype` counts.
+A database created with the `builtin` locale provider but `LC_CTYPE 'C'` is affected too, although it looks correctly configured.
+The collation (`LC_COLLATE`) can stay `C`; it does not influence tokenization.
+
+`initdb` falls back to `C` when no locale is set in its environment, which is the normal case in container images without `LANG`.
+The official `postgres` Docker image sets `en_US.utf8` and is fine.
+
+#### Fixing an affected database
+
+`LC_CTYPE` cannot be changed on an existing database.
+
+1. Create a new database with a proper ctype, keeping the collation if you like:
+
+   ```sql
+   CREATE DATABASE zodb_new TEMPLATE template0 ENCODING 'UTF8'
+     LC_COLLATE 'C' LC_CTYPE 'C.UTF-8';
+   ```
+
+2. Copy the data with `pg_dump` / `pg_restore`.
+   The restore rebuilds all indexes, so title and description searches are correct right away.
+3. Point Zope at the new database and recatalog all content, because the stored `searchable_text` keeps its broken lexemes through a dump and restore.
+   Use the repair script from {doc}`rebuild-catalog` with `--all`: it recatalogs every object without clearing the catalog first, so search keeps working meanwhile.
+   With Tika extraction configured, this queues the extraction of every file again.
+
+To see which rows are still mis-tokenized after the move, run in the new database:
+
+```sql
+SELECT count(*) FROM object_state os
+ WHERE searchable_text IS NOT NULL
+   AND EXISTS (
+     SELECT 1 FROM unnest(tsvector_to_array(os.searchable_text)) lex
+      WHERE lex ~ '[^\x01-\x7f]'
+        AND array_length(tsvector_to_array(to_tsvector('simple', lex)), 1)
+            IS DISTINCT FROM 1);
+```
+
 ### Docker
 
 ```bash
@@ -34,7 +85,17 @@ See {doc}`enable-bm25` for details.
 
 plone.pgcatalog is compatible with CloudNativePG.
 VectorChord-BM25 supports WAL replication, so read replicas can serve BM25 queries.
-No special operator configuration is needed beyond the standard PostgreSQL image.
+
+CloudNativePG passes no locale to `initdb` unless you set one, so a new cluster gets `LC_CTYPE 'C'` (see {ref}`database-locale`).
+Set it when you create the cluster; it cannot be changed later:
+
+```yaml
+spec:
+  bootstrap:
+    initdb:
+      localeCType: C.UTF-8
+      localeCollate: C
+```
 
 ## Performance tuning
 

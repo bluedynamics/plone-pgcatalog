@@ -28,6 +28,14 @@
   anything being queued, because their old `done` jobs with empty text look
   like lost text. The skipped count is logged. #252
 
+- Log an ERROR at startup when the database's `LC_CTYPE` is `C` or `POSIX`.
+  PostgreSQL's text search parser then glues non-ASCII punctuation such as
+  `»`, `–` or `…` to the adjacent word, and full-text queries silently
+  return incomplete results. `initdb` and CloudNativePG default to this
+  when no locale is set. Startup continues. The production how-to now
+  documents the requirement, the CloudNativePG setting and how to move an
+  affected database. #228
+
 ## 1.0.0rc6 (2026-10-09)
 
 ### Changed

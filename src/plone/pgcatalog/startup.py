@@ -102,6 +102,54 @@ def _detect_languages_from_db(db):  # pragma: no cover
     return None
 
 
+_DOCS_LOCALE_URL = (
+    "https://bluedynamics.github.io/plone-pgcatalog/how-to/"
+    "deploy-production.html#database-locale"
+)
+
+
+def _ctype_is_c(datctype):
+    """Mirror PostgreSQL's ``lc_ctype_is_c()``: only these two names."""
+    return datctype in ("C", "POSIX")
+
+
+def check_lc_ctype(dsn):
+    """Log an ERROR when the database's LC_CTYPE is C or POSIX (#228).
+
+    With a C ctype the text search parser treats every non-ASCII character
+    as a letter, so punctuation such as ``»``, ``–`` or ``…`` sticks to the
+    neighbouring word and full-text queries silently miss.  Only
+    ``datctype`` matters: a database with the builtin locale provider and
+    ``LC_CTYPE 'C'`` looks correctly configured and is still affected.
+
+    Does not stop the startup: an affected database keeps working, with
+    incomplete full-text results, until it is migrated.
+
+    Returns:
+        the offending ``datctype``, or None when it is fine or unknown.
+    """
+    try:
+        with psycopg.connect(dsn, connect_timeout=5) as conn:
+            (datctype,) = conn.execute(
+                "SELECT datctype FROM pg_database WHERE datname = current_database()"
+            ).fetchone()
+    except Exception:
+        log.warning("Could not check the database lc_ctype", exc_info=True)
+        return None
+    if not _ctype_is_c(datctype):
+        return None
+    log.error(
+        "The database has lc_ctype %r. Full-text search silently returns "
+        "incomplete results: non-ASCII punctuation such as '»', '–' or '…' "
+        "is glued to the adjacent word. Move the data to a database created "
+        "with LC_CTYPE 'C.UTF-8' (the collation can stay 'C') and recatalog "
+        "all content afterwards. See %s",
+        datctype,
+        _DOCS_LOCALE_URL,
+    )
+    return datctype
+
+
 def register_catalog_processor(event):
     """IDatabaseOpenedWithRoot subscriber: register the processor.
 
@@ -123,6 +171,8 @@ def register_catalog_processor(event):
         dsn = getattr(storage, "_dsn", None)
         languages = _get_bm25_languages(db)
         detect_and_set_backend(dsn, languages=languages)
+        if dsn:
+            check_lc_ctype(dsn)
 
         processor = CatalogStateProcessor()
         storage.register_state_processor(processor)

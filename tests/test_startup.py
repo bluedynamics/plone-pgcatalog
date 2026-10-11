@@ -3,15 +3,21 @@
 from plone.pgcatalog.columns import get_registry
 from plone.pgcatalog.columns import IndexType
 from plone.pgcatalog.processor import CatalogStateProcessor
+from plone.pgcatalog.startup import _ctype_is_c
 from plone.pgcatalog.startup import _defer_index_actions
 from plone.pgcatalog.startup import _index_set_version
 from plone.pgcatalog.startup import _make_analyze_object_state_action
 from plone.pgcatalog.startup import _schema_sql_version
 from plone.pgcatalog.startup import _text_index_targets
+from plone.pgcatalog.startup import check_lc_ctype
+from psycopg.conninfo import make_conninfo
 from psycopg.types.json import Json
 from tests.conftest import DSN
 
 import hashlib
+import os
+import psycopg
+import pytest
 
 
 def _insert_catalog_rows(conn, count=5):
@@ -159,3 +165,58 @@ class TestVersionTaggedDeferral:
         assert _index_set_version([]).startswith("sha256:")
         expected_empty = "sha256:" + hashlib.sha256(b"").hexdigest()
         assert _index_set_version([]) == expected_empty
+
+
+@pytest.fixture
+def c_ctype_dsn():
+    """A throw-away database created with LC_CTYPE 'C' (#228)."""
+    name = f"pgcat_ctype_c_{os.getpid()}"
+    try:
+        admin = psycopg.connect(DSN, autocommit=True)
+    except psycopg.Error:
+        pytest.skip("no database connection")
+    with admin:
+        admin.execute(f"DROP DATABASE IF EXISTS {name}")
+        try:
+            admin.execute(
+                f"CREATE DATABASE {name} TEMPLATE template0 ENCODING 'UTF8' "
+                "LC_COLLATE 'C' LC_CTYPE 'C'"
+            )
+        except psycopg.Error as exc:
+            pytest.skip(f"cannot create a test database: {exc}")
+        try:
+            yield make_conninfo(DSN, dbname=name)
+        finally:
+            admin.execute(f"DROP DATABASE IF EXISTS {name} WITH (FORCE)")
+
+
+class TestLcCtypeCheck:
+    def test_c_ctype_database_is_reported(self, c_ctype_dsn, caplog):
+        with caplog.at_level("ERROR", logger="plone.pgcatalog.startup"):
+            assert check_lc_ctype(c_ctype_dsn) == "C"
+        assert "lc_ctype" in caplog.text
+        assert "C.UTF-8" in caplog.text
+
+    def test_c_ctype_really_glues_punctuation(self, c_ctype_dsn):
+        """Why the check exists: the parser keeps '»' in the lexeme."""
+        with psycopg.connect(c_ctype_dsn) as conn:
+            (vector,) = conn.execute(
+                "SELECT to_tsvector('simple', 'Impulswochen »technik')::text"
+            ).fetchone()
+        assert "'»technik'" in vector
+
+    def test_regular_database_passes(self, caplog):
+        with caplog.at_level("ERROR", logger="plone.pgcatalog.startup"):
+            assert check_lc_ctype(DSN) is None
+        assert caplog.text == ""
+
+    def test_posix_counts_as_c(self):
+        assert _ctype_is_c("POSIX")
+        assert _ctype_is_c("C")
+        assert not _ctype_is_c("C.UTF-8")
+        assert not _ctype_is_c("en_US.utf8")
+
+    def test_unreachable_database_only_warns(self, caplog):
+        with caplog.at_level("WARNING", logger="plone.pgcatalog.startup"):
+            assert check_lc_ctype("host=127.0.0.1 port=1 connect_timeout=1") is None
+        assert "lc_ctype" in caplog.text
