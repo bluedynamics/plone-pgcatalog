@@ -15,6 +15,7 @@ from plone.app.testing import logout
 from plone.app.testing import setRoles
 from plone.app.testing import TEST_USER_ID
 from plone.app.testing import TEST_USER_NAME
+from plone.folder.default import DefaultOrdering
 from plone.pgcatalog.testing import PGCATALOG_PG_FIXTURE
 from zope.pytestlayer import fixture
 
@@ -1809,6 +1810,96 @@ class TestGopipAfterReorder:
         ]
 
 
+class _PrependOrdering(DefaultOrdering):
+    """Inserts new items at the top, like bda.aaf.site's "prepend" ordering."""
+
+    def notifyAdded(self, id):  # noqa: A002
+        order = self._order(True)
+        pos = self._pos(True)
+        order.insert(0, id)
+        pos.clear()
+        for n, oid in enumerate(order):
+            pos[oid] = n
+
+
+def _renumbered_gopip_folder(portal):
+    """Folder a, d, b, c whose ranks went through a full renumber.
+
+    Moving d between a and b cannot fit into the gap between the dense
+    ranks 0 and 1, so assign_ranks renumbers: a=0, d=1024, b=2048, c=3072.
+    The indexer's dense position of c is 3, which would sort it before d.
+    """
+    folder, folder_path = _make_gopip_folder(portal, ("a", "b", "c", "d"))
+    folder.getOrdering().moveObjectsByDelta(["d"], -2)
+    transaction.commit()
+    assert folder.objectIds() == ["a", "d", "b", "c"]  # sanity
+    return folder, folder_path
+
+
+class TestGopipSurvivesReindex:
+    """A reindex of a child must not break the folder's rank order (#245)."""
+
+    def test_full_reindex_after_renumber(self, pg_functional):
+        folder, folder_path = _renumbered_gopip_folder(pg_functional["portal"])
+
+        folder["c"].reindexObject()
+        transaction.commit()
+
+        assert _stored_order(pg_functional, folder_path) == ["a", "d", "b", "c"]
+
+    def test_partial_reindex_of_position_after_renumber(self, pg_functional):
+        folder, folder_path = _renumbered_gopip_folder(pg_functional["portal"])
+
+        folder["c"].reindexObject(idxs=["getObjPositionInParent"])
+        # A partial-only transaction never reaches the storage, so the
+        # partial update needs a ZODB write in the same transaction to land.
+        folder.setTitle("changed")
+        transaction.commit()
+
+        assert _stored_order(pg_functional, folder_path) == ["a", "d", "b", "c"]
+
+    def test_repaired_child_keeps_its_place(self, pg_functional):
+        from plone.pgcatalog.maintenance import repair_uncataloged
+
+        portal = pg_functional["portal"]
+        folder, folder_path = _renumbered_gopip_folder(portal)
+        _wipe_catalog_row(pg_functional, f"{folder_path}/c")
+
+        result = repair_uncataloged(portal["portal_catalog"], portal)
+
+        assert f"{folder_path}/c" in result.paths
+        assert _stored_order(pg_functional, folder_path) == ["a", "d", "b", "c"]
+
+    def test_prepend_ordering_new_item_stays_first(self, pg_functional):
+        from zope.component import getGlobalSiteManager
+
+        gsm = getGlobalSiteManager()
+        gsm.registerAdapter(_PrependOrdering, name="prepend")
+        try:
+            portal = pg_functional["portal"]
+            setRoles(portal, TEST_USER_ID, ["Manager"])
+            portal.invokeFactory("Folder", "news")
+            folder = portal["news"]
+            folder.setOrdering("prepend")
+            for item_id in ("first", "second", "third"):
+                folder.invokeFactory("Document", item_id, title=item_id)
+                transaction.commit()
+            assert folder.objectIds() == ["third", "second", "first"]  # sanity
+            folder_path = "/".join(folder.getPhysicalPath())
+
+            # the editor saves the newest item once more
+            folder["third"].reindexObject()
+            transaction.commit()
+
+            assert _stored_order(pg_functional, folder_path) == [
+                "third",
+                "second",
+                "first",
+            ]
+        finally:
+            gsm.unregisterAdapter(_PrependOrdering, name="prepend")
+
+
 class TestGopipMaintenanceResync:
     def test_resync_heals_stale_ranks(self, pg_functional):
         """maintenance.resync_gopip heals folders corrupted before the fix.
@@ -2027,7 +2118,7 @@ class TestRepairUpgradeStep:
         )
         profile_4.repair_uncataloged_content(portal["portal_setup"])
 
-    def test_profile_version_is_4(self):
+    def test_profile_version_is_5(self):
         from pathlib import Path
 
         import plone.pgcatalog
@@ -2035,7 +2126,7 @@ class TestRepairUpgradeStep:
         metadata = (
             Path(plone.pgcatalog.__file__).parent / "profiles/default/metadata.xml"
         ).read_text()
-        assert "<version>4</version>" in metadata
+        assert "<version>5</version>" in metadata
 
 
 class TestRepairHardening:
@@ -2428,3 +2519,20 @@ class TestRequeueLostExtractions:
         with pytest.raises(RuntimeError, match="PGCATALOG_TIKA_URL"):
             requeue_lost_extractions(catalog)
         assert self._queue(tika_queue, portal["rq-env"]) == [("done", 3)]
+
+
+class TestGopipResyncUpgradeStep:
+    def test_step_4_to_5_resyncs_gopip(self):
+        """The 4 -> 5 step reuses the tested resync handler of step 2 -> 3."""
+        from pathlib import Path
+        from xml.etree import ElementTree
+
+        import plone.pgcatalog
+
+        upgrades = Path(plone.pgcatalog.__file__).parent / "upgrades"
+        assert 'file="profile_5.zcml"' in (upgrades / "configure.zcml").read_text()
+        gs = "{http://namespaces.zope.org/genericsetup}"
+        steps = ElementTree.parse(upgrades / "profile_5.zcml").getroot()
+        (step,) = steps.iter(f"{gs}upgradeStep")
+        assert (step.get("source"), step.get("destination")) == ("4", "5")
+        assert step.get("handler") == ".profile_3.resync_gopip_ranks"
