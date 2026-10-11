@@ -2717,3 +2717,124 @@ class TestKeywordsOfSection:
         ).read_text()
         assert 'name="plone.app.vocabularies.Keywords"' in overrides
         assert "PGKeywordsVocabularyFactory" in overrides
+
+
+def _assert_cataloged_at(pg_functional, *objs):
+    """Each object's row has catalog data under its current path."""
+    from ZODB.utils import u64
+
+    for obj in objs:
+        rows = _query_pg(
+            pg_functional,
+            "SELECT path, idx IS NOT NULL FROM object_state WHERE zoid = %s",
+            (u64(obj._p_oid),),
+        )
+        assert rows[0] == ("/".join(obj.getPhysicalPath()), True), obj
+
+
+class TestRenameMoveKeepCatalogData:
+    """Rename and move keep every involved row cataloged.
+
+    zodb-pgjsonb#122 listed "renaming or moving a folder" among the writes
+    that uncataloged content before zodb-pgjsonb 1.17.0.  With stock Plone
+    these paths reindex every object they write, so the tests also pass on
+    1.16.x; they guard the scenario, including the containers involved.
+    """
+
+    def _tree(self, portal, folder_id):
+        setRoles(portal, TEST_USER_ID, ["Manager"])
+        login(portal, TEST_USER_NAME)
+        portal.invokeFactory("Folder", folder_id, title="Folder")
+        portal[folder_id].invokeFactory("Document", "child", title="Child")
+        transaction.commit()
+        return portal[folder_id]
+
+    def _fc_rename(self, pg_functional, container, obj, newid, newtitle):
+        """Run folder_contents' rename action as the browser would."""
+        from plone.protect.authenticator import createToken
+        from zope.component import getMultiAdapter
+
+        request = pg_functional["request"]
+        request.method = "POST"
+        request.environ["REQUEST_METHOD"] = "POST"
+        request.form.clear()
+        request.form.update(
+            {
+                "UID_0": obj.UID(),
+                "newid_0": newid,
+                "newtitle_0": newtitle,
+                "_authenticator": createToken(),
+            }
+        )
+        view = getMultiAdapter((container, request), name="fc-rename")
+        view()
+        assert not view.errors, view.errors
+
+    def test_folder_contents_rename_of_a_folder(self, pg_functional, monkeypatch):
+        import plone.pgcatalog.move as move_mod
+
+        monkeypatch.setattr(move_mod, "_is_pgcatalog_active", lambda: True)
+        portal = pg_functional["portal"]
+        folder = self._tree(portal, "rm-folder")
+
+        self._fc_rename(pg_functional, portal, folder, "rm-renamed", "Renamed")
+        transaction.commit()
+
+        renamed = portal["rm-renamed"]
+        _assert_cataloged_at(pg_functional, portal, renamed, renamed["child"])
+        logout()
+
+    def test_folder_contents_rename_of_a_default_page(self, pg_functional, monkeypatch):
+        import plone.pgcatalog.move as move_mod
+
+        monkeypatch.setattr(move_mod, "_is_pgcatalog_active", lambda: True)
+        portal = pg_functional["portal"]
+        folder = self._tree(portal, "rm-dp")
+        folder.setDefaultPage("child")
+        transaction.commit()
+
+        self._fc_rename(pg_functional, folder, folder["child"], "child2", "Child 2")
+        transaction.commit()
+
+        assert folder.getDefaultPage() == "child2"
+        _assert_cataloged_at(pg_functional, folder, folder["child2"])
+        logout()
+
+    def test_cut_paste_folder_into_a_never_ordered_folder(
+        self, pg_functional, monkeypatch
+    ):
+        import plone.pgcatalog.move as move_mod
+
+        monkeypatch.setattr(move_mod, "_is_pgcatalog_active", lambda: True)
+        portal = pg_functional["portal"]
+        self._tree(portal, "rm-src")
+        portal.invokeFactory("Folder", "rm-target", title="Target")
+        transaction.commit()
+
+        clipboard = portal.manage_cutObjects(["rm-src"])
+        portal["rm-target"].manage_pasteObjects(clipboard)
+        transaction.commit()
+
+        moved = portal["rm-target"]["rm-src"]
+        _assert_cataloged_at(
+            pg_functional, portal, portal["rm-target"], moved, moved["child"]
+        )
+        logout()
+
+    def test_move_child_between_folders(self, pg_functional, monkeypatch):
+        import plone.pgcatalog.move as move_mod
+
+        monkeypatch.setattr(move_mod, "_is_pgcatalog_active", lambda: True)
+        portal = pg_functional["portal"]
+        source = self._tree(portal, "rm-a")
+        portal.invokeFactory("Folder", "rm-b", title="B")
+        transaction.commit()
+
+        clipboard = source.manage_cutObjects(["child"])
+        portal["rm-b"].manage_pasteObjects(clipboard)
+        transaction.commit()
+
+        _assert_cataloged_at(
+            pg_functional, source, portal["rm-b"], portal["rm-b"]["child"]
+        )
+        logout()
