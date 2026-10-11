@@ -16,6 +16,12 @@
   recataloged by `repair_uncataloged()` and `requeue_lost_extractions()`.
   The upgrade step to profile version 5 resyncs all folders once. #245
 
+- A request-scoped PostgreSQL connection that the server closed (database
+  failover, `pg_terminate_backend`, idle timeout) is now returned to the
+  pool. It used to be dropped without `putconn()`, which leaked one slot of
+  zodb-pgjsonb's instance pool per occurrence until every `getconn()`
+  timed out. #246
+
 ## 1.0.0rc6 (2026-10-09)
 
 ### Changed

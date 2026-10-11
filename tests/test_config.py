@@ -264,7 +264,7 @@ class TestRequestConnection:
         assert getattr(pending_mod._local, "pgcat_conn", None) is None
 
     def test_release_skips_rollback_for_closed_conn(self):
-        """A closed conn is not rolled back nor returned to pool."""
+        """A closed conn is not rolled back, but returned to the pool (#246)."""
         pool = mock.Mock()
         conn = mock.Mock()
         conn.closed = True
@@ -277,7 +277,8 @@ class TestRequestConnection:
         release_request_connection()
 
         conn.rollback.assert_not_called()
-        pool.putconn.assert_not_called()
+        # the pool discards it and frees the slot; skipping putconn leaked it
+        pool.putconn.assert_called_once_with(conn)
         # Thread-local still cleared
         assert getattr(pending_mod._local, "pgcat_conn", None) is None
 
