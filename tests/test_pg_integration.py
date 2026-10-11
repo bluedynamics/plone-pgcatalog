@@ -2498,6 +2498,31 @@ class TestRequeueLostExtractions:
         assert result.paths == ["/plone/rq-failed"]
         assert self._queue(tika_queue, portal["rq-failed"]) == [("pending", 0)]
 
+    def test_skips_types_the_allowlist_excludes(
+        self, pg_functional, tika_queue, monkeypatch
+    ):
+        """An image queued under a wider allowlist is not rewritten (#252)."""
+        from plone.namedfile.file import NamedBlobFile
+        from plone.pgcatalog import processor
+        from plone.pgcatalog.maintenance import requeue_lost_extractions
+
+        portal, catalog = self._file(pg_functional, tika_queue, "rq-pdf")
+        portal.invokeFactory("File", "rq-png", title="An image file")
+        portal["rq-png"].file = NamedBlobFile(
+            data=b"\x89PNG fake", filename="rq.png", contentType="image/png"
+        )
+        portal["rq-png"].reindexObject()
+        transaction.commit()
+        assert self._queue(tika_queue, portal["rq-png"]) == [("pending", 0)]
+        self._set_status(tika_queue, portal["rq-pdf"], "done")
+        self._set_status(tika_queue, portal["rq-png"], "done")
+        # the deployment narrows the allowlist to documents
+        monkeypatch.setattr(processor, "TIKA_CONTENT_TYPES", ["application/pdf"])
+
+        result = requeue_lost_extractions(catalog, dry_run=True)
+
+        assert result.paths == ["/plone/rq-pdf"]
+
     def test_no_queue_table_is_a_noop(self, pg_functional):
         from plone.pgcatalog.maintenance import requeue_lost_extractions
 
