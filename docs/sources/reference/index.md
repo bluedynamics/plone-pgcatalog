@@ -14,6 +14,7 @@ configuration
 query-api
 index-types
 zcatalog-compat
+overrides
 permissions
 schema
 ipgindextranslator

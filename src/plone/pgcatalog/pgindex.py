@@ -27,6 +27,7 @@ from plone.pgcatalog.columns import IndexType
 from plone.pgcatalog.columns import validate_identifier
 from plone.pgcatalog.interfaces import IPGCatalogTool
 from plone.pgcatalog.query import _bool_to_lower_str
+from plone.pgcatalog.query import _QueryBuilder
 from Products.ZCatalog.ZCatalogIndexes import ZCatalogIndexes
 from psycopg import sql as pgsql
 
@@ -201,6 +202,69 @@ class _PGIndexMapping:
         raise NotImplementedError(_ITEMS_VALUES_NOT_IMPLEMENTED.format(method="values"))
 
 
+def _apply_index_sql(get_conn, index_id, request):
+    """``_apply_index`` for any index, through the regular query builder."""
+    if index_id not in request:
+        return IITreeSet(), (index_id,)
+
+    warnings.warn(
+        f"PGIndex._apply_index({index_id!r}) called: this is a "
+        f"ZCatalog-compatibility shim; prefer catalog(**query) for "
+        f"the full pgcatalog query pipeline.",
+        DeprecationWarning,
+        stacklevel=3,
+    )
+
+    try:
+        conn = get_conn()
+    except Exception:
+        return IITreeSet(), (index_id,)
+
+    builder = _QueryBuilder()
+    builder._query = request  # for cross-index Language lookup
+    builder.clauses.append("idx IS NOT NULL")
+    builder._process_index(index_id, request[index_id])
+    result = builder.result()
+    sql = f"SELECT zoid FROM object_state WHERE {result['where']}"
+
+    with conn.cursor() as cur:
+        cur.execute(sql, result["params"])
+        zoids = IITreeSet(row["zoid"] for row in cur.fetchall())
+    return zoids, (index_id,)
+
+
+def _subtree_filter(path):
+    """SQL condition and params for "at or below *path*", as catalog queries."""
+    builder = _QueryBuilder()
+    builder._process_index("path", {"query": path, "depth": -1})
+    result = builder.result()
+    return pgsql.SQL(result["where"]), result["params"]
+
+
+class PGSpecialIndex:
+    """Proxy for the special indexes (path, effectiveRange, SearchableText).
+
+    Their data lives in dedicated columns, not in the idx JSONB, so they
+    are not ``PGIndex``.  But the raw ZCatalog index has empty BTrees, and
+    its ``_apply_index`` silently returned an empty set, which made
+    Plone's section keyword vocabulary empty (#234).  Only
+    ``_apply_index`` is answered from PostgreSQL; everything else goes to
+    the raw index.
+    """
+
+    def __init__(self, wrapped, name, get_conn):
+        self._wrapped = wrapped
+        self._name = name
+        self._get_conn = get_conn
+
+    def _apply_index(self, request, resultset=None):
+        index_id = getattr(self._wrapped, "id", self._name)
+        return _apply_index_sql(self._get_conn, index_id, request)
+
+    def __getattr__(self, name):
+        return getattr(self._wrapped, name)
+
+
 class PGIndex:
     """Proxy wrapping a ZCatalog index with PG-backed data access.
 
@@ -240,7 +304,7 @@ class PGIndex:
         )
         return self._pg_index
 
-    def uniqueValues(self, name=None, withLengths=False):
+    def uniqueValues(self, name=None, withLengths=False, path=None):
         """Return the distinct values of this index.
 
         For ``IndexType.KEYWORD`` the JSONB value is a *list* of tags,
@@ -253,6 +317,9 @@ class PGIndex:
         A defensive ``CASE jsonb_typeof = 'array'`` branch keeps the
         query alive if a single row holds a scalar under the same
         keyword key (legacy/corrupted data).
+
+        ``path`` (pgcatalog extension) limits the values to rows at or
+        below that path, in one query (#234).
         """
         index_id = getattr(self._wrapped, "id", self._idx_key)
         if name is None:
@@ -266,6 +333,10 @@ class PGIndex:
             return
 
         key = self._key_lit
+        if path is None:
+            scope, params = pgsql.SQL("TRUE"), {}
+        else:
+            scope, params = _subtree_filter(path)
 
         if self._index_type == IndexType.KEYWORD:
             # ``jsonb_array_elements_text`` is a set-returning function
@@ -277,13 +348,14 @@ class PGIndex:
                 "SELECT jsonb_array_elements_text(idx->{key}) AS val "
                 "  FROM object_state "
                 "  WHERE idx ? {key} "
-                "    AND jsonb_typeof(idx->{key}) = 'array' "
+                "    AND jsonb_typeof(idx->{key}) = 'array' AND {scope} "
                 "UNION ALL "
                 "SELECT idx->>{key} AS val "
                 "  FROM object_state "
                 "  WHERE idx ? {key} "
-                "    AND jsonb_typeof(idx->{key}) NOT IN ('array', 'null')"
-            ).format(key=key)
+                "    AND jsonb_typeof(idx->{key}) NOT IN ('array', 'null') "
+                "    AND {scope}"
+            ).format(key=key, scope=scope)
             distinct_sql = pgsql.SQL(
                 "SELECT DISTINCT val FROM ({inner}) u WHERE val IS NOT NULL"
             ).format(inner=inner)
@@ -295,22 +367,22 @@ class PGIndex:
             distinct_sql = pgsql.SQL(
                 "SELECT DISTINCT idx->>{key} AS val "
                 "FROM object_state "
-                "WHERE idx ? {key} AND idx->>{key} IS NOT NULL"
-            ).format(key=key)
+                "WHERE idx ? {key} AND idx->>{key} IS NOT NULL AND {scope}"
+            ).format(key=key, scope=scope)
             grouped_sql = pgsql.SQL(
                 "SELECT idx->>{key} AS val, COUNT(*) AS cnt "
                 "FROM object_state "
-                "WHERE idx ? {key} AND idx->>{key} IS NOT NULL "
+                "WHERE idx ? {key} AND idx->>{key} IS NOT NULL AND {scope} "
                 "GROUP BY 1"
-            ).format(key=key)
+            ).format(key=key, scope=scope)
 
         with conn.cursor() as cur:
             if not withLengths:
-                cur.execute(distinct_sql)
+                cur.execute(distinct_sql, params)
                 for row in cur.fetchall():
                     yield row["val"]
             else:
-                cur.execute(grouped_sql)
+                cur.execute(grouped_sql, params)
                 for row in cur.fetchall():
                     yield (row["val"], row["cnt"])
 
@@ -333,36 +405,8 @@ class PGIndex:
         ``IPGIndexTranslator`` utility works for free — the dispatch
         table stays in one place.
         """
-        from plone.pgcatalog.query import _QueryBuilder
-
         index_id = getattr(self._wrapped, "id", self._idx_key)
-        if index_id not in request:
-            return IITreeSet(), (index_id,)
-
-        warnings.warn(
-            f"PGIndex._apply_index({index_id!r}) called: this is a "
-            f"ZCatalog-compatibility shim; prefer catalog(**query) for "
-            f"the full pgcatalog query pipeline.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-
-        try:
-            conn = self._pg_index._get_conn()
-        except Exception:
-            return IITreeSet(), (index_id,)
-
-        builder = _QueryBuilder()
-        builder._query = request  # for cross-index Language lookup
-        builder.clauses.append("idx IS NOT NULL")
-        builder._process_index(index_id, request[index_id])
-        result = builder.result()
-        sql = f"SELECT zoid FROM object_state WHERE {result['where']}"
-
-        with conn.cursor() as cur:
-            cur.execute(sql, result["params"])
-            zoids = IITreeSet(row["zoid"] for row in cur.fetchall())
-        return zoids, (index_id,)
+        return _apply_index_sql(self._pg_index._get_conn, index_id, request)
 
     def __getattr__(self, name):
         return getattr(self._wrapped, name)
@@ -375,9 +419,10 @@ def _maybe_wrap_index(catalog, name, raw_index):
 
     - The raw index is ``None``.
     - The catalog is not an ``IPGCatalogTool``.
-    - The index is registered with ``idx_key=None`` (special indexes
-      like SearchableText, path, effectiveRange — they have dedicated
-      columns and don't need PG-backed JSONB wrapping).
+
+    Special indexes registered with ``idx_key=None`` (SearchableText,
+    path, effectiveRange) live in dedicated columns; they get a
+    :class:`PGSpecialIndex`, which answers only ``_apply_index`` (#234).
     """
     if raw_index is None:
         return None
@@ -395,7 +440,7 @@ def _maybe_wrap_index(catalog, name, raw_index):
         index_type = entry[0]
         idx_key = entry[1]  # (IndexType, idx_key, source_attrs)
         if idx_key is None:
-            return raw_index  # Special index — no wrapping needed
+            return PGSpecialIndex(raw_index, name, catalog._get_pg_read_connection)
     else:
         idx_key = name  # Fallback: use index name as JSONB key
 
@@ -427,7 +472,7 @@ class PGCatalogIndexes(ZCatalogIndexes):
     When code accesses ``catalog.Indexes[name]``, this returns a
     ``PGIndex`` proxy instead of the raw ZCatalog index object.
     Special indexes (SearchableText, path, effectiveRange) with
-    ``idx_key=None`` are returned unwrapped.
+    ``idx_key=None`` get a ``PGSpecialIndex`` (``_apply_index`` only).
     """
 
     def _getOb(self, id, default=_marker):  # noqa: A002
