@@ -9,17 +9,23 @@ Also includes the ISavepointDataManager implementation so pending data
 participates in ZODB transaction savepoints.
 """
 
+from psycopg.rows import dict_row
 from transaction.interfaces import IDataManagerSavepoint
 from transaction.interfaces import ISavepointDataManager
 from zope.interface import implementer
 
+import logging
 import threading
 import transaction
+
+
+log = logging.getLogger(__name__)
 
 
 __all__ = [
     "add_pending_gopip",
     "add_pending_move",
+    "note_pool",
     "pop_all_partial_pending",
     "pop_all_pending_gopip",
     "pop_all_pending_moves",
@@ -224,6 +230,14 @@ class PendingDataManager:
 
     Joins lazily on first ``set_pending()`` call.  Clears pending on
     abort / tpc_finish / tpc_abort.
+
+    Also applies what the storage left behind: pending work is normally
+    consumed by ``CatalogStateProcessor.finalize()`` during the storage's
+    ``tpc_vote``.  A transaction that only registers partial updates
+    (``reindexObject(idxs=...)``, ``reindexIndex()``) writes no persistent
+    object, so the storage never votes and the work would be dropped
+    (#249).  ``sortKey()`` orders this manager after the storage, so
+    anything still pending in :meth:`tpc_vote` is exactly that case.
     """
 
     transaction_manager = None
@@ -231,6 +245,7 @@ class PendingDataManager:
     def __init__(self, txn):
         self._txn = txn
         self._joined = True
+        self._pool = None
 
     def savepoint(self):
         return PendingSavepoint(
@@ -254,7 +269,23 @@ class PendingDataManager:
         pass
 
     def tpc_vote(self, transaction):
-        pass
+        if not (_get_partial_pending() or _get_pending_moves() or _get_pending_gopip()):
+            return  # nothing registered, or the storage's finalize() consumed it
+        if self._pool is None:
+            log.warning(
+                "Catalog updates pending but no storage commit and no pool "
+                "known; they are not applied (#249)"
+            )
+            return
+        # Inline: processor imports this module.
+        from plone.pgcatalog.processor import CatalogStateProcessor
+
+        conn = self._pool.getconn()
+        try:
+            with conn.transaction(), conn.cursor(row_factory=dict_row) as cursor:
+                CatalogStateProcessor().finalize(cursor)
+        finally:
+            self._pool.putconn(conn)
 
     def tpc_finish(self, transaction):
         _get_pending().clear()
@@ -270,6 +301,16 @@ class PendingDataManager:
 
     def sortKey(self):
         return "~plone.pgcatalog.pending"
+
+
+def note_pool(pool):
+    """Tell the current transaction's data manager which pool to use.
+
+    Needed only when the transaction writes no persistent object, see
+    :class:`PendingDataManager`.
+    """
+    _ensure_joined()
+    _local._pending_dm._pool = pool
 
 
 def _ensure_joined():

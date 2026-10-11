@@ -48,6 +48,7 @@ from plone.pgcatalog.maintenance import analyze_object_state
 from plone.pgcatalog.maintenance import clear_catalog_data
 from plone.pgcatalog.pending import _get_pending
 from plone.pgcatalog.pending import _local
+from plone.pgcatalog.pending import note_pool
 from plone.pgcatalog.pending import set_partial_pending
 from plone.pgcatalog.pending import set_pending
 from plone.pgcatalog.pgindex import PGCatalogIndexes
@@ -582,6 +583,12 @@ class PlonePGCatalogTool(UniqueObject, Folder):
             return True  # Nothing to update, but partial path handled it
 
         set_partial_pending(zoid, idx_updates)
+        # A transaction with only partial updates never reaches the storage;
+        # the pending data manager then applies them through this pool (#249).
+        try:
+            note_pool(get_pool(self))
+        except RuntimeError:
+            log.debug("no PG pool for %r; partial-only commit cannot apply", self)
         if "getObjPositionInParent" in idx_updates:
             register_parent(obj)  # dense position, see _set_pg_annotation
         return True

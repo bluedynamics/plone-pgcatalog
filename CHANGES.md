@@ -4,6 +4,14 @@
 
 ### Fixed
 
+- Partial catalog updates are no longer lost when the transaction writes no
+  ZODB object. `reindexIndex()` (and the ZMI "Reindex" action on the
+  Indexes tab) reported the reindexed objects and changed nothing, and so
+  did `reindexObject(idxs=...)` in scripts that wrote nothing else: the
+  updates are applied when the storage votes, and without a write it never
+  does. The pending data manager now applies them itself in that case, with
+  the same SQL. #249
+
 - Editing an item no longer breaks the order of its folder. Every reindex
   overwrote the item's stored `getObjPositionInParent` rank with the dense
   position from the indexer, while folders that were reordered keep sparse
