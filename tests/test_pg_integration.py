@@ -1851,8 +1851,8 @@ class TestGopipSurvivesReindex:
         folder, folder_path = _renumbered_gopip_folder(pg_functional["portal"])
 
         folder["c"].reindexObject(idxs=["getObjPositionInParent"])
-        # A partial-only transaction never reaches the storage, so the
-        # partial update needs a ZODB write in the same transaction to land.
+        # With a ZODB write in the same transaction the storage applies the
+        # partial update; TestPartialOnlyTransactions covers the case without.
         folder.setTitle("changed")
         transaction.commit()
 
@@ -2571,3 +2571,76 @@ class TestRebuildAnalyzes:
             catalog.clearFindAndRebuild()
         transaction.commit()
         assert "ANALYZE object_state" in caplog.text
+
+
+def _stale_title(pg_functional, path):
+    with pg_functional["pgTestDB"].connection.cursor() as cur:
+        cur.execute(
+            "UPDATE object_state SET idx = jsonb_set(idx, '{Title}', '\"stale\"') "
+            "WHERE path = %s",
+            (path,),
+        )
+        assert cur.rowcount == 1
+
+
+def _stored_title(pg_functional, path):
+    rows = _query_pg(
+        pg_functional, "SELECT idx->>'Title' FROM object_state WHERE path = %s", (path,)
+    )
+    return rows[0][0]
+
+
+class TestPartialOnlyTransactions:
+    """Partial updates must land without any ZODB write (#249)."""
+
+    def test_reindex_index_restores_a_stale_value(self, pg_functional):
+        portal = pg_functional["portal"]
+        setRoles(portal, TEST_USER_ID, ["Manager"])
+        portal.invokeFactory("Document", "po-doc", title="Real")
+        transaction.commit()
+        _stale_title(pg_functional, "/plone/po-doc")
+
+        portal["portal_catalog"].reindexIndex("Title")
+
+        assert _stored_title(pg_functional, "/plone/po-doc") == "Real"
+
+    def test_partial_reindex_without_write(self, pg_functional):
+        portal = pg_functional["portal"]
+        setRoles(portal, TEST_USER_ID, ["Manager"])
+        portal.invokeFactory("Document", "po-plain", title="Real")
+        transaction.commit()
+        _stale_title(pg_functional, "/plone/po-plain")
+
+        portal["po-plain"].reindexObject(idxs=["Title"])
+        transaction.commit()
+
+        assert _stored_title(pg_functional, "/plone/po-plain") == "Real"
+
+    def test_partial_position_reindex_without_write_keeps_order(self, pg_functional):
+        folder, folder_path = _renumbered_gopip_folder(pg_functional["portal"])
+
+        folder["c"].reindexObject(idxs=["getObjPositionInParent"])
+        transaction.commit()
+
+        assert _stored_order(pg_functional, folder_path) == ["a", "d", "b", "c"]
+
+    def test_with_a_write_the_storage_path_still_applies_it(self, pg_functional):
+        portal = pg_functional["portal"]
+        setRoles(portal, TEST_USER_ID, ["Manager"])
+        portal.invokeFactory("Document", "po-mixed", title="Real")
+        portal.invokeFactory("Document", "po-other", title="Other")
+        transaction.commit()
+        _stale_title(pg_functional, "/plone/po-mixed")
+
+        portal["po-mixed"].reindexObject(idxs=["Title"])
+        portal["po-other"].setDescription("written")  # the storage votes
+        transaction.commit()
+
+        assert _stored_title(pg_functional, "/plone/po-mixed") == "Real"
+
+    def test_data_manager_votes_after_the_storage(self, pg_functional):
+        """The fallback relies on voting after the ZODB connection."""
+        from plone.pgcatalog.pending import PendingDataManager
+
+        connection = pg_functional["portal"]._p_jar
+        assert connection.sortKey() < PendingDataManager(None).sortKey()
