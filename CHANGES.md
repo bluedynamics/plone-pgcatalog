@@ -27,6 +27,10 @@
   `plone.pgcatalog.testing.UsesIntegrationLayer` and share one layer setup
   instead of one per class. Full suite locally 2:22 → 1:50.
 
+- CI turns off `fsync` and `synchronous_commit` in both PostgreSQL service
+  containers before the tests run. The databases are thrown away after
+  the job, so durability buys nothing there.
+
 ## 1.0.0rc7 (2026-10-12)
 
 ### Fixed

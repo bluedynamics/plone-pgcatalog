@@ -62,6 +62,20 @@ jobs:
           # reserve one shared key ("Unable to reserve cache …").
           cache-suffix: ${{ matrix.python-version }}
 
+      # Throw-away databases need no durability.  Service containers take
+      # no command-line options, but both settings reload without restart.
+      - name: Turn off fsync in the test databases
+        run: |
+          for container in ${{ job.services.postgres.id }} ${{ job.services.vchord.id }}; do
+            docker exec "$container" psql -U zodb -d zodb_test -v ON_ERROR_STOP=1 \
+              -c "ALTER SYSTEM SET fsync = off" \
+              -c "ALTER SYSTEM SET synchronous_commit = off" \
+              -c "SELECT pg_reload_conf()"
+            # New session: the reload is picked up asynchronously.
+            docker exec "$container" psql -U zodb -d zodb_test -At \
+              -c "SELECT name, setting FROM pg_settings WHERE name IN ('fsync', 'synchronous_commit')"
+          done
+
       - name: Install system dependencies
         run: sudo apt-get install -y libxml2-dev libxslt-dev
 
