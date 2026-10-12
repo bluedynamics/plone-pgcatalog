@@ -34,6 +34,72 @@ log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
+def _registry_chain(registry):
+    """Yield ``registry`` and all registries it is stacked on."""
+    yield registry
+    for base in registry.__bases__:
+        yield from _registry_chain(base)
+
+
+def install_move_handlers_in_stack():
+    """Install the move wrappers where OFS registered the originals.
+
+    plone.testing stacks global registries (``base`` -> ``test-stack-1`` ->
+    ...), and OFS registers its dispatchers in a lower one than the current
+    ``getGlobalSiteManager()``.  Unregistering on the current registry would
+    be a no-op, leaving the originals active next to the wrappers.  So find
+    the registry that holds each original, replace it there and return what
+    is needed by :func:`restore_move_handlers`.  In production there is a
+    single registry and this is what ``install_move_handlers`` does.
+    """
+    from OFS.interfaces import IItem
+    from OFS.interfaces import IObjectWillBeMovedEvent
+    from OFS.subscribers import dispatchObjectMovedEvent
+    from OFS.subscribers import dispatchObjectWillBeMovedEvent
+    from plone.pgcatalog.move import _wrapped_dispatchObjectMovedEvent
+    from plone.pgcatalog.move import _wrapped_dispatchObjectWillBeMovedEvent
+    from zope.component import getGlobalSiteManager
+    from zope.lifecycleevent.interfaces import IObjectMovedEvent
+
+    swaps = []  # (registry, original, wrapper, required)
+    top = getGlobalSiteManager()
+    for original, wrapper, event_iface in (
+        (
+            dispatchObjectWillBeMovedEvent,
+            _wrapped_dispatchObjectWillBeMovedEvent,
+            IObjectWillBeMovedEvent,
+        ),
+        (
+            dispatchObjectMovedEvent,
+            _wrapped_dispatchObjectMovedEvent,
+            IObjectMovedEvent,
+        ),
+    ):
+        required = (IItem, event_iface)
+        holder = next(
+            (
+                registry
+                for registry in _registry_chain(top)
+                if any(
+                    reg.handler is original and tuple(reg.required) == required
+                    for reg in registry.registeredHandlers()
+                )
+            ),
+            top,
+        )
+        holder.unregisterHandler(original, required)
+        holder.registerHandler(wrapper, required)
+        swaps.append((holder, original, wrapper, required))
+    return swaps
+
+
+def restore_move_handlers(swaps):
+    """Undo :func:`install_move_handlers_in_stack`, exactly where it acted."""
+    for holder, original, wrapper, required in reversed(swaps):
+        holder.unregisterHandler(wrapper, required)
+        holder.registerHandler(original, required)
+
+
 class PGCatalogLayer(PloneSandboxLayer):
     """Plone sandbox layer with plone.pgcatalog ZCML loaded.
 
@@ -53,9 +119,10 @@ class PGCatalogLayer(PloneSandboxLayer):
         xmlconfig.file("configure.zcml", plone.pgcatalog, context=configurationContext)
 
         # Install move optimization handlers (replaces OFS dispatch handlers)
-        from plone.pgcatalog.move import install_move_handlers
+        self._move_handlers = install_move_handlers_in_stack()
 
-        install_move_handlers()
+    def tearDownZope(self, app):
+        restore_move_handlers(self._move_handlers)
 
 
 PGCATALOG_FIXTURE = PGCatalogLayer()
@@ -194,7 +261,6 @@ class PGCatalogPGFixture(Layer):
         from plone.pgcatalog.catalog import PlonePGCatalogTool
         from plone.pgcatalog.gopip import container_modified
         from plone.pgcatalog.interfaces import IPGCatalogTool
-        from plone.pgcatalog.move import install_move_handlers
         from zope.component import provideHandler
         from zope.component import provideUtility
         from zope.container.interfaces import IContainerModifiedEvent
@@ -203,7 +269,7 @@ class PGCatalogPGFixture(Layer):
         provideUtility(PlonePGCatalogTool(), IPGCatalogTool)
 
         # Install move optimization handlers
-        install_move_handlers()
+        self._move_handlers = install_move_handlers_in_stack()
 
         # Register gopip resync subscriber (normally via ZCML <subscriber>)
         provideHandler(container_modified, (IOrderableFolder, IContainerModifiedEvent))
@@ -344,6 +410,7 @@ class PGCatalogPGFixture(Layer):
     def tearDown(self):
         import Zope2
 
+        restore_move_handlers(self._move_handlers)
         self._test_db.pop()
         self._db.close()
         self._storage.close()

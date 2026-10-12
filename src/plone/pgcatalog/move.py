@@ -237,10 +237,26 @@ def _reindex_security_for_move(ob, old_prefix):
 # ---------------------------------------------------------------------------
 
 
+def _registered_handlers(registry):
+    """Return {(handler, required)} of ``registry`` and the ones it extends.
+
+    A single registry in production; stacked registries under plone.testing.
+    """
+    registered = set()
+    todo = [registry]
+    while todo:
+        current = todo.pop()
+        registered.update(
+            (reg.handler, tuple(reg.required)) for reg in current.registeredHandlers()
+        )
+        todo.extend(current.__bases__)
+    return registered
+
+
 def install_move_handlers():
     """Replace OFS dispatch handlers with our wrappers.
 
-    Called once at Zope startup.  Unregisters the OFS handlers for
+    Called once at Zope startup (calling it again is harmless).  Unregisters the OFS handlers for
     IObjectWillBeMovedEvent and IObjectMovedEvent dispatch, and
     registers our wrappers that set the move-in-progress flag.
     """
@@ -259,25 +275,23 @@ def install_move_handlers():
         return
 
     gsm = getGlobalSiteManager()
+    registered = _registered_handlers(gsm)
 
-    # Replace IObjectWillBeMovedEvent dispatcher
-    gsm.unregisterHandler(
-        dispatchObjectWillBeMovedEvent,
-        (OFS.interfaces.IItem, IObjectWillBeMovedEvent),
-    )
-    gsm.registerHandler(
-        _wrapped_dispatchObjectWillBeMovedEvent,
-        (OFS.interfaces.IItem, IObjectWillBeMovedEvent),
-    )
-
-    # Replace IObjectMovedEvent dispatcher
-    gsm.unregisterHandler(
-        dispatchObjectMovedEvent,
-        (OFS.interfaces.IItem, IObjectMovedEvent),
-    )
-    gsm.registerHandler(
-        _wrapped_dispatchObjectMovedEvent,
-        (OFS.interfaces.IItem, IObjectMovedEvent),
-    )
+    for original, wrapper, event_iface in (
+        (
+            dispatchObjectWillBeMovedEvent,
+            _wrapped_dispatchObjectWillBeMovedEvent,
+            IObjectWillBeMovedEvent,
+        ),
+        (
+            dispatchObjectMovedEvent,
+            _wrapped_dispatchObjectMovedEvent,
+            IObjectMovedEvent,
+        ),
+    ):
+        required = (OFS.interfaces.IItem, event_iface)
+        gsm.unregisterHandler(original, required)
+        if (wrapper, tuple(required)) not in registered:  # idempotent
+            gsm.registerHandler(wrapper, required)
 
     log.info("Installed move optimization handlers")
