@@ -21,6 +21,12 @@
   in about half the time (locally 4:58 → 2:22). As a side effect,
   zope.pytestlayer now runs these tests last.
 
+- The same for `PGCATALOG_INTEGRATION_TESTING`: the 25 test classes that use
+  it (in `test_move_integration.py`, `test_plone_integration.py`,
+  `test_observability.py` and `test_query_modifier.py`) derive from the new
+  `plone.pgcatalog.testing.UsesIntegrationLayer` and share one layer setup
+  instead of one per class. Full suite locally 2:22 → 1:50.
+
 ## 1.0.0rc7 (2026-10-12)
 
 ### Fixed

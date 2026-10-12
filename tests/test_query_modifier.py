@@ -11,6 +11,7 @@ editorial fixes.  See README #142.
 """
 
 from plone.pgcatalog.querymodifier import SanitizeRowsModifier
+from plone.pgcatalog.testing import UsesIntegrationLayer
 
 
 class TestSanitizeRowsModifier:
@@ -100,7 +101,7 @@ class TestSanitizeRowsModifier:
         assert result == [good]
 
 
-class TestRegistration:
+class TestRegistration(UsesIntegrationLayer):
     def test_modifier_is_registered_as_utility(self, pgcatalog_layer):
         from plone.app.querystring.interfaces import IQueryModifier
         from zope.component import getUtilitiesFor

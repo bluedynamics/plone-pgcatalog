@@ -12,6 +12,7 @@ Tests using plone.app.testing with a real Plone site to exercise:
 from datetime import UTC
 from plone.app.testing import setRoles
 from plone.app.testing import TEST_USER_ID
+from plone.pgcatalog.testing import UsesIntegrationLayer
 
 
 # ===========================================================================
@@ -19,7 +20,7 @@ from plone.app.testing import TEST_USER_ID
 # ===========================================================================
 
 
-class TestIndexRegistrySyncFromCatalog:
+class TestIndexRegistrySyncFromCatalog(UsesIntegrationLayer):
     """Verify sync_from_catalog discovers all standard Plone indexes."""
 
     def test_discovers_core_plone_indexes(self, pgcatalog_layer):
@@ -190,7 +191,7 @@ class TestIndexRegistrySyncFromCatalog:
 # ===========================================================================
 
 
-class TestExtractionWithPloneContent:
+class TestExtractionWithPloneContent(UsesIntegrationLayer):
     """Extract index values from real Plone Dexterity content."""
 
     def test_extract_idx_from_document(self, pgcatalog_layer):
@@ -466,7 +467,7 @@ class TestExtractionWithPloneContent:
 # ===========================================================================
 
 
-class TestSetPGAnnotationPipeline:
+class TestSetPGAnnotationPipeline(UsesIntegrationLayer):
     """Test _set_pg_annotation with real Plone content.
 
     Uses PlonePGCatalogTool directly (not as portal_catalog replacement)
@@ -611,7 +612,7 @@ class TestSetPGAnnotationPipeline:
 # ===========================================================================
 
 
-class TestSnapshotCatalog:
+class TestSnapshotCatalog(UsesIntegrationLayer):
     """Test _snapshot_catalog with a real Plone ZCatalog."""
 
     def test_snapshot_captures_indexes(self, pgcatalog_layer):
@@ -696,7 +697,7 @@ class TestSnapshotCatalog:
             assert "lexicon_id" in entry
 
 
-class TestReplaceCatalogWithPlone:
+class TestReplaceCatalogWithPlone(UsesIntegrationLayer):
     """Test _replace_catalog with a real Plone site.
 
     Note: These tests modify portal_catalog — the integration layer
@@ -791,7 +792,7 @@ class TestBuildExtra:
 # ===========================================================================
 
 
-class TestValueConversionWithPloneTypes:
+class TestValueConversionWithPloneTypes(UsesIntegrationLayer):
     """Test convert_value with real DateTime objects from Plone content."""
 
     def test_convert_zope_datetime(self, pgcatalog_layer):
@@ -849,7 +850,7 @@ class TestValueConversionWithPloneTypes:
 # ===========================================================================
 
 
-class TestPGCatalogToolAPI:
+class TestPGCatalogToolAPI(UsesIntegrationLayer):
     """Test PlonePGCatalogTool methods with real Plone site context."""
 
     def test_tool_instantiation(self, pgcatalog_layer):
@@ -897,7 +898,7 @@ class TestPGCatalogToolAPI:
         assert "Title" in schema
 
 
-class TestRemoveLexicons:
+class TestRemoveLexicons(UsesIntegrationLayer):
     """Test _remove_lexicons with a real Plone catalog."""
 
     def test_removes_orphaned_lexicons(self, pgcatalog_layer):
@@ -989,7 +990,7 @@ def _subtree_editor(portal):
     setRoles(portal, TEST_USER_ID, ["Member"])
 
 
-class TestAllowInactive:
+class TestAllowInactive(UsesIntegrationLayer):
     """``allow_inactive()`` ported from Products.CMFPlone.CatalogTool.
 
     Before #232 the method did not exist at all and ``searchResults()``

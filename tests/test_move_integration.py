@@ -13,6 +13,7 @@ from plone.pgcatalog.indexing import catalog_object
 from plone.pgcatalog.pending import _local
 from plone.pgcatalog.pending import add_pending_move
 from plone.pgcatalog.pending import pop_all_pending_moves
+from plone.pgcatalog.testing import UsesIntegrationLayer
 from psycopg.types.json import Json
 from tests.conftest import insert_object
 
@@ -193,7 +194,7 @@ def _simulate_move(conn, old_prefix, new_prefix, parent_zoid, parent_new_path):
 # ===========================================================================
 
 
-class TestMoveHandlerInstallation:
+class TestMoveHandlerInstallation(UsesIntegrationLayer):
     """Test that move handlers are properly installed in the Plone layer."""
 
     def test_handlers_installed(self, pgcatalog_layer):
@@ -231,7 +232,7 @@ class TestMoveHandlerInstallation:
         assert result is False
 
 
-class TestMoveContextWithPlone:
+class TestMoveContextWithPlone(UsesIntegrationLayer):
     """Test move context stack using the Plone layer."""
 
     def setup_method(self):
@@ -254,7 +255,7 @@ class TestMoveContextWithPlone:
         assert is_move_in_progress() is False
 
 
-class TestOFSRenameWithWrappers:
+class TestOFSRenameWithWrappers(UsesIntegrationLayer):
     """Test actual OFS rename operations with our wrappers installed.
 
     These tests verify the wrapper handlers fire correctly during
@@ -320,7 +321,7 @@ class TestOFSRenameWithWrappers:
         assert "child-doc" in target["source-folder"].objectIds()
 
 
-class TestWrapperWithPGCatalogActive:
+class TestWrapperWithPGCatalogActive(UsesIntegrationLayer):
     """Test wrapper behavior when _is_pgcatalog_active() is patched to True.
 
     This simulates the production scenario where PlonePGCatalogTool is the
@@ -479,7 +480,7 @@ class TestWrapperWithPGCatalogActive:
         assert moves == [], "Delete should not register pending moves"
 
 
-class TestCopyDoesNotTriggerOptimization:
+class TestCopyDoesNotTriggerOptimization(UsesIntegrationLayer):
     """Copy/paste fires IObjectCopiedEvent, NOT IObjectMovedEvent for the copy.
 
     The optimization must only activate for moves, not copies.
@@ -545,7 +546,7 @@ class TestCopyDoesNotTriggerOptimization:
         assert "doc-b" in copy.objectIds()
 
 
-class TestRenameWithNestedSubfolders:
+class TestRenameWithNestedSubfolders(UsesIntegrationLayer):
     """Rename a folder that contains nested subfolders."""
 
     def setup_method(self):
@@ -616,7 +617,7 @@ class TestRenameWithNestedSubfolders:
         assert "/parent/child" not in path
 
 
-class TestMultipleSequentialOperations:
+class TestMultipleSequentialOperations(UsesIntegrationLayer):
     """Test sequential move/rename operations in a single request."""
 
     def setup_method(self):
@@ -701,7 +702,7 @@ class TestMultipleSequentialOperations:
         assert moves[1][2] == 1  # one level deeper
 
 
-class TestMoveWithManyChildren:
+class TestMoveWithManyChildren(UsesIntegrationLayer):
     """Test move of a folder with many children to verify scalability."""
 
     def setup_method(self):
@@ -746,7 +747,7 @@ class TestMoveWithManyChildren:
         assert len(list(moved.objectIds())) == 20
 
 
-class TestAddEventNotAffected:
+class TestAddEventNotAffected(UsesIntegrationLayer):
     """Adding new content should not interact with move optimization."""
 
     def setup_method(self):
@@ -777,7 +778,7 @@ class TestAddEventNotAffected:
         assert moves == [], "Adding content should not register pending moves"
 
 
-class TestSecurityReindexCalling:
+class TestSecurityReindexCalling(UsesIntegrationLayer):
     """Verify _reindex_security_for_move is called only for cross-container moves."""
 
     def setup_method(self):
@@ -852,7 +853,7 @@ class TestSecurityReindexCalling:
         )
 
 
-class TestMoveContextStackIntegrity:
+class TestMoveContextStackIntegrity(UsesIntegrationLayer):
     """Verify move context stack integrity across operations."""
 
     def setup_method(self):
@@ -915,7 +916,7 @@ class TestMoveContextStackIntegrity:
         assert move_mod.is_move_in_progress() is False
 
 
-class TestMoveToDeepTarget:
+class TestMoveToDeepTarget(UsesIntegrationLayer):
     """Test moving a folder into a deeply nested target."""
 
     def setup_method(self):
@@ -964,7 +965,7 @@ class TestMoveToDeepTarget:
         assert "doc" in portal["l1"]["l2"]["l3"]["shallow"].objectIds()
 
 
-class TestWrapperPassthroughWithoutPGCatalog:
+class TestWrapperPassthroughWithoutPGCatalog(UsesIntegrationLayer):
     """When _is_pgcatalog_active() is False, wrappers pass through completely."""
 
     def setup_method(self):
@@ -1029,7 +1030,7 @@ class TestWrapperPassthroughWithoutPGCatalog:
         assert "pass-child" in portal["pass-dest"]["pass-src"].objectIds()
 
 
-class TestMoveUpInTree:
+class TestMoveUpInTree(UsesIntegrationLayer):
     """Test moving a deeply nested folder up to a shallower level."""
 
     def setup_method(self):
