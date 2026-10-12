@@ -281,12 +281,22 @@ class TestUndoMove(_HPLayerTest):
     def test_rename(self, pg_hp, pgcatalog_moves):
         portal = pg_hp["portal"]
         self._tree(portal, "mv-old")
+        portal.invokeFactory("Document", "mv-bystander", title="Bystander")
+        transaction.commit()
+        bystander = _row(pg_hp, portal["mv-bystander"])
 
         portal.manage_renameObject("mv-old", "mv-new")
         transaction.commit()
         assert _rows_below(pg_hp, "/plone/mv-new")
 
         _undo(pg_hp, 0)
+
+        # the renamed subtree fails closed, the rest of the site does not
+        renamed = portal["mv-old"]
+        for obj in (renamed["sub"], renamed["sub"]["doc"]):
+            assert _row(pg_hp, obj)[2] is None
+        assert _row(pg_hp, portal["mv-bystander"]) == bystander
+
         _follow_up(portal)
 
         folder = portal["mv-old"]
@@ -295,20 +305,34 @@ class TestUndoMove(_HPLayerTest):
         assert _rows_below(pg_hp, "/plone/mv-new") == []
         assert _queue(pg_hp) == []
 
-    def test_cross_container_move(self, pg_hp, pgcatalog_moves):
+    def test_cross_container_move_into_a_restricted_folder(
+        self, pg_hp, pgcatalog_moves
+    ):
+        """Out of a folder bob may read, into one only Managers may read.
+
+        Before the follow-up the moved subtree is hidden; the other content
+        of both folders, which the undo writes only for their modification
+        date, is not."""
         portal = pg_hp["portal"]
-        self._tree(portal, "mv-src")
+        source = _restricted_tree(portal, "mv-from", ("stay",))
+        _share_with_bob(source)
+        self._tree(source, "mv-src")
         portal.invokeFactory("Folder", "mv-target", title="Target")
+        portal["mv-target"].invokeFactory("Document", "there", title="There")
         transaction.commit()
         target = portal["mv-target"]
         for permission in ("View", "Access contents information"):
             target.manage_permission(permission, ["Manager"], acquire=False)
         target.reindexObjectSecurity()
         transaction.commit()
-        doc = portal["mv-src"]["sub"]["doc"]
+        doc = source["mv-src"]["sub"]["doc"]
         roles_before = _row(pg_hp, doc)[2]
+        assert "user:bob" in roles_before
+        untouched = {
+            obj.getId(): _row(pg_hp, obj) for obj in (source["stay"], target["there"])
+        }
 
-        clipboard = portal.manage_cutObjects(["mv-src"])
+        clipboard = source.manage_cutObjects(["mv-src"])
         target.manage_pasteObjects(clipboard)
         transaction.commit()
         assert _row(pg_hp, doc) == (
@@ -316,16 +340,110 @@ class TestUndoMove(_HPLayerTest):
             True,
             ["Manager"],
         )
+        assert _search_as(pg_hp, "bob", portal_type="Document") == [
+            "/plone/mv-from/stay"
+        ]
 
         _undo(pg_hp, 0)
+
+        moved = portal["mv-from"]["mv-src"]
+        for obj in (moved, moved["sub"], moved["sub"]["doc"]):
+            assert _row(pg_hp, obj)[2] is None, obj
+        assert {
+            obj.getId(): _row(pg_hp, obj)
+            for obj in (portal["mv-from"]["stay"], portal["mv-target"]["there"])
+        } == untouched
+        assert _queue(pg_hp)[0][0] == "recatalog"
+        assert {path for kind, _, path in _queue(pg_hp) if kind == "security"} <= {
+            "/plone/mv-target/mv-src/sub",
+            "/plone/mv-target/mv-src/sub/doc",
+        }
+        assert _search_as(pg_hp, "bob", portal_type="Document") == [
+            "/plone/mv-from/stay"
+        ]
+
         _follow_up(portal)
 
-        folder = portal["mv-src"]
+        folder = portal["mv-from"]["mv-src"]
         assert "mv-src" not in portal["mv-target"].objectIds()
         _assert_cataloged_at(pg_hp, folder, folder["sub"], folder["sub"]["doc"])
-        assert _rows_below(pg_hp, "/plone/mv-target/") == []
+        assert _rows_below(pg_hp, "/plone/mv-target/mv-src") == []
         assert _row(pg_hp, folder["sub"]["doc"])[2] == roles_before
+        assert _search_as(pg_hp, "bob", portal_type="Document") == [
+            "/plone/mv-from/mv-src/sub/doc",
+            "/plone/mv-from/stay",
+        ]
         assert _queue(pg_hp) == []
+
+
+# ---------------------------------------------------------------------------
+# Security settings of a container
+# ---------------------------------------------------------------------------
+
+
+class TestUndoSecuritySettings(_HPLayerTest):
+    """Changes that reach the descendants without writing them."""
+
+    def _assert_child_hidden_then_restored(self, pg_hp, folder, child_roles):
+        portal = pg_hp["portal"]
+        child = folder["child"]
+        _undo(pg_hp, 0)
+        assert _row(pg_hp, child)[1:] == (True, None)
+
+        _follow_up(portal)
+
+        assert _row(pg_hp, child)[2] == child_roles
+        assert _queue(pg_hp) == []
+
+    def test_local_role_block(self, pg_hp):
+        portal = pg_hp["portal"]
+        outer = _restricted_tree(portal, "bl-outer", ())
+        _share_with_bob(outer)
+        outer.invokeFactory("Folder", "inner", title="Inner")
+        outer["inner"].invokeFactory("Document", "child", title="Child")
+        transaction.commit()
+        inner = outer["inner"]
+        roles = _row(pg_hp, inner["child"])[2]
+        assert "user:bob" in roles
+
+        inner.__ac_local_roles_block__ = True
+        inner.reindexObjectSecurity()
+        transaction.commit()
+        assert "user:bob" not in _row(pg_hp, inner["child"])[2]
+
+        self._assert_child_hidden_then_restored(pg_hp, inner, roles)
+        assert "/plone/bl-outer/inner/child" in _search_as(
+            pg_hp, "bob", path="/plone/bl-outer"
+        )
+
+    def test_permission_change(self, pg_hp):
+        portal = pg_hp["portal"]
+        folder = _restricted_tree(portal, "pm")
+        roles = _row(pg_hp, folder["child"])[2]
+
+        folder.manage_permission(
+            "Access contents information", ["Manager"], acquire=False
+        )
+        folder.reindexObjectSecurity()
+        transaction.commit()
+        assert _row(pg_hp, folder["child"])[2] == ["Manager"]
+
+        self._assert_child_hidden_then_restored(pg_hp, folder, roles)
+
+    def test_acquire_flag_alone(self, pg_hp):
+        """Same roles, but a list (acquire) instead of a tuple."""
+        portal = pg_hp["portal"]
+        folder = _restricted_tree(portal, "pa")
+        roles = _row(pg_hp, folder["child"])[2]
+
+        folder.manage_permission(
+            "Access contents information", READER_ONLY, acquire=True
+        )
+        folder.reindexObjectSecurity()
+        transaction.commit()
+        assert _row(pg_hp, folder["child"])[2] != roles
+
+        self._assert_child_hidden_then_restored(pg_hp, folder, roles)
 
 
 # ---------------------------------------------------------------------------
@@ -363,9 +481,10 @@ class TestUndoEdit(_HPLayerTest):
         assert _paths(catalog(SearchableText="newbody")) == []
 
     def test_edit_of_a_container_hides_its_subtree(self, pg_hp):
-        """The accepted cost of the subtree rule: an edit that did not touch
-        security still hides the children's security data until the
-        follow-up has run."""
+        """The accepted cost of the conservative rule: any change of the
+        container's own state but its modification date counts, so a title
+        edit still hides the children's security data until the follow-up
+        has run."""
         portal = pg_hp["portal"]
         folder = _restricted_tree(portal, "ce", ("a", "b"))
         _share_with_bob(folder)
@@ -423,12 +542,21 @@ class TestUndoDeleteAndAdd(_HPLayerTest):
         assert _queue(pg_hp) == []
 
     def test_undo_of_an_add(self, pg_hp):
+        """The add wrote the portal only for its modification date: the rest
+        of the site is left alone."""
         portal = pg_hp["portal"]
+        portal.invokeFactory("Document", "bystander", title="Bystander")
+        transaction.commit()
+        bystander = _row(pg_hp, portal["bystander"])
         portal.invokeFactory("Document", "added", title="Added")
         transaction.commit()
         zoid = u64(portal["added"]._p_oid)
 
         _undo(pg_hp, 0)
+
+        assert _row(pg_hp, portal["bystander"]) == bystander
+        assert [kind for kind, _, _ in _queue(pg_hp)] == ["recatalog"]
+
         _follow_up(portal)
 
         assert "added" not in portal.objectIds()
@@ -494,29 +622,35 @@ class TestUndoDeleteAndAdd(_HPLayerTest):
         assert _row(pg_hp, doc)[:2] == (None, False)
         assert _queue(pg_hp) == []
 
-    def test_undo_of_a_delete_at_the_root_hides_the_site(self, pg_hp):
-        """Adding or deleting content writes the container (its modification
-        date), so undoing a delete in the portal root applies the subtree
-        rule to the portal: every row of the site loses its security data
-        until the follow-up has run."""
+    def test_undo_of_a_delete_at_the_root_leaves_the_site_alone(self, pg_hp):
+        """Deleting content writes the container for its modification date
+        only: undoing it recatalogs the portal, but does not hide the
+        security data of the rest of the site."""
         portal = pg_hp["portal"]
+        _add_bob(portal)
         portal.invokeFactory("Document", "bystander", title="Bystander")
         portal.invokeFactory("Document", "victim", title="Victim")
         transaction.commit()
         bystander = portal["bystander"]
         before = _row(pg_hp, bystander)
+        victim_zoid = u64(portal["victim"]._p_oid)
         portal.manage_delObjects(["victim"])
         transaction.commit()
 
         _undo(pg_hp, 0)
 
         assert _row(pg_hp, portal) == (None, False, None)
-        assert _row(pg_hp, bystander)[1:] == (True, None)
+        assert _row(pg_hp, bystander) == before
+        queue = _queue(pg_hp)
+        assert [kind for kind, _, _ in queue] == ["recatalog"] * len(queue)
+        assert ("recatalog", victim_zoid, None) in queue
+        assert "/plone/bystander" in _search_as(pg_hp, "bob", portal_type="Document")
 
         _follow_up(portal)
 
         assert _row(pg_hp, bystander) == before
         _assert_cataloged_at(pg_hp, portal, portal["victim"])
+        assert _queue(pg_hp) == []
 
 
 # ---------------------------------------------------------------------------
@@ -577,9 +711,9 @@ class TestUndoMultiple(_HPLayerTest):
         calls = []
         real_hide = undo.hide_undone
 
-        def spy(cursor, tid, restored, deleted):
+        def spy(cursor, tid, restored, deleted, entries=None):
             calls.append(tid)
-            return real_hide(cursor, tid, restored, deleted)
+            return real_hide(cursor, tid, restored, deleted, entries)
 
         monkeypatch.setattr(undo, "hide_undone", spy)
 

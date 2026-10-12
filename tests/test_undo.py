@@ -146,7 +146,7 @@ class TestHideUndone:
         _catalog_row(undo_db, 1, "/plone/f")
         processor = CatalogStateProcessor()
         with undo_db.cursor() as cur:
-            processor.undone(cur, 3, [1], [])
+            processor.undone(cur, 3, [1], [], {})
         assert processor._catalog_changed is True
 
     def test_processor_hook_without_changes(self, undo_db):
@@ -154,8 +154,166 @@ class TestHideUndone:
 
         processor = CatalogStateProcessor()
         with undo_db.cursor() as cur:
-            processor.undone(cur, 3, [], [])
+            processor.undone(cur, 3, [], [], {})
         assert processor._catalog_changed is False
+
+
+def _rev(state, refs=(), cls=FOLDER):
+    return {
+        "class_mod": cls[0],
+        "class_name": cls[1],
+        "state": state,
+        "refs": list(refs),
+    }
+
+
+def _entry(before, after, action="restore"):
+    return {"action": action, "before": before, "after": after}
+
+
+BASE_STATE = {
+    "id": "f",
+    "title": "Folder",
+    "modification_date": {"@dt": "2026-10-12T10:00:00"},
+    "_tree": {"@ref": "0000000000000064"},
+}
+
+
+def _decide(zoid, entries):
+    return undo.needs_subtree_rule(zoid, entries, undo._relocated(entries))
+
+
+class TestNeedsSubtreeRule:
+    """The conservative rule: when undoing a root's change hides its subtree."""
+
+    def _with(self, **changes):
+        after = {**BASE_STATE, **changes}
+        return {1: _entry(_rev(BASE_STATE), _rev(after))}
+
+    def test_harmless_keys_only(self):
+        entries = self._with(
+            modification_date={"@dt": "2026-10-12T09:00:00"}, cmf_uid=7
+        )
+        assert _decide(1, entries) is False
+
+    def test_identical_states(self):
+        assert _decide(1, self._with()) is False
+
+    @pytest.mark.parametrize(
+        "changes",
+        [
+            {"__ac_local_roles__": {"bob": ["Reader"]}},
+            {"__ac_local_roles_block__": True},
+            {"_Access_contents_information_Permission": ["Manager"]},
+            {"_View_Permission": {"@t": ["Manager"]}},
+            {"__annotations__": {"@ref": "00000000000000c8"}},
+            {"title": "Other title"},
+            {"id": "renamed"},
+        ],
+    )
+    def test_state_changes_trigger(self, changes):
+        assert _decide(1, self._with(**changes)) is True
+
+    def test_acquire_flag_alone_triggers(self):
+        roles = ["Manager", "Reader"]
+        before = {**BASE_STATE, "_View_Permission": {"@t": roles}}
+        after = {**BASE_STATE, "_View_Permission": roles}
+        assert _decide(1, {1: _entry(_rev(before), _rev(after))}) is True
+
+    def test_removed_key_triggers(self):
+        before = {**BASE_STATE, "__ac_local_roles_block__": True}
+        assert _decide(1, {1: _entry(_rev(before), _rev(BASE_STATE))}) is True
+
+    def test_class_change_triggers(self):
+        after = _rev(BASE_STATE, cls=("plone.app.contenttypes.content", "Document"))
+        assert _decide(1, {1: _entry(_rev(BASE_STATE), after)}) is True
+
+    def test_relocation_triggers(self):
+        """Same-id move: the object's state is identical, the buckets differ."""
+        entries = {
+            1: _entry(_rev(BASE_STATE), _rev(BASE_STATE)),
+            50: _entry(
+                _rev({}, refs=[1, 2], cls=BUCKET), _rev({}, refs=[2], cls=BUCKET)
+            ),
+            60: _entry(
+                _rev({}, refs=[3], cls=BUCKET), _rev({}, refs=[1, 3], cls=BUCKET)
+            ),
+        }
+        assert _decide(1, entries) is True
+        assert undo._relocated(entries) == {1}
+
+    def test_reference_by_a_deleted_object_counts_as_relocation(self):
+        entries = {
+            1: _entry(_rev(BASE_STATE), _rev(BASE_STATE)),
+            9: _entry(_rev({}, refs=[1], cls=BUCKET), None, action="delete"),
+        }
+        assert _decide(1, entries) is True
+
+    @pytest.mark.parametrize(
+        "entries",
+        [
+            {},  # no entry for the root
+            {1: _entry(_rev(BASE_STATE), None, action="delete")},
+            {1: _entry(_rev("not a dict"), _rev(BASE_STATE))},
+            {1: _entry(_rev(BASE_STATE), _rev(None))},
+            {1: {"action": "restore"}},
+        ],
+    )
+    def test_undecidable_falls_back_to_the_rule(self, entries):
+        assert _decide(1, entries) is True
+
+    def test_unreadable_entries_fall_back_to_the_rule(self):
+        broken = {1: {"before": {"refs": None}, "after": None}}
+        assert undo._relocated(broken) is None
+        assert undo.needs_subtree_rule(1, broken, None) is True
+
+    def test_no_entries_falls_back_to_the_rule(self):
+        assert undo.needs_subtree_rule(1, None, None) is True
+
+
+class TestHideUndoneWithEntries:
+    def test_container_written_for_its_modification_date(self, undo_db):
+        conn = undo_db
+        _catalog_row(conn, 1, "/plone/f")
+        _catalog_row(conn, 2, "/plone/f/a")
+        entries = {
+            1: _entry(
+                _rev(BASE_STATE),
+                _rev({**BASE_STATE, "modification_date": {"@dt": "x"}}),
+            )
+        }
+
+        with conn.cursor() as cur:
+            assert undo.hide_undone(cur, 7, [1], [], entries) is True
+        conn.commit()
+
+        assert _rows(conn)[1] == (None, False, None)
+        assert _rows(conn)[2] == ("/plone/f/a", True, ["Anonymous"])
+        assert _queue(conn) == [("recatalog", 1, "/plone/f", 7)]
+
+    def test_deleted_roots_keep_the_rule(self, undo_db):
+        conn = undo_db
+        _catalog_row(conn, 1, "/plone/new")
+        _catalog_row(conn, 2, "/plone/new/later")
+        entries = {1: _entry(_rev(BASE_STATE), None, action="delete")}
+
+        with conn.cursor() as cur:
+            undo.hide_undone(cur, 5, [], [1], entries)
+        conn.commit()
+
+        assert _queue(conn) == [("security", 2, "/plone/new/later", 5)]
+
+    def test_recatalog_rows_in_path_order(self, undo_db):
+        conn = undo_db
+        _catalog_row(conn, 3, "/plone/f/a")
+        _catalog_row(conn, 1, "/plone/f")
+        _catalog_row(conn, 2, None, cls=("plone.app.contenttypes.content", "Document"))
+        entries = {z: _entry(_rev(BASE_STATE), _rev(BASE_STATE)) for z in (1, 2, 3)}
+
+        with conn.cursor() as cur:
+            undo.hide_undone(cur, 4, [2, 3, 1], [], entries)
+
+        assert [zoid for _, zoid, _, _ in _queue(conn)] == [1, 3, 2]
 
 
 class TestSubtreeRoots:
