@@ -1,0 +1,22 @@
+<configure
+    xmlns="http://namespaces.zope.org/zope"
+    xmlns:gs="http://namespaces.zope.org/genericsetup"
+    i18n_domain="plone.pgcatalog"
+    >
+
+  <gs:upgradeStep
+      profile="plone.pgcatalog:default"
+      source="5"
+      destination="6"
+      title="Reindex allowedRolesAndUsers after cross-container moves"
+      description="Cross-container moves since 1.0.0b21 left the descendants
+                   of the moved folder with the allowedRolesAndUsers of their
+                   old location, so search results could show content to
+                   users without access (or hide it).  Reindex the security
+                   indexes of all cataloged objects once.  Only the security
+                   index values are rewritten, nothing else, and no text is
+                   extracted again.  See #271."
+      handler=".profile_6.reindex_security_indexes"
+      />
+
+</configure>

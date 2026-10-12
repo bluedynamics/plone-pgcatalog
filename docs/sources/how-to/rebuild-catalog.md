@@ -122,6 +122,25 @@ When Tika extraction is configured, recataloged files are enqueued for extractio
 Expect a burst of extraction jobs.
 Text that was lost on files that look intact is restored separately, see {ref}`restore-lost-extracted-text`.
 
+## Repair stale security data
+
+Before [#271](https://github.com/bluedynamics/plone-pgcatalog/issues/271) was fixed, a cross-container move left the descendants of the moved folder with the `allowedRolesAndUsers` of their old location.
+Search then showed content to users who had lost access, or hid it from users who gained it.
+The upgrade step to profile version 6 repairs this once.
+It reindexes only the security indexes of all cataloged objects (a partial reindex), so other index data is untouched, no object is written to the ZODB, and no text is extracted again.
+
+To run it outside the upgrade, for example from a script on a large site:
+
+```python
+from plone.pgcatalog.maintenance import reindex_security
+
+result = reindex_security(portal.portal_catalog, portal)
+print(result.checked, result.failed)
+transaction.commit()
+```
+
+It commits every 500 objects and can be repeated after an interruption.
+
 ## Partial reindex (automatic)
 
 When Plone calls `reindexObject(idxs=["review_state"])`, plone.pgcatalog uses a lightweight JSONB merge (`||` operator) instead of full re-extraction.

@@ -2,7 +2,33 @@
 
 ## Unreleased
 
+### Fixed
+
+- A cross-container move (cut and paste into another folder) left the
+  descendants of the moved folder with the `allowedRolesAndUsers` of their
+  old location. Search and listings could show title, description and
+  metadata to users who had lost access, or hide content that should be
+  visible. The security reindex after a move looked the descendants up by
+  their old path, which no longer exists, and skipped them silently. It now
+  resolves them relative to the moved folder, checks that it found the right
+  object and logs a warning for every descendant it cannot resolve. Present
+  since 1.0.0b21. Upgrade profile version 6 reindexes `allowedRolesAndUsers`
+  of all cataloged objects once to repair existing sites; it only rewrites
+  the security index values and does not touch other index data or extracted
+  text. Also available as `maintenance.reindex_security`. #271
+
 ### Tests
+
+- The move and rename optimization is now active in the test layers. plone.testing
+  stacks the global component registries, and OFS registers its move event
+  dispatchers in a lower level than the one `install_move_handlers()`
+  worked on. The originals stayed active next to the wrappers, so every
+  descendant was uncataloged, reindexed and written on rename and cut/paste,
+  and the move tests passed through the slow path. The layers now replace the
+  dispatchers in the registry that holds them and restore them on teardown;
+  `install_move_handlers()` no longer registers the wrappers twice. New tests
+  assert that descendants are not written on rename and cross-container move.
+  #270
 
 - The PG test layer no longer leaks one pool connection per test. Its
   `testSetUp` dropped the ZODB connections of the previous test with

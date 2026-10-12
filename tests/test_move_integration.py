@@ -199,23 +199,27 @@ class TestMoveHandlerInstallation(UsesIntegrationLayer):
 
     def test_handlers_installed(self, pgcatalog_layer):
         """install_move_handlers() should have replaced OFS dispatch handlers."""
+        from OFS.subscribers import dispatchObjectMovedEvent
+        from OFS.subscribers import dispatchObjectWillBeMovedEvent
+        from plone.pgcatalog.move import _registered_handlers
         from zope.component import getGlobalSiteManager
 
-        gsm = getGlobalSiteManager()
+        # OFS registers its dispatchers in a lower level of the registry
+        # stack than the current one, so look through the whole stack.
+        registered = {
+            handler for handler, _ in _registered_handlers(getGlobalSiteManager())
+        }
 
         # Check that our wrappers are registered (not the OFS originals)
         from plone.pgcatalog.move import _wrapped_dispatchObjectMovedEvent
         from plone.pgcatalog.move import _wrapped_dispatchObjectWillBeMovedEvent
 
-        will_handlers = list(gsm.registeredHandlers())
-        will_found = any(
-            h.handler is _wrapped_dispatchObjectWillBeMovedEvent for h in will_handlers
-        )
-        moved_found = any(
-            h.handler is _wrapped_dispatchObjectMovedEvent for h in will_handlers
-        )
+        will_found = _wrapped_dispatchObjectWillBeMovedEvent in registered
+        moved_found = _wrapped_dispatchObjectMovedEvent in registered
         assert will_found, "Wrapped WillBeMoved handler not registered"
         assert moved_found, "Wrapped ObjectMoved handler not registered"
+        assert dispatchObjectWillBeMovedEvent not in registered
+        assert dispatchObjectMovedEvent not in registered
 
     def test_is_pgcatalog_active(self, pgcatalog_layer):
         """_is_pgcatalog_active() should return True when IPGCatalogTool is registered."""

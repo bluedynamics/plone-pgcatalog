@@ -18,6 +18,7 @@ security-only reindex of descendants (allowedRolesAndUsers).
 """
 
 from dataclasses import dataclass
+from plone.pgcatalog.extraction import obj_to_zoid
 from plone.pgcatalog.pending import _local
 from plone.pgcatalog.pending import add_pending_move
 
@@ -215,14 +216,7 @@ def _reindex_security_for_move(ob, old_prefix):
         return
 
     for brain in brains:
-        brain_path = brain.getPath()
-        if brain_path == old_prefix:
-            continue  # Parent handled by normal pipeline
-
-        try:
-            child = brain._unrestrictedGetObject()
-        except (AttributeError, KeyError):
-            continue
+        child = _resolve_descendant(ob, old_prefix, brain)
         if child is None:
             continue
 
@@ -232,15 +226,61 @@ def _reindex_security_for_move(ob, old_prefix):
             child._p_deactivate()  # Don't keep in cache if wasn't loaded
 
 
+def _resolve_descendant(ob, old_prefix, brain):
+    """Return the object for *brain* below the moved object *ob*, or None.
+
+    The brain still carries the OLD path, which no longer exists after the
+    move.  Resolve the part after ``old_prefix`` relative to *ob*, and check
+    that the result really is the brain's object (acquisition would happily
+    return something else for a missing id).  The moved object itself is
+    skipped: the normal pipeline handles it.  Logs a warning when a
+    descendant cannot be resolved, as its security data would stay stale.
+    """
+    brain_path = brain.getPath()
+    if brain_path == old_prefix:
+        return None
+    suffix = brain_path[len(old_prefix) :].strip("/")
+    try:
+        child = ob.unrestrictedTraverse(suffix, None)
+    except Exception:
+        child = None
+    zoid = obj_to_zoid(child) if child is not None else None
+    if zoid is None or zoid != brain.getRID():
+        log.warning(
+            "Security reindex after move: cannot resolve %s below %s, "
+            "its allowedRolesAndUsers stays stale",
+            brain_path,
+            "/".join(ob.getPhysicalPath()),
+        )
+        return None
+    return child
+
+
 # ---------------------------------------------------------------------------
 # Handler installation
 # ---------------------------------------------------------------------------
 
 
+def _registered_handlers(registry):
+    """Return {(handler, required)} of ``registry`` and the ones it extends.
+
+    A single registry in production; stacked registries under plone.testing.
+    """
+    registered = set()
+    todo = [registry]
+    while todo:
+        current = todo.pop()
+        registered.update(
+            (reg.handler, tuple(reg.required)) for reg in current.registeredHandlers()
+        )
+        todo.extend(current.__bases__)
+    return registered
+
+
 def install_move_handlers():
     """Replace OFS dispatch handlers with our wrappers.
 
-    Called once at Zope startup.  Unregisters the OFS handlers for
+    Called once at Zope startup (calling it again is harmless).  Unregisters the OFS handlers for
     IObjectWillBeMovedEvent and IObjectMovedEvent dispatch, and
     registers our wrappers that set the move-in-progress flag.
     """
@@ -259,25 +299,23 @@ def install_move_handlers():
         return
 
     gsm = getGlobalSiteManager()
+    registered = _registered_handlers(gsm)
 
-    # Replace IObjectWillBeMovedEvent dispatcher
-    gsm.unregisterHandler(
-        dispatchObjectWillBeMovedEvent,
-        (OFS.interfaces.IItem, IObjectWillBeMovedEvent),
-    )
-    gsm.registerHandler(
-        _wrapped_dispatchObjectWillBeMovedEvent,
-        (OFS.interfaces.IItem, IObjectWillBeMovedEvent),
-    )
-
-    # Replace IObjectMovedEvent dispatcher
-    gsm.unregisterHandler(
-        dispatchObjectMovedEvent,
-        (OFS.interfaces.IItem, IObjectMovedEvent),
-    )
-    gsm.registerHandler(
-        _wrapped_dispatchObjectMovedEvent,
-        (OFS.interfaces.IItem, IObjectMovedEvent),
-    )
+    for original, wrapper, event_iface in (
+        (
+            dispatchObjectWillBeMovedEvent,
+            _wrapped_dispatchObjectWillBeMovedEvent,
+            IObjectWillBeMovedEvent,
+        ),
+        (
+            dispatchObjectMovedEvent,
+            _wrapped_dispatchObjectMovedEvent,
+            IObjectMovedEvent,
+        ),
+    ):
+        required = (OFS.interfaces.IItem, event_iface)
+        gsm.unregisterHandler(original, required)
+        if (wrapper, tuple(required)) not in registered:  # idempotent
+            gsm.registerHandler(wrapper, required)
 
     log.info("Installed move optimization handlers")
