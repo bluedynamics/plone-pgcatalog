@@ -3124,3 +3124,37 @@ class TestPoolConnectionsReleased(_PGLayerTest):
         stats = pg_functional["zodbDB"].storage._instance_pool.get_stats()
         # Only this test's own connection is checked out.
         assert stats["pool_size"] - stats["pool_available"] == 1
+
+
+class TestUndoHistoryFree(_PGLayerTest):
+    """No undo in history-free mode: the hook never runs (#265)."""
+
+    def test_undo_hook_never_called(self, pg_functional, monkeypatch):
+        from plone.pgcatalog import undo
+        from ZODB.utils import p64
+
+        calls = []
+        monkeypatch.setattr(undo, "hide_undone", lambda *args: calls.append(args))
+        db = pg_functional["zodbDB"]
+        assert db.storage.supportsUndo() is False
+        portal = pg_functional["portal"]
+        portal.invokeFactory("Document", "hf-doc", title="Doc")
+        transaction.commit()
+        portal["hf-doc"].title = "Edited"
+        portal["hf-doc"].reindexObject()
+        transaction.commit()
+        (tid,) = _query_pg(pg_functional, "SELECT max(tid) FROM transaction_log")[0]
+
+        # ZODB.DB refuses before the storage is involved.
+        with pytest.raises(NotImplementedError):
+            db.undoMultiple([p64(tid)])
+        transaction.abort()
+
+        assert calls == []
+        assert _query_pg(
+            pg_functional, "SELECT count(*) FROM pgcatalog_undo_queue"
+        ) == [(0,)]
+        assert _row_by_zoid(pg_functional, portal["hf-doc"])[:2] == (
+            "/plone/hf-doc",
+            True,
+        )

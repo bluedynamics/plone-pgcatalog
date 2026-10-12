@@ -177,23 +177,47 @@ class PGCatalogPGFixture(Layer):
 
     defaultBases = (PLONE_FIXTURE,)
 
+    def __init__(self, bases=None, name=None, module=None, history_preserving=False):
+        super().__init__(bases=bases, name=name, module=module)
+        self.history_preserving = history_preserving
+
     def setUp(self):
         from plone.pgcatalog.schema import install_catalog_schema
+        from zodb_pgjsonb.schema import HISTORY_FREE_SCHEMA
+        from zodb_pgjsonb.schema import HISTORY_PRESERVING_ADDITIONS
         from zodb_pgjsonb.storage import PGJsonbStorage
         from zodb_pgjsonb.testing import get_test_dsn
         from zodb_pgjsonb.testing import PGTestDB
+        from zodb_pgjsonb.testing import TABLES
 
         import ZODB
 
         dsn = get_test_dsn()
 
-        # 1. Set up PG database with base + catalog schema
-        self._test_db = PGTestDB(dsn)
-        self._test_db.setup()
+        # 1. Set up PG database with base + catalog schema.  In
+        #    history-preserving mode the history tables and the undo queue
+        #    are part of the snapshot too: otherwise a test's undo could pick
+        #    a revision another test left behind.
+        if self.history_preserving:
+            self._test_db = PGTestDB(
+                dsn,
+                tables=(
+                    *TABLES,
+                    "object_history",
+                    "pack_state",
+                    "pgcatalog_undo_queue",
+                ),
+            )
+            self._test_db.setup(HISTORY_FREE_SCHEMA + HISTORY_PRESERVING_ADDITIONS)
+        else:
+            self._test_db = PGTestDB(dsn)
+            self._test_db.setup()
         install_catalog_schema(self._test_db.connection)
 
         # 2. Create PGJsonbStorage + ZODB.DB
-        self._storage = PGJsonbStorage(dsn=dsn)
+        self._storage = PGJsonbStorage(
+            dsn=dsn, history_preserving=self.history_preserving
+        )
         self._db = ZODB.DB(self._storage)
         self["zodbDB"] = self._db
 
@@ -261,9 +285,11 @@ class PGCatalogPGFixture(Layer):
         from plone.pgcatalog.catalog import PlonePGCatalogTool
         from plone.pgcatalog.gopip import container_modified
         from plone.pgcatalog.interfaces import IPGCatalogTool
+        from plone.pgcatalog.undo import drain_after_undo
         from zope.component import provideHandler
         from zope.component import provideUtility
         from zope.container.interfaces import IContainerModifiedEvent
+        from ZPublisher.interfaces import IPubSuccess
 
         # Register IPGCatalogTool utility (normally via ZCML <utility>)
         provideUtility(PlonePGCatalogTool(), IPGCatalogTool)
@@ -273,6 +299,9 @@ class PGCatalogPGFixture(Layer):
 
         # Register gopip resync subscriber (normally via ZCML <subscriber>)
         provideHandler(container_modified, (IOrderableFolder, IContainerModifiedEvent))
+
+        # Undo follow-up at request end (normally via ZCML <subscriber>)
+        provideHandler(drain_after_undo, (IPubSuccess,))
 
     def _setup_plone_site(self):
         """Create a Plone site in the PG-backed database."""
@@ -425,6 +454,12 @@ class PGCatalogPGFixture(Layer):
 
 
 PGCATALOG_PG_FIXTURE = PGCatalogPGFixture()
+
+# History-preserving variant (undo).  Same database as PGCATALOG_PG_FIXTURE;
+# zope.pytestlayer runs the two one after the other, never both at once.
+PGCATALOG_PG_HP_FIXTURE = PGCatalogPGFixture(
+    name="PGCatalogPGHPFixture", history_preserving=True
+)
 
 # Only FunctionalTesting — IntegrationTesting blocks commits,
 # so ZODB writes never reach PG (defeats the purpose of this layer).
