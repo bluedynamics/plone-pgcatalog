@@ -6,6 +6,7 @@ are independent of the Plone CatalogTool — the CatalogTool subclass calls
 these after extracting values via plone.indexer.
 """
 
+from plone.pgcatalog.backends import get_backend
 from plone.pgcatalog.columns import compute_path_info
 from plone.pgcatalog.columns import extract_extra_idx_columns
 from plone.pgcatalog.columns import get_extra_idx_columns
@@ -93,6 +94,19 @@ def catalog_object(conn, zoid, path, idx, searchable_text=None, language="simple
         )
 
 
+def uncatalog_assignments():
+    """Return the SQL ``SET`` list that NULLs every catalog column of a row.
+
+    Path trio, ``idx``, ``searchable_text``, the registered extra idx
+    columns and the backend's extra columns.  The column names come from
+    code, never from user input.
+    """
+    columns = ["path", "parent_path", "path_depth", "idx", "searchable_text"]
+    columns.extend(get_backend().uncatalog_extra())
+    columns.extend(col.column_name for col in get_extra_idx_columns())
+    return ", ".join(f"{col} = NULL" for col in columns)
+
+
 def uncatalog_object(conn, zoid):
     """Clear all catalog data for an object.
 
@@ -104,25 +118,8 @@ def uncatalog_object(conn, zoid):
         conn: psycopg connection
         zoid: integer object id
     """
-    from plone.pgcatalog.backends import get_backend
-
-    extra_nulls = get_backend().uncatalog_extra()
-    extra_sql = "".join(f",\n            {col} = NULL" for col in extra_nulls)
-
-    # Also NULL all extra idx columns
-    for col in get_extra_idx_columns():
-        extra_sql += f",\n            {col.column_name} = NULL"
-
     conn.execute(
-        f"""
-        UPDATE object_state SET
-            path = NULL,
-            parent_path = NULL,
-            path_depth = NULL,
-            idx = NULL,
-            searchable_text = NULL{extra_sql}
-        WHERE zoid = %(zoid)s
-        """,
+        f"UPDATE object_state SET {uncatalog_assignments()} WHERE zoid = %(zoid)s",
         {"zoid": zoid},
     )
 
