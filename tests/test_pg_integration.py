@@ -477,6 +477,157 @@ class TestMoveUpdatesPGPaths(_PGLayerTest):
 
 
 # ---------------------------------------------------------------------------
+# Move optimization is active in the test layer (#270)
+# ---------------------------------------------------------------------------
+
+
+def _handler_registrations(handler_name):
+    """Return (registry name, required, handler) for matching handlers.
+
+    Walks all registries stacked below the current global one, as
+    plone.testing keeps OFS's handlers in a lower stack level.
+    """
+    from zope.component import getGlobalSiteManager
+
+    found = []
+    seen = []
+    todo = [getGlobalSiteManager()]
+    while todo:
+        registry = todo.pop()
+        if registry in seen:
+            continue
+        seen.append(registry)
+        todo.extend(registry.__bases__)
+        for reg in registry.registeredHandlers():
+            if reg.handler.__name__ == handler_name:
+                found.append((registry.__name__, reg.required, reg.handler))
+    return found
+
+
+def _tids(pg_functional, prefix):
+    """Map path -> tid for the object at ``prefix`` and its descendants."""
+    rows = _query_pg(
+        pg_functional,
+        "SELECT path, tid FROM object_state WHERE path LIKE %s AND idx IS NOT NULL",
+        (f"/plone{prefix}%",),
+    )
+    return dict(rows)
+
+
+def _allowed_roles(pg_functional, path):
+    rows = _query_pg(
+        pg_functional,
+        "SELECT allowed_roles FROM object_state WHERE path = %s",
+        (path,),
+    )
+    return rows[0][0]
+
+
+def _warm_up_move(container, name):
+    """Rename ``name`` away and back once, then commit.
+
+    The first move of any object makes plone.contentrules create its
+    ``plone.contentrules.localassignments`` annotation on every descendant,
+    which writes them regardless of the catalog.  Do that up front so the
+    tests below only see writes caused by the catalog itself.
+    """
+    container.manage_renameObject(name, f"{name}-tmp")
+    container.manage_renameObject(f"{name}-tmp", name)
+    transaction.commit()
+
+
+class TestMoveOptimizationActive(_PGLayerTest):
+    """The move wrappers replace the OFS dispatchers, as in production."""
+
+    def test_one_wrapper_per_event_and_no_original(self, pg_functional):
+        for event_name in (
+            "WillBeMovedEvent",
+            "MovedEvent",
+        ):
+            wrapped = _handler_registrations(f"_wrapped_dispatchObject{event_name}")
+            original = _handler_registrations(f"dispatchObject{event_name}")
+            assert len(wrapped) == 1, wrapped
+            assert original == [], original
+
+    def test_install_move_handlers_is_idempotent(self, pg_functional):
+        from plone.pgcatalog.move import install_move_handlers
+
+        install_move_handlers()
+        install_move_handlers()
+        for event_name in ("WillBeMovedEvent", "MovedEvent"):
+            wrapped = _handler_registrations(f"_wrapped_dispatchObject{event_name}")
+            assert len(wrapped) == 1, wrapped
+
+    def test_rename_does_not_write_descendants(self, pg_functional):
+        portal = pg_functional["portal"]
+        setRoles(portal, TEST_USER_ID, ["Manager"])
+        portal.invokeFactory("Folder", "top")
+        portal["top"].invokeFactory("Folder", "mid")
+        portal["top"]["mid"].invokeFactory("Document", "leaf", title="Leaf")
+        transaction.commit()
+        _warm_up_move(portal, "top")
+
+        before = _tids(pg_functional, "/top/mid")
+        assert sorted(before) == ["/plone/top/mid", "/plone/top/mid/leaf"]
+
+        portal.manage_renameObject("top", "top-renamed")
+        transaction.commit()
+
+        after = _tids(pg_functional, "/top-renamed/mid")
+        # Paths were updated, but the descendants were not written.
+        assert sorted(after) == [
+            "/plone/top-renamed/mid",
+            "/plone/top-renamed/mid/leaf",
+        ]
+        assert [before[p] for p in sorted(before)] == [after[p] for p in sorted(after)]
+
+    def _cross_container_move(self, pg_functional):
+        portal = pg_functional["portal"]
+        setRoles(portal, TEST_USER_ID, ["Manager"])
+        portal.invokeFactory("Folder", "src")
+        portal.invokeFactory("Folder", "dst")
+        # Only content below src is restricted and grants a local role.
+        portal["src"].manage_setLocalRoles("someuser", ["Reader"])
+        portal["src"].manage_permission(
+            "Access contents information", ["Manager", "Reader"], acquire=0
+        )
+        portal["src"].invokeFactory("Folder", "folder")
+        portal["src"]["folder"].invokeFactory("Folder", "mid")
+        portal["src"]["folder"]["mid"].invokeFactory("Document", "leaf", title="L")
+        transaction.commit()
+        _warm_up_move(portal["src"], "folder")
+
+        leaf = "/plone/src/folder/mid/leaf"
+        assert "user:someuser" in _allowed_roles(pg_functional, leaf)
+        assert "Anonymous" not in _allowed_roles(pg_functional, leaf)
+        before = _tids(pg_functional, "/src/folder/mid")
+
+        clipboard = portal["src"].manage_cutObjects(["folder"])
+        portal["dst"].manage_pasteObjects(clipboard)
+        transaction.commit()
+        return before, _tids(pg_functional, "/dst/folder/mid")
+
+    def test_cross_container_move_does_not_write_descendants(self, pg_functional):
+        before, after = self._cross_container_move(pg_functional)
+        assert sorted(after) == [
+            "/plone/dst/folder/mid",
+            "/plone/dst/folder/mid/leaf",
+        ]
+        assert [before[p] for p in sorted(before)] == [after[p] for p in sorted(after)]
+
+    @pytest.mark.xfail(
+        strict=True,
+        reason="_reindex_security_for_move resolves descendants by their old "
+        "path, which no longer exists once the move has happened (#270)",
+    )
+    def test_cross_container_move_updates_descendant_security(self, pg_functional):
+        self._cross_container_move(pg_functional)
+        roles = _allowed_roles(pg_functional, "/plone/dst/folder/mid/leaf")
+        assert "user:someuser" not in roles
+        assert "Anonymous" in roles
+
+
+# ---------------------------------------------------------------------------
 # SQL queryability
 # ---------------------------------------------------------------------------
 

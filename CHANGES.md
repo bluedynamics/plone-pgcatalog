@@ -4,6 +4,17 @@
 
 ### Tests
 
+- The move and rename optimization is now active in the test layers. plone.testing
+  stacks the global component registries, and OFS registers its move event
+  dispatchers in a lower level than the one `install_move_handlers()`
+  worked on. The originals stayed active next to the wrappers, so every
+  descendant was uncataloged, reindexed and written on rename and cut/paste,
+  and the move tests passed through the slow path. The layers now replace the
+  dispatchers in the registry that holds them and restore them on teardown;
+  `install_move_handlers()` no longer registers the wrappers twice. New tests
+  assert that descendants are not written on rename and cross-container move.
+  #270
+
 - The PG test layer no longer leaks one pool connection per test. Its
   `testSetUp` dropped the ZODB connections of the previous test with
   `pool.clear()`, which does not release them, so each one kept its
