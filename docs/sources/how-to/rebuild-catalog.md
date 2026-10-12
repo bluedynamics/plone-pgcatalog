@@ -150,9 +150,9 @@ On a history-preserving storage, undo restores the objects but not the catalog d
 With zodb-pgjsonb 1.18.0 or later, the undo hides the affected catalog rows in its own transaction and queues them in `pgcatalog_undo_queue`:
 
 - Restored content objects lose all catalog data, like uncataloged objects.
-- Every row below a restored or deleted object loses its `allowedRolesAndUsers` data, so no restricted search (anonymous included) finds it.
-  The undone transaction may have changed the security of these rows without writing them, as a sharing change or a workflow transition does.
-  This also happens when the undone transaction only edited the container, and adding or deleting content edits the container too (its modification date): undoing a delete in the site root hides the security data of the whole site until the follow-up is done.
+- Rows below some of these objects lose their `allowedRolesAndUsers` data, so no restricted search (anonymous included) finds them.
+  The undone transaction may have changed the security of these rows without writing them, as a sharing change, a workflow transition or a move does.
+  See {ref}`undo-subtree-rule` for which objects this applies to.
 
 The follow-up recomputes the queued rows from the restored content: a full reindex for restored objects (at their restored path; after the undo of a move, the descendants' paths are moved back in one `UPDATE`), and a security reindex for the rows below them.
 Objects that cannot be found any more are uncataloged.
@@ -167,6 +167,31 @@ Rows that stay queued stay hidden, also after a restart; Zope logs a warning at 
 A follow-up conflicting with an editor is retried once; rows that fail stay queued for the next run.
 
 The follow-up writes the recataloged objects, so after it has run, the undo itself can no longer be undone.
+
+(undo-subtree-rule)=
+
+### When the rows below an object are hidden
+
+The undo compares, for every restored object, the revision the undone transaction wrote with the revision the undo writes back.
+The rows below the object lose their security data when:
+
+- its state differs in anything but `modification_date` and `cmf_uid`: local roles, the local role block, permission settings (including only the acquire flag), but also a title, a newly created `__annotations__` or a changed id;
+- its class differs;
+- it changes place: it is renamed, or it is moved into or out of a container (the containers' entries for it differ);
+- the undo cannot tell, for example with data it cannot read.
+
+The rows below a deleted object (undo of an add) always lose their security data.
+
+Adding, deleting or moving content writes the container only for its modification date (and `cmf_uid` on the first child), so undoing such a change recatalogs the container but leaves the rest of its content alone.
+An undone edit of a container, even of only its title, hides the security data below it until the follow-up is done.
+
+Known gaps, the same as without this comparison:
+
+- Add-ons that keep local roles outside the object's own attributes (an `ILocalRoleProvider` reading annotations or other persistent objects): an undone change there does not hide the rows below.
+- Permission or local role changes on the Zope root or on other ancestors that are not cataloged (an OFS folder above the site).
+- A workflow transition that changes no permission writes only the workflow history; after its undo, the object's own `review_state` stays as it was until the object is reindexed.
+- Transactions that only ran partial reindexes cannot be undone at all.
+- Undoing the undo conflicts once the follow-up has run, see above.
 
 Save this as `undo_follow_up.py`:
 
