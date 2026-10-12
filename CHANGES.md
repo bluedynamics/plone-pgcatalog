@@ -1,21 +1,6 @@
 # Changelog
 
-## 1.0.0rc8 (2026-10-13)
-
-### Fixed
-
-- A cross-container move (cut and paste into another folder) left the
-  descendants of the moved folder with the `allowedRolesAndUsers` of their
-  old location. Search and listings could show title, description and
-  metadata to users who had lost access, or hide content that should be
-  visible. The security reindex after a move looked the descendants up by
-  their old path, which no longer exists, and skipped them silently. It now
-  resolves them relative to the moved folder, checks that it found the right
-  object and logs a warning for every descendant it cannot resolve. Present
-  since 1.0.0b21. Upgrade profile version 6 reindexes `allowedRolesAndUsers`
-  of all cataloged objects once to repair existing sites; it only rewrites
-  the security index values and does not touch other index data or extracted
-  text. Also available as `maintenance.reindex_security`. #271
+## Unreleased
 
 ### Fixed
 
@@ -51,6 +36,31 @@
 
 ### Tests
 
+- New history-preserving variant of the PG test layer,
+  `plone.pgcatalog.testing.PGCATALOG_PG_HP_FIXTURE`, used by
+  `test_undo_integration.py`. Its snapshot includes `object_history`,
+  `pack_state` and the undo queue, so an undo cannot pick a revision another
+  test left behind. #265
+
+## 1.0.0rc8 (2026-10-13)
+
+### Fixed
+
+- A cross-container move (cut and paste into another folder) left the
+  descendants of the moved folder with the `allowedRolesAndUsers` of their
+  old location. Search and listings could show title, description and
+  metadata to users who had lost access, or hide content that should be
+  visible. The security reindex after a move looked the descendants up by
+  their old path, which no longer exists, and skipped them silently. It now
+  resolves them relative to the moved folder, checks that it found the right
+  object and logs a warning for every descendant it cannot resolve. Present
+  since 1.0.0b21. Upgrade profile version 6 reindexes `allowedRolesAndUsers`
+  of all cataloged objects once to repair existing sites; it only rewrites
+  the security index values and does not touch other index data or extracted
+  text. Also available as `maintenance.reindex_security`. #271
+
+### Tests
+
 - The move and rename optimization is now active in the test layers. plone.testing
   stacks the global component registries, and OFS registers its move event
   dispatchers in a lower level than the one `install_move_handlers()`
@@ -78,12 +88,6 @@
   class built a new test database and Plone site. The full test suite runs
   in about half the time (locally 4:58 → 2:22). As a side effect,
   zope.pytestlayer now runs these tests last.
-
-- New history-preserving variant of the PG test layer,
-  `plone.pgcatalog.testing.PGCATALOG_PG_HP_FIXTURE`, used by
-  `test_undo_integration.py`. Its snapshot includes `object_history`,
-  `pack_state` and the undo queue, so an undo cannot pick a revision another
-  test left behind. #265
 
 - The same for `PGCATALOG_INTEGRATION_TESTING`: the 25 test classes that use
   it (in `test_move_integration.py`, `test_plone_integration.py`,

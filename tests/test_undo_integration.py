@@ -64,6 +64,26 @@ def _row(pg_hp, obj):
     return rows[0] if rows else None
 
 
+def _tid(pg_hp, obj):
+    return _sql(
+        pg_hp, "SELECT tid FROM object_state WHERE zoid = %s", (u64(obj._p_oid),)
+    )[0][0]
+
+
+def _warm_up_move(container, name):
+    """Rename ``name`` away and back once, then commit.
+
+    The first move of any object makes plone.contentrules create its
+    ``plone.contentrules.localassignments`` annotation on every descendant,
+    which writes them.  After the warm-up a move writes the descendants no
+    more (the move optimization rewrites their rows in SQL), which is the
+    case the undo has to repair without them being restored.
+    """
+    container.manage_renameObject(name, f"{name}-tmp")
+    container.manage_renameObject(f"{name}-tmp", name)
+    transaction.commit()
+
+
 def _idx(pg_hp, obj):
     return _sql(
         pg_hp, "SELECT idx FROM object_state WHERE zoid = %s", (u64(obj._p_oid),)
@@ -283,11 +303,17 @@ class TestUndoMove(_HPLayerTest):
         self._tree(portal, "mv-old")
         portal.invokeFactory("Document", "mv-bystander", title="Bystander")
         transaction.commit()
+        _warm_up_move(portal, "mv-old")
         bystander = _row(pg_hp, portal["mv-bystander"])
+        descendants = (portal["mv-old"]["sub"], portal["mv-old"]["sub"]["doc"])
+        tids = [_tid(pg_hp, obj) for obj in descendants]
 
         portal.manage_renameObject("mv-old", "mv-new")
         transaction.commit()
         assert _rows_below(pg_hp, "/plone/mv-new")
+        # the rename did not write the descendants: the undo cannot restore
+        # them, only the follow-up's move inversion puts their rows back
+        assert [_tid(pg_hp, obj) for obj in descendants] == tids
 
         _undo(pg_hp, 0)
 
@@ -325,7 +351,9 @@ class TestUndoMove(_HPLayerTest):
             target.manage_permission(permission, ["Manager"], acquire=False)
         target.reindexObjectSecurity()
         transaction.commit()
+        _warm_up_move(source, "mv-src")
         doc = source["mv-src"]["sub"]["doc"]
+        doc_tid = _tid(pg_hp, doc)
         roles_before = _row(pg_hp, doc)[2]
         assert "user:bob" in roles_before
         untouched = {
@@ -335,6 +363,7 @@ class TestUndoMove(_HPLayerTest):
         clipboard = source.manage_cutObjects(["mv-src"])
         target.manage_pasteObjects(clipboard)
         transaction.commit()
+        assert _tid(pg_hp, doc) == doc_tid  # moved in SQL, not written
         assert _row(pg_hp, doc) == (
             "/plone/mv-target/mv-src/sub/doc",
             True,
