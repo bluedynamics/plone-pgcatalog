@@ -37,6 +37,20 @@ globals().update(
 )
 
 
+class _PGLayerTest:
+    """Base for every test class in this module.
+
+    zope.pytestlayer keeps a layer set up between two test classes only
+    when the next class carries a ``layer`` attribute.  Without it, the
+    layer is torn down after each class and the next one builds a new
+    test database and Plone site, which takes several seconds every time.
+    Per-test isolation does not depend on that: ``testSetUp`` restores
+    the database snapshot.
+    """
+
+    layer = PGCATALOG_PG_FIXTURE
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -66,7 +80,7 @@ def _query_object_by_path_suffix(pg_functional, suffix):
 # ---------------------------------------------------------------------------
 
 
-class TestPGLayerBasics:
+class TestPGLayerBasics(_PGLayerTest):
     """Verify the PG-backed layer sets up correctly."""
 
     def test_portal_exists(self, pg_functional):
@@ -92,7 +106,7 @@ class TestPGLayerBasics:
 # ---------------------------------------------------------------------------
 
 
-class TestContentCreationInPG:
+class TestContentCreationInPG(_PGLayerTest):
     """Test that content creation writes to PostgreSQL."""
 
     def test_create_document_and_commit(self, pg_functional):
@@ -122,7 +136,7 @@ class TestContentCreationInPG:
 # ---------------------------------------------------------------------------
 
 
-class TestIsolationBetweenTests:
+class TestIsolationBetweenTests(_PGLayerTest):
     """Verify that per-test snapshot restore provides isolation."""
 
     def test_create_content_a(self, pg_functional):
@@ -161,7 +175,7 @@ class TestIsolationBetweenTests:
 # ---------------------------------------------------------------------------
 
 
-class TestCatalogColumnsInPG:
+class TestCatalogColumnsInPG(_PGLayerTest):
     """Test that catalog columns are written to PG object_state."""
 
     def test_path_column_written(self, pg_functional):
@@ -292,7 +306,7 @@ class TestCatalogColumnsInPG:
 # ---------------------------------------------------------------------------
 
 
-class TestRenameUpdatesPGPaths:
+class TestRenameUpdatesPGPaths(_PGLayerTest):
     """Rename content and verify paths are updated in PostgreSQL."""
 
     def test_rename_folder_updates_path(self, pg_functional, monkeypatch):
@@ -372,7 +386,7 @@ class TestRenameUpdatesPGPaths:
         assert row[4] is not None  # searchable_text preserved
 
 
-class TestMoveUpdatesPGPaths:
+class TestMoveUpdatesPGPaths(_PGLayerTest):
     """Move content between containers and verify PG paths."""
 
     def test_move_folder_to_subfolder(self, pg_functional, monkeypatch):
@@ -467,7 +481,7 @@ class TestMoveUpdatesPGPaths:
 # ---------------------------------------------------------------------------
 
 
-class TestSQLQueryability:
+class TestSQLQueryability(_PGLayerTest):
     """Verify that catalog data in PG is queryable with SQL."""
 
     def test_query_by_portal_type(self, pg_functional):
@@ -518,7 +532,7 @@ class TestSQLQueryability:
 # ---------------------------------------------------------------------------
 
 
-class TestSearchResultsEndToEnd:
+class TestSearchResultsEndToEnd(_PGLayerTest):
     """Test searchResults() through the Plone catalog API."""
 
     def test_search_by_portal_type(self, pg_functional):
@@ -579,7 +593,7 @@ class TestSearchResultsEndToEnd:
 # ---------------------------------------------------------------------------
 
 
-class TestUncatalogDeleteFlow:
+class TestUncatalogDeleteFlow(_PGLayerTest):
     """Test that deleting content NULLs catalog columns in PG."""
 
     def test_delete_nulls_catalog_columns(self, pg_functional):
@@ -629,7 +643,7 @@ class TestUncatalogDeleteFlow:
 # ---------------------------------------------------------------------------
 
 
-class TestReindex:
+class TestReindex(_PGLayerTest):
     """Test reindexObject() updates idx fields in PG."""
 
     def test_reindex_title_updates_idx(self, pg_functional):
@@ -694,7 +708,7 @@ class TestReindex:
 # ---------------------------------------------------------------------------
 
 
-class TestFullTextSearchWeighted:
+class TestFullTextSearchWeighted(_PGLayerTest):
     """Test SearchableText queries with tsvector weight ranking."""
 
     def test_searchable_text_finds_content(self, pg_functional):
@@ -791,7 +805,7 @@ class TestFullTextSearchWeighted:
 # ---------------------------------------------------------------------------
 
 
-class TestPathQueries:
+class TestPathQueries(_PGLayerTest):
     """Test path-based queries through the catalog API."""
 
     def test_path_subtree_query(self, pg_functional):
@@ -862,7 +876,7 @@ class TestPathQueries:
 # ---------------------------------------------------------------------------
 
 
-class TestSortAndPagination:
+class TestSortAndPagination(_PGLayerTest):
     """Test sort_on, sort_order, and b_start/b_size."""
 
     def test_sort_by_sortable_title(self, pg_functional):
@@ -957,7 +971,7 @@ class TestSortAndPagination:
 # ---------------------------------------------------------------------------
 
 
-class TestBrainAttributes:
+class TestBrainAttributes(_PGLayerTest):
     """Test PGCatalogBrain attributes from real catalog search."""
 
     def test_brain_get_path(self, pg_functional):
@@ -1035,7 +1049,7 @@ class TestBrainAttributes:
 # ---------------------------------------------------------------------------
 
 
-class TestSecurityFiltering:
+class TestSecurityFiltering(_PGLayerTest):
     """Test that searchResults applies security filters.
 
     Uses effective_date (publication date) to test visibility:
@@ -1211,7 +1225,7 @@ def _setup_subtree_editor(portal):
     transaction.commit()
 
 
-class TestPathScopedInactiveContent:
+class TestPathScopedInactiveContent(_PGLayerTest):
     """searchResults honours path-scoped AccessInactivePortalContent.
 
     Regression tests for #232: the permission was only ever checked on
@@ -1335,7 +1349,7 @@ class TestPathScopedInactiveContent:
 # ---------------------------------------------------------------------------
 
 
-class TestUniqueValuesFor:
+class TestUniqueValuesFor(_PGLayerTest):
     """Test uniqueValuesFor() queries PG for distinct index values."""
 
     def test_unique_portal_types(self, pg_functional):
@@ -1373,7 +1387,7 @@ class TestUniqueValuesFor:
 # ---------------------------------------------------------------------------
 
 
-class TestMaintenanceOps:
+class TestMaintenanceOps(_PGLayerTest):
     """Test refreshCatalog, reindexIndex, clearFindAndRebuild."""
 
     def test_refresh_catalog_recatalogs_existing(self, pg_functional):
@@ -1627,7 +1641,7 @@ class TestMaintenanceOps:
 # ===========================================================================
 
 
-class TestKeywordsVocabulary:
+class TestKeywordsVocabulary(_PGLayerTest):
     """Regression for #146: typing into the tag/Schlagwort autocomplete
     offers individual keywords, not serialized JSON arrays or nothing."""
 
@@ -1738,7 +1752,7 @@ def _make_gopip_folder(portal, object_ids=("one", "two", "three")):
     return folder, "/".join(folder.getPhysicalPath())
 
 
-class TestGopipAfterReorder:
+class TestGopipAfterReorder(_PGLayerTest):
     def test_move_to_top_syncs_order(self, pg_functional):
         folder, folder_path = _make_gopip_folder(pg_functional["portal"])
         before = _stored_ranks(pg_functional, folder_path)
@@ -1836,7 +1850,7 @@ def _renumbered_gopip_folder(portal):
     return folder, folder_path
 
 
-class TestGopipSurvivesReindex:
+class TestGopipSurvivesReindex(_PGLayerTest):
     """A reindex of a child must not break the folder's rank order (#245)."""
 
     def test_full_reindex_after_renumber(self, pg_functional):
@@ -1900,7 +1914,7 @@ class TestGopipSurvivesReindex:
             gsm.unregisterAdapter(_PrependOrdering, name="prepend")
 
 
-class TestGopipMaintenanceResync:
+class TestGopipMaintenanceResync(_PGLayerTest):
     def test_resync_heals_stale_ranks(self, pg_functional):
         """maintenance.resync_gopip heals folders corrupted before the fix.
 
@@ -1985,7 +1999,7 @@ def _row_by_zoid(pg_functional, obj):
     return rows[0]
 
 
-class TestRepairUncataloged:
+class TestRepairUncataloged(_PGLayerTest):
     def _setup(self, pg_functional):
         portal = pg_functional["portal"]
         setRoles(portal, TEST_USER_ID, ["Manager"])
@@ -2074,7 +2088,7 @@ class TestRepairUncataloged:
         assert result.paths == ["/plone/intact"]
 
 
-class TestRepairUpgradeStep:
+class TestRepairUpgradeStep(_PGLayerTest):
     def test_upgrade_step_repairs(self, pg_functional):
         from plone.pgcatalog.upgrades.profile_4 import repair_uncataloged_content
 
@@ -2129,7 +2143,7 @@ class TestRepairUpgradeStep:
         assert "<version>5</version>" in metadata
 
 
-class TestRepairHardening:
+class TestRepairHardening(_PGLayerTest):
     def test_refuses_unfixed_storage(self, pg_functional, monkeypatch):
         from plone.pgcatalog import maintenance
 
@@ -2228,11 +2242,6 @@ class TestRepairHardening:
         assert "popleft()" in source
         assert "pop(0)" not in source
 
-
-class TestRepairCommitErrors:
-    """Separate class: the PG layer keeps one pool connection per test until
-    the class ends, and the pool has 10 (see the #244 ledger)."""
-
     def test_non_conflict_commit_error_fails_only_that_batch(
         self, pg_functional, monkeypatch
     ):
@@ -2303,7 +2312,7 @@ def _png_bytes():
     return buffer.getvalue()
 
 
-class TestPlainWritesKeepCatalogData:
+class TestPlainWritesKeepCatalogData(_PGLayerTest):
     """Writes without a full reindex must not uncatalog (zodb-pgjsonb#120)."""
 
     def _doc(self, pg_functional, doc_id, portal_type="Document"):
@@ -2398,7 +2407,7 @@ def tika_queue(pg_functional, monkeypatch):
         cur.execute("DROP TABLE IF EXISTS text_extraction_queue")
 
 
-class TestRequeueLostExtractions:
+class TestRequeueLostExtractions(_PGLayerTest):
     def _file(self, pg_functional, tika_queue, file_id):
         from plone.namedfile.file import NamedBlobFile
 
@@ -2546,7 +2555,7 @@ class TestRequeueLostExtractions:
         assert self._queue(tika_queue, portal["rq-env"]) == [("done", 3)]
 
 
-class TestGopipResyncUpgradeStep:
+class TestGopipResyncUpgradeStep(_PGLayerTest):
     def test_step_4_to_5_resyncs_gopip(self):
         """The 4 -> 5 step reuses the tested resync handler of step 2 -> 3."""
         from pathlib import Path
@@ -2563,7 +2572,7 @@ class TestGopipResyncUpgradeStep:
         assert step.get("handler") == ".profile_3.resync_gopip_ranks"
 
 
-class TestRebuildAnalyzes:
+class TestRebuildAnalyzes(_PGLayerTest):
     def test_clear_find_and_rebuild_runs_analyze(self, pg_functional, caplog):
         """Planner statistics must follow a bulk recatalog (#224)."""
         catalog = pg_functional["portal"]["portal_catalog"]
@@ -2590,7 +2599,7 @@ def _stored_title(pg_functional, path):
     return rows[0][0]
 
 
-class TestPartialOnlyTransactions:
+class TestPartialOnlyTransactions(_PGLayerTest):
     """Partial updates must land without any ZODB write (#249)."""
 
     def test_reindex_index_restores_a_stale_value(self, pg_functional):
@@ -2664,7 +2673,7 @@ def _keyword_sections(portal):
     return portal["sec-a"]["doc"]
 
 
-class TestKeywordsOfSection:
+class TestKeywordsOfSection(_PGLayerTest):
     def test_plone_vocabulary_lists_the_section_keywords(self, pg_functional):
         """Plone's own class, via path _apply_index (works for subclasses)."""
         from plone.app.vocabularies.catalog import KeywordsVocabulary
@@ -2732,7 +2741,7 @@ def _assert_cataloged_at(pg_functional, *objs):
         assert rows[0] == ("/".join(obj.getPhysicalPath()), True), obj
 
 
-class TestRenameMoveKeepCatalogData:
+class TestRenameMoveKeepCatalogData(_PGLayerTest):
     """Rename and move keep every involved row cataloged.
 
     zodb-pgjsonb#122 listed "renaming or moving a folder" among the writes
@@ -2838,3 +2847,22 @@ class TestRenameMoveKeepCatalogData:
             pg_functional, source, portal["rm-b"], portal["rm-b"]["child"]
         )
         logout()
+
+
+class TestPoolConnectionsReleased(_PGLayerTest):
+    """Each test gives its pool connection back (#261).
+
+    ``testSetUp`` drops the ZODB connections of the previous test.  They
+    used to keep their zodb-pgjsonb instance, and with it one connection
+    of the instance pool (``max_size=10``), until the layer was torn down:
+    the tenth committing test waited 30 s and failed with ``PoolTimeout``.
+    """
+
+    @pytest.mark.parametrize("n", range(12))
+    def test_commit_does_not_keep_a_pool_connection(self, pg_functional, n):
+        portal = pg_functional["portal"]
+        portal.invokeFactory("Document", f"pool-doc-{n}", title=f"Pool {n}")
+        transaction.commit()
+        stats = pg_functional["zodbDB"].storage._instance_pool.get_stats()
+        # Only this test's own connection is checked out.
+        assert stats["pool_size"] - stats["pool_available"] == 1
