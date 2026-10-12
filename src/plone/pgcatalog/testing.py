@@ -71,6 +71,20 @@ PGCATALOG_FUNCTIONAL_TESTING = FunctionalTesting(
 )
 
 
+class UsesIntegrationLayer:
+    """Base for pytest test classes that use ``PGCATALOG_INTEGRATION_TESTING``.
+
+    zope.pytestlayer keeps a layer set up between two test classes only
+    when the next class carries a ``layer`` attribute.  Without it, the
+    layer is torn down after each class and set up again for the next
+    one.  With it, all such classes run as one group, in every module,
+    and share a single setup.  Per-test isolation does not depend on
+    that: ``IntegrationTesting`` aborts the transaction after each test.
+    """
+
+    layer = PGCATALOG_INTEGRATION_TESTING
+
+
 # ---------------------------------------------------------------------------
 # PG-backed layer (requires PostgreSQL)
 # ---------------------------------------------------------------------------

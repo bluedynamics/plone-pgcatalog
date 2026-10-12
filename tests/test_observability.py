@@ -1,6 +1,7 @@
 """Tests for the pgcontent plone.observability metric provider."""
 
 from plone.pgcatalog.indexing import catalog_object
+from plone.pgcatalog.testing import UsesIntegrationLayer
 from tests.conftest import insert_object
 
 import pytest
@@ -200,7 +201,7 @@ class TestCollect:
         assert list(provider.collect()) == []
 
 
-class TestRegistration:
+class TestRegistration(UsesIntegrationLayer):
     def test_pgcontent_adapter_registered(self, pgcatalog_layer):
         from plone.observability.interfaces import IMetricProvider
         from zope.component import getGlobalSiteManager
