@@ -31,6 +31,12 @@
   containers before the tests run. The databases are thrown away after
   the job, so durability buys nothing there.
 
+- The development Compose setup (`development/`) does the same with a
+  one-shot `postgres-tuning` service, which works with both the standard
+  and the BM25 image. The full test suite runs about 28 % faster locally
+  (100 s → 72 s). The price: an OS crash or power loss can corrupt the
+  databases in that volume. `example/` and `tryout/` are unchanged.
+
 ## 1.0.0rc7 (2026-10-12)
 
 ### Fixed
