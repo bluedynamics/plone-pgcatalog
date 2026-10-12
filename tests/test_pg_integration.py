@@ -615,16 +615,56 @@ class TestMoveOptimizationActive(_PGLayerTest):
         ]
         assert [before[p] for p in sorted(before)] == [after[p] for p in sorted(after)]
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="_reindex_security_for_move resolves descendants by their old "
-        "path, which no longer exists once the move has happened (#270)",
-    )
     def test_cross_container_move_updates_descendant_security(self, pg_functional):
         self._cross_container_move(pg_functional)
         roles = _allowed_roles(pg_functional, "/plone/dst/folder/mid/leaf")
         assert "user:someuser" not in roles
         assert "Anonymous" in roles
+
+    def test_move_into_restricted_container_hides_descendants(self, pg_functional):
+        """Open -> restricted: the leaf must neither keep Anonymous nor be found.
+
+        The content is created by the (Manager) test user, who is therefore
+        Owner of it.  The search runs as another user, so that Owner does
+        not grant access through the back door.
+        """
+        portal = pg_functional["portal"]
+        setRoles(portal, TEST_USER_ID, ["Manager"])
+        portal.acl_users.source_users.addUser("plain", "plain", "secret")
+        portal.invokeFactory("Folder", "open")
+        portal.invokeFactory("Folder", "closed")
+        portal["closed"].manage_permission(
+            "Access contents information", ["Manager"], acquire=0
+        )
+        portal["open"].invokeFactory("Folder", "folder")
+        portal["open"]["folder"].invokeFactory("Folder", "mid")
+        portal["open"]["folder"]["mid"].invokeFactory("Document", "leaf", title="L")
+        transaction.commit()
+        _warm_up_move(portal["open"], "folder")
+
+        def found_as_plain():
+            login(portal, "plain")
+            try:
+                results = portal.portal_catalog.searchResults(
+                    portal_type="Document", id="leaf"
+                )
+                return [b.getPath() for b in results]
+            finally:
+                logout()
+                login(portal, TEST_USER_NAME)
+
+        assert found_as_plain() == ["/plone/open/folder/mid/leaf"]
+        before = _tids(pg_functional, "/open/folder/mid")
+
+        clipboard = portal["open"].manage_cutObjects(["folder"])
+        portal["closed"].manage_pasteObjects(clipboard)
+        transaction.commit()
+
+        roles = _allowed_roles(pg_functional, "/plone/closed/folder/mid/leaf")
+        assert "Anonymous" not in roles
+        assert found_as_plain() == []
+        after = _tids(pg_functional, "/closed/folder/mid")
+        assert [before[p] for p in sorted(before)] == [after[p] for p in sorted(after)]
 
 
 # ---------------------------------------------------------------------------
@@ -2283,7 +2323,7 @@ class TestRepairUpgradeStep(_PGLayerTest):
         )
         profile_4.repair_uncataloged_content(portal["portal_setup"])
 
-    def test_profile_version_is_5(self):
+    def test_profile_version_is_6(self):
         from pathlib import Path
 
         import plone.pgcatalog
@@ -2291,7 +2331,74 @@ class TestRepairUpgradeStep(_PGLayerTest):
         metadata = (
             Path(plone.pgcatalog.__file__).parent / "profiles/default/metadata.xml"
         ).read_text()
-        assert "<version>5</version>" in metadata
+        assert "<version>6</version>" in metadata
+
+
+class TestReindexSecurity(_PGLayerTest):
+    """maintenance.reindex_security repairs stale allowedRolesAndUsers (#271)."""
+
+    def _make_stale(self, pg_functional):
+        portal = pg_functional["portal"]
+        setRoles(portal, TEST_USER_ID, ["Manager"])
+        portal.invokeFactory("Folder", "sec-folder", title="F")
+        portal["sec-folder"].invokeFactory("Document", "sec-doc", title="Doc")
+        transaction.commit()
+        test_db = pg_functional["pgTestDB"]
+        with test_db.connection.cursor() as cur:
+            cur.execute(
+                "UPDATE object_state SET allowed_roles = ARRAY['Stale'] "
+                "WHERE path LIKE '/plone/sec-folder%'"
+            )
+        test_db.connection.commit()
+        return portal
+
+    def _row(self, pg_functional, path):
+        return _query_pg(
+            pg_functional,
+            "SELECT allowed_roles, idx, tid FROM object_state WHERE path = %s",
+            (path,),
+        )[0]
+
+    def test_repairs_stale_rows_and_leaves_the_rest(self, pg_functional):
+        from plone.pgcatalog.maintenance import reindex_security
+
+        portal = self._make_stale(pg_functional)
+        path = "/plone/sec-folder/sec-doc"
+        stale = self._row(pg_functional, path)
+        assert stale[0] == ["Stale"]
+
+        result = reindex_security(portal["portal_catalog"], portal)
+        transaction.commit()
+
+        assert result.failed == []
+        assert result.checked >= 2
+        roles, idx, tid = self._row(pg_functional, path)
+        assert roles == ["Anonymous"]
+        assert idx == stale[1]  # nothing in idx changed
+        assert tid == stale[2]  # not written to the ZODB
+
+    def test_upgrade_step_repairs(self, pg_functional):
+        from plone.pgcatalog.upgrades.profile_6 import reindex_security_indexes
+
+        portal = self._make_stale(pg_functional)
+        reindex_security_indexes(portal["portal_setup"])
+        transaction.commit()
+        roles = self._row(pg_functional, "/plone/sec-folder/sec-doc")[0]
+        assert roles == ["Anonymous"]
+
+    def test_upgrade_step_noop_without_pg_catalog(self, caplog):
+        from plone.pgcatalog.upgrades.profile_6 import reindex_security_indexes
+
+        class FakeSite:
+            portal_catalog = object()
+
+        class FakeContext:
+            def getSite(self):
+                return FakeSite()
+
+        with caplog.at_level("INFO"):
+            reindex_security_indexes(FakeContext())
+        assert "PG catalog not active" in caplog.text
 
 
 class TestRepairHardening(_PGLayerTest):

@@ -18,6 +18,7 @@ security-only reindex of descendants (allowedRolesAndUsers).
 """
 
 from dataclasses import dataclass
+from plone.pgcatalog.extraction import obj_to_zoid
 from plone.pgcatalog.pending import _local
 from plone.pgcatalog.pending import add_pending_move
 
@@ -215,14 +216,7 @@ def _reindex_security_for_move(ob, old_prefix):
         return
 
     for brain in brains:
-        brain_path = brain.getPath()
-        if brain_path == old_prefix:
-            continue  # Parent handled by normal pipeline
-
-        try:
-            child = brain._unrestrictedGetObject()
-        except (AttributeError, KeyError):
-            continue
+        child = _resolve_descendant(ob, old_prefix, brain)
         if child is None:
             continue
 
@@ -230,6 +224,36 @@ def _reindex_security_for_move(ob, old_prefix):
         catalog.reindexObject(child, idxs=security_idxs, update_metadata=0)
         if was_changed is None:
             child._p_deactivate()  # Don't keep in cache if wasn't loaded
+
+
+def _resolve_descendant(ob, old_prefix, brain):
+    """Return the object for *brain* below the moved object *ob*, or None.
+
+    The brain still carries the OLD path, which no longer exists after the
+    move.  Resolve the part after ``old_prefix`` relative to *ob*, and check
+    that the result really is the brain's object (acquisition would happily
+    return something else for a missing id).  The moved object itself is
+    skipped: the normal pipeline handles it.  Logs a warning when a
+    descendant cannot be resolved, as its security data would stay stale.
+    """
+    brain_path = brain.getPath()
+    if brain_path == old_prefix:
+        return None
+    suffix = brain_path[len(old_prefix) :].strip("/")
+    try:
+        child = ob.unrestrictedTraverse(suffix, None)
+    except Exception:
+        child = None
+    zoid = obj_to_zoid(child) if child is not None else None
+    if zoid is None or zoid != brain.getRID():
+        log.warning(
+            "Security reindex after move: cannot resolve %s below %s, "
+            "its allowedRolesAndUsers stays stale",
+            brain_path,
+            "/".join(ob.getPhysicalPath()),
+        )
+        return None
+    return child
 
 
 # ---------------------------------------------------------------------------

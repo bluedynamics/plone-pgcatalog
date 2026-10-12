@@ -36,6 +36,7 @@ log = logging.getLogger(__name__)
 
 
 _REINDEX_BATCH_SIZE = 500
+_SECURITY_INDEXES = ("allowedRolesAndUsers",)
 _REBUILD_BATCH = 500  # commit + cache-minimize every N objects during rebuild
 
 
@@ -425,6 +426,50 @@ def repair_uncataloged(
         len(failed),
     )
     return RepairResult(checked, paths, failed)
+
+
+class SecurityReindexResult(NamedTuple):
+    checked: int
+    failed: list
+
+
+def reindex_security(catalog, site, *, batch_size=_REBUILD_BATCH):
+    """Reindex only the security indexes of every cataloged object.
+
+    Repairs stale ``allowedRolesAndUsers`` (#271): cross-container moves
+    since 1.0.0b21 left the descendants of the moved folder with the
+    values of their old location.  Uses the lightweight partial reindex
+    (JSONB merge), so objects are not written to the ZODB and nothing
+    else in ``idx`` (and no Tika text) is touched.  Commits and
+    minimizes the ZODB cache every *batch_size* objects; idempotent, so
+    an interrupted run is simply repeated.
+
+    Returns:
+        SecurityReindexResult(checked, failed paths)
+    """
+    jar = catalog._p_jar
+    checked = 0
+    failed = []
+    in_batch = 0
+    with site_context(site):
+        for obj, path in catalog._walk_site_paths(site):
+            if not _is_catalogable(obj, catalog):
+                continue
+            idxs = list(getattr(obj, "_cmf_security_indexes", _SECURITY_INDEXES))
+            try:
+                catalog.reindexObject(obj, idxs=idxs, update_metadata=0)
+            except Exception:
+                log.warning("reindex_security: failed for %s", path, exc_info=True)
+                failed.append(path)
+                continue
+            checked += 1
+            in_batch += 1
+            if in_batch >= batch_size:
+                _commit_and_minimize(jar)
+                in_batch = 0
+        _commit_and_minimize(jar)
+    log.info("reindex_security: %d reindexed, %d failed", checked, len(failed))
+    return SecurityReindexResult(checked, failed)
 
 
 # Weight 'C' in searchable_text comes only from the Tika merge

@@ -418,27 +418,43 @@ class TestPopMoveContextEmpty:
 class TestReindexSecurityForMove:
     """Test the security reindex function for cross-container moves."""
 
-    def test_reindexes_descendants_security(self):
-        """_reindex_security_for_move calls reindexObject with security indexes."""
-        from plone.pgcatalog.move import _reindex_security_for_move
+    @staticmethod
+    def _brain(path, zoid=7):
+        brain = mock.Mock()
+        brain.getPath.return_value = path
+        brain.getRID.return_value = zoid
+        return brain
 
-        # Create mock objects
-        child1 = mock.Mock()
-        child1._p_changed = False
+    @staticmethod
+    def _child(zoid=7, p_changed=False):
+        child = mock.Mock()
+        child._p_oid = zoid.to_bytes(8, "big")
+        child._p_changed = p_changed
+        return child
 
-        brain1 = mock.Mock()
-        brain1.getPath.return_value = "/plone/source/child1"
-        brain1._unrestrictedGetObject.return_value = child1
-
-        # The parent brain (same as old_prefix) — should be skipped
-        parent_brain = mock.Mock()
-        parent_brain.getPath.return_value = "/plone/source"
-
-        catalog = mock.Mock()
-        catalog.unrestrictedSearchResults.return_value = [parent_brain, brain1]
-
+    @staticmethod
+    def _ob(children):
+        """Moved object whose traversal resolves paths relative to itself."""
         ob = mock.Mock()
         ob._cmf_security_indexes = ("allowedRolesAndUsers",)
+        ob.getPhysicalPath.return_value = ("", "plone", "target", "source")
+        ob.unrestrictedTraverse.side_effect = lambda path, default=None: children.get(
+            path, default
+        )
+        return ob
+
+    def test_reindexes_descendants_security(self):
+        """Descendants are resolved relative to the moved object (#271)."""
+        from plone.pgcatalog.move import _reindex_security_for_move
+
+        child1 = self._child()
+        parent_brain = self._brain("/plone/source", zoid=1)  # moved object itself
+        catalog = mock.Mock()
+        catalog.unrestrictedSearchResults.return_value = [
+            parent_brain,
+            self._brain("/plone/source/child1"),
+        ]
+        ob = self._ob({"child1": child1})
 
         with mock.patch("Products.CMFCore.utils.getToolByName", return_value=catalog):
             _reindex_security_for_move(ob, "/plone/source")
@@ -470,59 +486,73 @@ class TestReindexSecurityForMove:
             _reindex_security_for_move(ob, "/plone/source")
         # No error raised, logged warning
 
-    def test_handles_missing_object(self):
-        """_reindex_security_for_move handles missing objects gracefully."""
+    def test_handles_missing_object(self, caplog):
+        """An unresolvable descendant is skipped with a warning."""
         from plone.pgcatalog.move import _reindex_security_for_move
 
-        brain = mock.Mock()
-        brain.getPath.return_value = "/plone/source/child"
-        brain._unrestrictedGetObject.return_value = None  # object gone
-
         catalog = mock.Mock()
-        catalog.unrestrictedSearchResults.return_value = [brain]
-
-        ob = mock.Mock()
-        ob._cmf_security_indexes = ("allowedRolesAndUsers",)
+        catalog.unrestrictedSearchResults.return_value = [
+            self._brain("/plone/source/child")
+        ]
+        ob = self._ob({})  # nothing resolves
         with mock.patch("Products.CMFCore.utils.getToolByName", return_value=catalog):
             _reindex_security_for_move(ob, "/plone/source")
 
         catalog.reindexObject.assert_not_called()
+        assert "cannot resolve /plone/source/child" in caplog.text
+
+    def test_skips_object_that_is_not_the_brains_object(self, caplog):
+        """Acquisition may return another object; compare against the zoid."""
+        from plone.pgcatalog.move import _reindex_security_for_move
+
+        catalog = mock.Mock()
+        catalog.unrestrictedSearchResults.return_value = [
+            self._brain("/plone/source/child", zoid=7)
+        ]
+        ob = self._ob({"child": self._child(zoid=8)})
+        with mock.patch("Products.CMFCore.utils.getToolByName", return_value=catalog):
+            _reindex_security_for_move(ob, "/plone/source")
+
+        catalog.reindexObject.assert_not_called()
+        assert "cannot resolve" in caplog.text
 
     def test_deactivates_unchanged_objects(self):
         """_reindex_security_for_move deactivates objects that were not changed."""
         from plone.pgcatalog.move import _reindex_security_for_move
 
-        child = mock.Mock()
-        child._p_changed = None  # Was deactivated (ghost)
-
-        brain = mock.Mock()
-        brain.getPath.return_value = "/plone/source/child"
-        brain._unrestrictedGetObject.return_value = child
-
+        child = self._child(p_changed=None)  # Was deactivated (ghost)
         catalog = mock.Mock()
-        catalog.unrestrictedSearchResults.return_value = [brain]
-
-        ob = mock.Mock()
-        ob._cmf_security_indexes = ("allowedRolesAndUsers",)
+        catalog.unrestrictedSearchResults.return_value = [
+            self._brain("/plone/source/child")
+        ]
+        ob = self._ob({"child": child})
         with mock.patch("Products.CMFCore.utils.getToolByName", return_value=catalog):
             _reindex_security_for_move(ob, "/plone/source")
 
         child._p_deactivate.assert_called_once()
 
-    def test_handles_unrestricted_get_object_error(self):
-        """_reindex_security_for_move handles _unrestrictedGetObject errors."""
+    def test_handles_traversal_error(self, caplog):
+        """A traversal error is logged and does not abort the loop."""
         from plone.pgcatalog.move import _reindex_security_for_move
 
-        brain = mock.Mock()
-        brain.getPath.return_value = "/plone/source/child"
-        brain._unrestrictedGetObject.side_effect = KeyError("missing")
-
+        good = self._child(zoid=9)
         catalog = mock.Mock()
-        catalog.unrestrictedSearchResults.return_value = [brain]
+        catalog.unrestrictedSearchResults.return_value = [
+            self._brain("/plone/source/bad", zoid=7),
+            self._brain("/plone/source/good", zoid=9),
+        ]
+        ob = self._ob({"good": good})
 
-        ob = mock.Mock()
-        ob._cmf_security_indexes = ("allowedRolesAndUsers",)
+        def traverse(path, default=None):
+            if path == "bad":
+                raise KeyError("bad")
+            return {"good": good}.get(path, default)
+
+        ob.unrestrictedTraverse.side_effect = traverse
         with mock.patch("Products.CMFCore.utils.getToolByName", return_value=catalog):
             _reindex_security_for_move(ob, "/plone/source")
 
-        catalog.reindexObject.assert_not_called()
+        catalog.reindexObject.assert_called_once_with(
+            good, idxs=["allowedRolesAndUsers"], update_metadata=0
+        )
+        assert "cannot resolve /plone/source/bad" in caplog.text

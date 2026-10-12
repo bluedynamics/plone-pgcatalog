@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### Fixed
+
+- A cross-container move (cut and paste into another folder) left the
+  descendants of the moved folder with the `allowedRolesAndUsers` of their
+  old location. Search and listings could show title, description and
+  metadata to users who had lost access, or hide content that should be
+  visible. The security reindex after a move looked the descendants up by
+  their old path, which no longer exists, and skipped them silently. It now
+  resolves them relative to the moved folder, checks that it found the right
+  object and logs a warning for every descendant it cannot resolve. Present
+  since 1.0.0b21. Upgrade profile version 6 reindexes `allowedRolesAndUsers`
+  of all cataloged objects once to repair existing sites; it only rewrites
+  the security index values and does not touch other index data or extracted
+  text. Also available as `maintenance.reindex_security`. #271
+
 ### Tests
 
 - The move and rename optimization is now active in the test layers. plone.testing
