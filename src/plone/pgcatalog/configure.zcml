@@ -40,6 +40,13 @@
       handler=".pool.release_request_connection"
       />
 
+  <!-- Recatalog what an undo hid (#265), after the request that did the
+       undo has committed.  See src/plone/pgcatalog/undo.py. -->
+  <subscriber
+      for="ZPublisher.interfaces.IPubSuccess"
+      handler=".undo.drain_after_undo"
+      />
+
   <!-- Resync getObjPositionInParent ranks when a container's ordering
        changes (#216).  plone.folder's GopipIndex is a fake index that
        ZCatalog resolves at sort time, so Plone never reindexes siblings

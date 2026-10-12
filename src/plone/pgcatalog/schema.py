@@ -407,6 +407,29 @@ CREATE INDEX IF NOT EXISTS idx_slow_queries_keys
     ON pgcatalog_slow_queries USING gin (query_keys);
 """
 
+# ── Undo follow-up queue (#265) ──────────────────────────────────────────────
+# Filled by CatalogStateProcessor.undone() in the undo's PG transaction,
+# drained by plone.pgcatalog.undo.process_queue() with application context.
+# kind: 'recatalog' (full catalog_object) or 'security' (allowedRolesAndUsers
+# partial).  path: the row's path before the undo, a hint for resolving the
+# object (NULL for rows that had no catalog data).  One row per (kind, zoid);
+# a later undo of the same object updates undone_tid, so a drain that read
+# the older row does not delete the newer one.
+
+UNDO_QUEUE = """\
+CREATE TABLE IF NOT EXISTS pgcatalog_undo_queue (
+    id          BIGSERIAL PRIMARY KEY,
+    kind        TEXT NOT NULL,
+    zoid        BIGINT NOT NULL,
+    path        TEXT,
+    undone_tid  BIGINT NOT NULL,
+    queued_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_undo_queue_kind_zoid
+    ON pgcatalog_undo_queue (kind, zoid);
+"""
+
 
 # ── Optional text extraction queue (created when PGCATALOG_TIKA_URL is set) ──
 
@@ -516,3 +539,4 @@ def install_catalog_schema(conn):
     conn.execute(CATALOG_LANG_FUNCTION)
     conn.execute(CATALOG_INDEXES)
     conn.execute(RRULE_FUNCTIONS)
+    conn.execute(UNDO_QUEUE)

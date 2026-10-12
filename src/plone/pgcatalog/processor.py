@@ -5,6 +5,7 @@ catalog index data as extra PG columns atomically alongside the object
 state during tpc_vote.
 """
 
+from plone.pgcatalog import undo
 from plone.pgcatalog.backends import get_backend
 from plone.pgcatalog.columns import compute_path_info
 from plone.pgcatalog.columns import extract_extra_idx_columns
@@ -25,6 +26,7 @@ from plone.pgcatalog.schema import CATALOG_LANG_FUNCTION
 from plone.pgcatalog.schema import RRULE_FUNCTIONS
 from plone.pgcatalog.schema import SLOW_QUERY_TABLE
 from plone.pgcatalog.schema import TEXT_EXTRACTION_QUEUE
+from plone.pgcatalog.schema import UNDO_QUEUE
 from psycopg.types.json import Json
 from zodb_pgjsonb import ExtraColumn
 
@@ -138,6 +140,7 @@ class CatalogStateProcessor:
         )
         base += CATALOG_CHANGE_SEQ
         base += SLOW_QUERY_TABLE
+        base += UNDO_QUEUE
         if TIKA_URL:
             base += TEXT_EXTRACTION_QUEUE
             base += backend.get_extraction_update_sql()
@@ -322,6 +325,19 @@ class CatalogStateProcessor:
                 cursor.execute("SELECT nextval('pgcatalog_change_seq')")
             except Exception:
                 pass  # sequence may not exist yet (first startup)
+
+    def undone(self, cursor, tid, restored, deleted):
+        """zodb-pgjsonb hook: transaction *tid* is being undone.
+
+        Called in the undo's PG transaction before anything is written.
+        Hides the affected catalog rows and queues them for the follow-up
+        (see :mod:`plone.pgcatalog.undo`).  ``process()`` answers None for
+        the restored states, so the hidden columns stay hidden; the flag
+        makes ``finalize()`` bump the query cache counter in the same
+        transaction.
+        """
+        if undo.hide_undone(cursor, tid, restored, deleted):
+            self._catalog_changed = True
 
     def _enqueue_tika_jobs(self, cursor):
         """Enqueue text extraction jobs for blobs committed in this txn.
