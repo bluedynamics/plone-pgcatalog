@@ -17,6 +17,34 @@ services:
       timeout: 3s
       retries: 5
 
+  postgres-tuning:
+    # Turns off fsync and synchronous_commit: the full test suite runs about
+    # 28 % faster. The price: an OS crash or power loss can corrupt the
+    # databases in this volume (a normal stop or restart is safe).
+    # Not a `command:` on the postgres service, because that would replace
+    # the BM25 image's own command (shared_preload_libraries). ALTER SYSTEM
+    # works with both images and persists in the volume.
+    image: ${PG_IMAGE:-postgres:17}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGHOST: postgres
+      PGUSER: zodb
+      PGPASSWORD: zodb
+      PGDATABASE: zodb
+    entrypoint: ["sh", "-c"]
+    # The retry covers the first start, when initdb's temporary server
+    # already answers the healthcheck but not yet on TCP.
+    command:
+      - >-
+        until psql -Atqc "SELECT 1" > /dev/null 2>&1; do sleep 1; done;
+        psql -v ON_ERROR_STOP=1
+        -c "ALTER SYSTEM SET fsync = off"
+        -c "ALTER SYSTEM SET synchronous_commit = off"
+        -c "SELECT pg_reload_conf()"
+    restart: "no"
+
   garage:
     image: dxflrs/garage:v2.3.0
     # --single-node creates and applies the cluster layout;
