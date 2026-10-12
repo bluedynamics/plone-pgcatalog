@@ -326,7 +326,7 @@ class CatalogStateProcessor:
             except Exception:
                 pass  # sequence may not exist yet (first startup)
 
-    def undone(self, cursor, tid, restored, deleted):
+    def undone(self, cursor, tid, restored, deleted, entries=None):
         """zodb-pgjsonb hook: transaction *tid* is being undone.
 
         Called in the undo's PG transaction before anything is written.
@@ -336,7 +336,7 @@ class CatalogStateProcessor:
         makes ``finalize()`` bump the query cache counter in the same
         transaction.
         """
-        if undo.hide_undone(cursor, tid, restored, deleted):
+        if undo.hide_undone(cursor, tid, restored, deleted, entries):
             self._catalog_changed = True
 
     def _enqueue_tika_jobs(self, cursor):

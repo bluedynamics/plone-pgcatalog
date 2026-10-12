@@ -15,11 +15,12 @@ Two steps:
 
    - restored catalogable objects are hidden completely (all catalog
      columns NULL, like ``uncatalog_object``) and queued for ``recatalog``;
-   - every row below a restored or deleted object that had a path loses its
-     ``allowed_roles`` (invisible to every restricted search) and is queued
-     for ``security``.  This is the conservative subtree rule ("3a"): the
-     undone transaction may have changed their security data without
-     writing them.
+   - every row below a deleted object, and below a restored object whose
+     undone change could have reached its descendants (see
+     :func:`needs_subtree_rule`), loses its ``allowed_roles`` (invisible to
+     every restricted search) and is queued for ``security``.  This is the
+     subtree rule: the undone transaction may have changed their security
+     data without writing them (sharing, workflow, move).
 
 2. :func:`process_queue` recomputes the queued rows from the restored
    content in ordinary ZODB transactions, with application context.  The
@@ -61,6 +62,7 @@ __all__ = [
     "drain_after_undo",
     "followup_limit",
     "hide_undone",
+    "needs_subtree_rule",
     "process_queue",
     "queue_length",
     "warn_if_queue_not_empty",
@@ -74,8 +76,11 @@ _LIMIT_ENV = "PGCATALOG_UNDO_FOLLOWUP_LIMIT"
 
 _PGJSONB_UNDO_HOOK = (1, 18, 0)  # zodb-pgjsonb#121: undone() hook
 
-# Referrer walk: content -> bucket -> BTree node(s) -> folder.
-_WALK_MAX_DEPTH = 8
+# Referrer walk: content -> bucket -> BTree node(s) -> folder, repeated for
+# every hidden ancestor (the undo of a delete hides a whole subtree, and an
+# undone add or delete hides the container itself), up to the first row with
+# a path or an object resolved earlier in the run.
+_WALK_MAX_DEPTH = 32
 _WALK_MAX_CANDIDATES = 10
 
 # Set by hide_undone() in the thread that commits the undo; read by the
@@ -146,6 +151,12 @@ def _pre_undo_rows(cursor, restored, deleted):
     return rows
 
 
+def _path_order(row):
+    """Sort key: rows with a path by path, then the ones without."""
+    path = row["path"] if row is not None else None
+    return (path is None, path or "")
+
+
 def _subtree_roots(paths):
     """Sorted, de-duplicated paths without the ones inside another root."""
     roots = []
@@ -156,13 +167,93 @@ def _subtree_roots(paths):
     return roots
 
 
-def hide_undone(cursor, tid, restored, deleted):
+# ---------------------------------------------------------------------------
+# Which restored objects get the subtree rule
+#
+# Adding, deleting or moving content writes the container too (its
+# modification date), so applying the subtree rule to every restored
+# container would hide the whole site after undoing a delete in its root.
+# The rule is therefore applied only where the undone change could have
+# changed the security of the rows below: a descendant's allowedRolesAndUsers
+# depends on the permission settings and local roles of itself and its
+# ancestors, and on which objects are its ancestors.  Deliberately coarse:
+# every change of the container's own state except the two keys that adding
+# and removing children write counts, so a title edit still applies the
+# rule.  When in doubt, the rule applies.
+# ---------------------------------------------------------------------------
+
+# Top-level state keys that adding, deleting or moving a child writes into
+# its container, and that no security computation reads.
+_HARMLESS_KEYS = frozenset({"modification_date", "cmf_uid"})
+_ABSENT = object()
+
+
+def _state_changed(before, after):
+    """True unless the two states differ in harmless keys only (or not at all)."""
+    if not isinstance(before, dict) or not isinstance(after, dict):
+        return True
+    keys = (before.keys() | after.keys()) - _HARMLESS_KEYS
+    return any(before.get(key, _ABSENT) != after.get(key, _ABSENT) for key in keys)
+
+
+def _relocated(entries):
+    """Zoids whose membership in the refs of some undone object changes.
+
+    A move or rename shows here: the container buckets of the old and the
+    new location are undone too, one of them loses the moved object's ref
+    and the other gains it.  None when *entries* cannot be read.
+    """
+    changed = set()
+    try:
+        for entry in entries.values():
+            before = set(entry["before"]["refs"])
+            after = set(entry["after"]["refs"]) if entry["after"] else set()
+            changed |= before ^ after
+    except (AttributeError, KeyError, TypeError):
+        return None
+    return changed
+
+
+def needs_subtree_rule(zoid, entries, relocated):
+    """Whether undoing *zoid*'s change can affect the security of its subtree.
+
+    *entries* is the ``undone()`` hook's argument, *relocated* the result of
+    :func:`_relocated`.  Compares what the undone transaction wrote
+    (``before``) with what the undo writes (``after``); True when
+
+    - the object's state differs in any key but ``modification_date`` and
+      ``cmf_uid`` (local roles and their block, permission settings, and
+      also a title, a created ``__annotations__`` or a changed ``id``),
+    - its class differs,
+    - it changes location (see :func:`_relocated`), or
+    - this cannot be decided (no entry, no data, a deleted object).
+    """
+    if entries is None or relocated is None or zoid in relocated:
+        return True
+    try:
+        entry = entries[zoid]
+        before, after = entry["before"], entry["after"]
+        if after is None:
+            return True
+        if (before["class_mod"], before["class_name"]) != (
+            after["class_mod"],
+            after["class_name"],
+        ):
+            return True
+        return _state_changed(before["state"], after["state"])
+    except (KeyError, TypeError):
+        return True
+
+
+def hide_undone(cursor, tid, restored, deleted, entries=None):
     """Hide and queue the catalog rows affected by undoing *tid*.
 
     Called by ``CatalogStateProcessor.undone()``, once per undone tid, on
     the cursor of the undo's PG transaction, before the undo is written
-    (``object_state`` still shows the pre-undo rows).  Exceptions abort the
-    undo.  Returns True when catalog data was hidden or queued.
+    (``object_state`` still shows the pre-undo rows).  *entries* holds both
+    revisions of every undone zoid; without it every restored object gets
+    the subtree rule.  Exceptions abort the undo.  Returns True when catalog
+    data was hidden or queued.
     """
     if not restored and not deleted:
         return False
@@ -170,8 +261,10 @@ def hide_undone(cursor, tid, restored, deleted):
 
     # Restored catalogable objects: everything in their rows belongs to the
     # undone transaction or is derived from it.  Queue first, then hide.
+    # Queued in path order, containers first (rows without a path last), so
+    # the follow-up resolves ancestors before their descendants.
     recatalog = {}
-    for zoid in restored:
+    for zoid in sorted(restored, key=lambda z: _path_order(rows.get(z))):
         row = rows.get(zoid)
         if row is not None and maintenance._catalogable_class(
             row["class_mod"], row["class_name"]
@@ -188,14 +281,17 @@ def hide_undone(cursor, tid, restored, deleted):
             {"zoids": list(recatalog)},
         )
 
-    # Subtree rule: below every restored or deleted object that had a path,
-    # the undone transaction may have changed security data without writing
-    # the rows.  Read by the current (pre-undo) paths, which is where the
-    # descendants' rows are.
+    # Subtree rule: below a deleted object, and below a restored one whose
+    # undone change can reach its descendants, the undone transaction may
+    # have changed security data without writing the rows.  Read by the
+    # current (pre-undo) paths, which is where the descendants' rows are.
+    relocated = _relocated(entries) if entries is not None else None
+    candidates = [
+        zoid for zoid in restored if needs_subtree_rule(zoid, entries, relocated)
+    ]
+    candidates.extend(deleted)
     roots = _subtree_roots(
-        rows[zoid]["path"]
-        for zoid in (*restored, *deleted)
-        if rows.get(zoid, {}).get("path")
+        rows[zoid]["path"] for zoid in candidates if rows.get(zoid, {}).get("path")
     )
     hidden = 0
     for root in roots:
@@ -206,11 +302,14 @@ def hide_undone(cursor, tid, restored, deleted):
         return False
     log.info(
         "undo of tid %d: %d objects hidden for recatalog, %d rows below %d "
-        "roots hidden for security reindex",
+        "roots hidden for security reindex (%d of %d restored objects need "
+        "the subtree rule)",
         tid,
         len(recatalog),
         hidden,
         len(roots),
+        len(candidates) - len(deleted),
+        len(restored),
     )
     _local.followup_pending = True
     return True
