@@ -17,6 +17,32 @@
   the security index values and does not touch other index data or extracted
   text. Also available as `maintenance.reindex_security`. #271
 
+### Fixed
+
+- Undo on a history-preserving storage no longer leaves catalog data of the
+  undone transaction behind. The restored objects kept the catalog columns
+  of the undone transaction, and rows the undone transaction had changed
+  without writing them were not touched at all: after undoing a sharing
+  change, the folder's content stayed findable for the user whose access
+  was revoked; after undoing a move, the catalog showed the moved paths;
+  after undoing a delete, the restored content stayed invisible. Now the
+  undo itself hides the affected rows, in its own transaction: restored
+  content loses all catalog data, and every row below a restored or deleted
+  object loses its `allowedRolesAndUsers` data, so no restricted search
+  finds it. A follow-up recomputes them from the restored content: at the
+  end of the request that did the undo (up to
+  `PGCATALOG_UNDO_FOLLOWUP_LIMIT` rows, default 2000), from the ZMI Catalog
+  tab, with the new `plone.pgcatalog.undo.process_queue()`, and as the first
+  step of `maintenance.repair_uncataloged()`. Rows the follow-up has not
+  reached stay hidden; Zope warns at startup while any are queued. Undoing a
+  transaction that edited a container hides the security data of everything
+  below it until the follow-up is done, and adding or deleting content edits
+  the container. Requires zodb-pgjsonb >= 1.18.0 (its new `undone()` hook);
+  with an older one, Zope warns at startup on a history-preserving storage.
+  Sites that undid transactions on a history-preserving storage before this
+  release have stale rows that nothing can detect: run one Clear and
+  Rebuild after upgrading. #265
+
 ### Tests
 
 - The move and rename optimization is now active in the test layers. plone.testing
@@ -46,6 +72,12 @@
   class built a new test database and Plone site. The full test suite runs
   in about half the time (locally 4:58 → 2:22). As a side effect,
   zope.pytestlayer now runs these tests last.
+
+- New history-preserving variant of the PG test layer,
+  `plone.pgcatalog.testing.PGCATALOG_PG_HP_FIXTURE`, used by
+  `test_undo_integration.py`. Its snapshot includes `object_history`,
+  `pack_state` and the undo queue, so an undo cannot pick a revision another
+  test left behind. #265
 
 - The same for `PGCATALOG_INTEGRATION_TESTING`: the 25 test classes that use
   it (in `test_move_integration.py`, `test_plone_integration.py`,

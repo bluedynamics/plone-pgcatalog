@@ -62,6 +62,7 @@ need a separate `%import` directive.
 | `PGCATALOG_SLOW_QUERY_MS` | `10` | Threshold in milliseconds for slow query detection. Queries exceeding this are logged as warnings and recorded in the `pgcatalog_slow_queries` table for analysis via the ZMI Slow Queries tab. Set to `0` to disable. |
 | `PGCATALOG_QUERY_CACHE_SIZE` | `200` | Max cached query results per process. Set to `0` to disable. Invalidated when `pgcatalog_change_seq` changes (only on catalog writes, not on unrelated ZODB commits). Cost-based eviction keeps expensive queries in cache. |
 | `PGCATALOG_QUERY_CACHE_TTR` | `60` | Time-to-round in seconds for datetime values in cache keys. Controls cache key granularity for effectiveRange queries. Higher values = more cache hits but slightly stale effectiveRange. |
+| `PGCATALOG_UNDO_FOLLOWUP_LIMIT` | `2000` | Maximum number of undo follow-up queue rows processed at the end of the request that undid a transaction (only with a history-preserving storage). Rows beyond it stay hidden until the next drain; a warning gives the count. See {ref}`undo-follow-up`. |
 | `PGCATALOG_PREFETCH_BATCH` | `100` | Number of objects to prefetch when `brain.getObject()` is called. Set to `0` to disable. Requires zodb-pgjsonb >= 1.8.0. In addition, automatic refs prefetch on `load()` is registered at startup when zodb-pgjsonb >= 1.9.2 is available (uses `idx IS NOT NULL` filter to limit prefetch to cataloged content). |
 | `ZODB_TEST_DSN` | `dbname=zodb_test host=localhost port=5433 user=zodb password=zodb` | DSN for test database (tests only). |
 | `BM25_TEST_DSN` | `dbname=zodb_test host=localhost port=5434 user=zodb password=zodb` | DSN for BM25 integration tests (tests only). |
@@ -111,6 +112,8 @@ The following registrations are made:
   (schema creation, index registry sync, connection pool setup).
 - `IPubEnd` subscriber that releases request-scoped PostgreSQL connections
   at the end of each HTTP request.
+- `IPubSuccess` subscriber that recatalogs what an undo hid, after the
+  request that did the undo has committed (see {ref}`undo-follow-up`).
 
 ## Python dependencies
 
@@ -119,7 +122,7 @@ The following registrations are made:
 | `psycopg[binary,pool]>=3.1` | PostgreSQL adapter with connection pooling. |
 | `orjson>=3.9` | Fast JSONB deserialization. |
 | `Products.CMFPlone` | Plone framework. |
-| `zodb-pgjsonb>=1.8` | ZODB storage backend (provides the `object_state` table). v1.8.0 adds `load_multiple()` for batch prefetch; v1.9.2 adds `register_prefetch_refs_expr()` for automatic refs prefetch on `load()`. |
+| `zodb-pgjsonb>=1.18.0` | ZODB storage backend (provides the `object_state` table). v1.8.0 adds `load_multiple()` for batch prefetch; v1.9.2 adds `register_prefetch_refs_expr()` for automatic refs prefetch on `load()`; v1.17.0 keeps catalog columns on plain writes; v1.18.0 adds the `undone()` hook that keeps the catalog consistent after undo. |
 
 ## Optional dependencies
 

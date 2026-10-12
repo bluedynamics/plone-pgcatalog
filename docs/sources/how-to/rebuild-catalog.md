@@ -55,6 +55,7 @@ Useful after changing an indexer or adding a new index.
 ## Repair uncataloged content (repair_uncataloged)
 
 Recatalogs content that exists in the ZODB but has no catalog data, without clearing the catalog.
+It first runs the undo follow-up for all queued rows, see {ref}`undo-follow-up`.
 Content got into this state through zodb-pgjsonb before the fix for
 [zodb-pgjsonb#120](https://github.com/bluedynamics/zodb-pgjsonb/issues/120):
 opening the edit form, the sharing tab, or any write without a full reindex.
@@ -141,6 +142,62 @@ transaction.commit()
 
 It commits every 500 objects and can be repeated after an interruption.
 
+(undo-follow-up)=
+
+## Catalog after undo (undo.process_queue)
+
+On a history-preserving storage, undo restores the objects but not the catalog data plone.pgcatalog keeps next to them.
+With zodb-pgjsonb 1.18.0 or later, the undo hides the affected catalog rows in its own transaction and queues them in `pgcatalog_undo_queue`:
+
+- Restored content objects lose all catalog data, like uncataloged objects.
+- Every row below a restored or deleted object loses its `allowedRolesAndUsers` data, so no restricted search (anonymous included) finds it.
+  The undone transaction may have changed the security of these rows without writing them, as a sharing change or a workflow transition does.
+  This also happens when the undone transaction only edited the container, and adding or deleting content edits the container too (its modification date): undoing a delete in the site root hides the security data of the whole site until the follow-up is done.
+
+The follow-up recomputes the queued rows from the restored content: a full reindex for restored objects (at their restored path; after the undo of a move, the descendants' paths are moved back in one `UPDATE`), and a security reindex for the rows below them.
+Objects that cannot be found any more are uncataloged.
+It runs:
+
+- at the end of the request that did the undo, up to `PGCATALOG_UNDO_FOLLOWUP_LIMIT` rows (default 2000; a warning in the log gives the count of rows still hidden);
+- from the ZMI: `portal_catalog`, Catalog tab, "Undo follow-up" (shown when the queue table exists, with a button when rows are queued), with the same limit;
+- as the first step of `repair_uncataloged()`, without a limit;
+- from a script, see below.
+
+Rows that stay queued stay hidden, also after a restart; Zope logs a warning at startup while the queue is not empty.
+A follow-up conflicting with an editor is retried once; rows that fail stay queued for the next run.
+
+The follow-up writes the recataloged objects, so after it has run, the undo itself can no longer be undone.
+
+Save this as `undo_follow_up.py`:
+
+```python
+"""Run: zconsole run etc/zope.conf undo_follow_up.py SITE_ID"""
+
+from AccessControl.SecurityManagement import newSecurityManager
+from AccessControl.SpecialUsers import system
+from plone.pgcatalog.undo import process_queue
+from zope.component.hooks import setSite
+
+import sys
+import transaction
+
+site = app[sys.argv[4]]  # noqa: F821  (app is provided by zconsole)
+setSite(site)
+newSecurityManager(None, system)
+
+result = process_queue(site.portal_catalog)  # all queued rows
+print(
+    f"{result.processed} processed, {result.dropped} uncataloged, "
+    f"{result.failed} failed, {result.remaining} still queued"
+)
+transaction.commit()
+```
+
+`process_queue(catalog, limit=None)` commits every 500 rows itself and can be repeated after an interruption.
+Pass a `limit` to process only that many rows.
+
+Sites that undid transactions on a history-preserving storage with an older plone.pgcatalog or zodb-pgjsonb have stale catalog rows that nothing can detect; run one Clear and Rebuild.
+
 ## Partial reindex (automatic)
 
 When Plone calls `reindexObject(idxs=["review_state"])`, plone.pgcatalog uses a lightweight JSONB merge (`||` operator) instead of full re-extraction.
@@ -155,6 +212,7 @@ This happens automatically and does not trigger ZODB serialization of the object
 | `refreshCatalog(clear=1)` | Yes | Yes | Same | Equivalent to `clearFindAndRebuild()` |
 | `reindexIndex("name")` | No (single key) | Yes (ZODB load) | ~5 ms/obj | Single index changed, new indexer deployed |
 | `repair_uncataloged()` | No | Yes | ~15 ms per repaired object | Content missing from listings and search but present in the ZODB |
+| `undo.process_queue()` | No | No (queued rows only) | 1–3 ms per security row, ~15 ms per recataloged object | Rows an undo hid are still queued (Catalog tab shows the count) |
 
 **`clearFindAndRebuild()`** NULLs all catalog columns (path, idx,
 searchable_text, backend extras), then traverses the entire portal tree
