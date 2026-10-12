@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased
+
+### Tests
+
+- The PG test layer no longer leaks one pool connection per test. Its
+  `testSetUp` dropped the ZODB connections of the previous test with
+  `pool.clear()`, which does not release them, so each one kept its
+  zodb-pgjsonb instance and a connection of the instance pool (10 slots)
+  until the layer was torn down. A class with ten committing tests hung for
+  30 s and failed with `PoolTimeout`. The split of `TestRepairHardening`
+  that worked around it is undone. `testTearDown` now also returns the
+  request-scoped connection, which IPubEnd returns in production but which
+  stayed checked out in tests from the first cut and paste on. #261
+
+- The PG test layer is set up once for `test_pg_integration.py` instead of
+  once per test class. The classes now carry the `layer` attribute that
+  zope.pytestlayer needs to keep a layer between classes; before, every
+  class built a new test database and Plone site. The full test suite runs
+  in about half the time (locally 4:58 → 2:22). As a side effect,
+  zope.pytestlayer now runs these tests last.
+
 ## 1.0.0rc7 (2026-10-12)
 
 ### Fixed

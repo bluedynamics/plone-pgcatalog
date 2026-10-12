@@ -272,7 +272,12 @@ class PGCatalogPGFixture(Layer):
         # poll_invalidations on pooled connections won't detect changes.
         # Clear the pool to force fresh connections + REPEATABLE READ.
         self._db.cacheMinimize()
-        self._db.pool.clear()
+        # ConnectionPool.clear() only drops connections; release their
+        # storage instances too, or each one keeps a psycopg pool
+        # connection checked out until the layer is torn down.
+        pool = self._db.pool
+        while (conn := pool.pop()) is not None:
+            conn._release_resources()
         # zodb_pgjsonb's process-wide SharedLoadCache (L2) outlives the
         # connection pool, so the steps above do not reset it.  After the
         # backwards restore() it would still serve object state at TIDs
@@ -297,6 +302,7 @@ class PGCatalogPGFixture(Layer):
 
     def testTearDown(self):
         """Clean up ZODB connection and request."""
+        from plone.pgcatalog.pool import release_request_connection
         from zope.component.hooks import setSite
         from zope.security.management import endInteraction
 
@@ -307,6 +313,10 @@ class PGCatalogPGFixture(Layer):
 
         # Abort any pending transaction so the connection can be closed
         transaction.abort()
+
+        # No publisher here, so no IPubEnd: give the request-scoped
+        # connection back like the subscriber does at request end.
+        release_request_connection()
 
         # Close the ZODB connection opened in testSetUp
         if "app" in self:
