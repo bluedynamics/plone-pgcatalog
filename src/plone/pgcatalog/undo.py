@@ -33,7 +33,6 @@ The hook only runs SQL: writing ZODB objects there would deadlock
 """
 
 from Acquisition import aq_base
-from importlib.metadata import version as _dist_version
 from plone.pgcatalog import maintenance
 from plone.pgcatalog.gopip import _has_explicit_ordering
 from plone.pgcatalog.gopip import _register_container
@@ -51,7 +50,6 @@ from zope.component.hooks import site as site_context
 import logging
 import os
 import psycopg
-import re
 import threading
 import transaction
 
@@ -74,7 +72,7 @@ log = logging.getLogger(__name__)
 DEFAULT_FOLLOWUP_LIMIT = 2000
 _LIMIT_ENV = "PGCATALOG_UNDO_FOLLOWUP_LIMIT"
 
-_PGJSONB_UNDO_HOOK = (1, 18, 0)  # zodb-pgjsonb#121: undone() hook
+_PGJSONB_UNDO_HOOK = "1.18.0"  # zodb-pgjsonb#121: undone() hook
 
 # Referrer walk: content -> bucket -> BTree node(s) -> folder, repeated for
 # every hidden ancestor (the undo of a delete hides a whole subtree, and an
@@ -743,15 +741,25 @@ def check_hook_support(storage):
 
     The version pin only binds at install time (see
     ``maintenance._check_storage_fixed``).  Returns True when undo is
-    supported and covered by the hook.
+    supported and covered by the hook; a version that cannot be verified
+    (a source install, #256) gets its own warning and returns False.
     """
     supports_undo = getattr(storage, "supportsUndo", None)
     if supports_undo is None or supports_undo() is not True:
         return False
-    installed = _dist_version("zodb-pgjsonb")
-    match = re.match(r"(\d+)\.(\d+)\.(\d+)", installed)
-    if match is not None and tuple(map(int, match.groups())) >= _PGJSONB_UNDO_HOOK:
+    covered = maintenance.zodb_pgjsonb_at_least(_PGJSONB_UNDO_HOOK)
+    installed = maintenance.installed_zodb_pgjsonb()
+    if covered:
         return True
+    if covered is None:
+        log.warning(
+            "cannot verify zodb-pgjsonb version %s; undo on this "
+            "history-preserving storage keeps the catalog consistent only "
+            "with zodb-pgjsonb >= %s (#265)",
+            installed,
+            _PGJSONB_UNDO_HOOK,
+        )
+        return False
     log.warning(
         "zodb-pgjsonb %s has no undone() hook (needs >= 1.18.0). Undo on this "
         "history-preserving storage leaves the catalog data of the undone "
