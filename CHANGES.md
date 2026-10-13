@@ -4,6 +4,15 @@
 
 ### Fixed
 
+- Two ways the catalog silently returned wrong results now leave a trace in
+  the log. When Zope starts and finds no `portal_catalog` among the
+  children of the Zope root (no site yet, a site mounted deeper), the
+  IndexRegistry stays empty; this is now a warning naming what was found.
+  And a query key that is neither a registered index nor a builtin one,
+  which is compared by exact equality on `idx` (wrong for a custom
+  KeywordIndex or ZCTextIndex), is now reported once per key and process,
+  mentioning when the registry is empty. #229
+
 - Undo on a history-preserving storage no longer leaves catalog data of the
   undone transaction behind. The restored objects kept the catalog columns
   of the undone transaction, and rows the undone transaction had changed

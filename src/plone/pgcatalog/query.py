@@ -24,6 +24,9 @@ import re
 
 log = logging.getLogger(__name__)
 
+# Keys already reported as unknown, so a busy site logs each one once (#229).
+_warned_unknown_keys = set()
+
 # Keys in the query dict that are NOT index names
 _QUERY_META_KEYS = frozenset(
     {
@@ -397,6 +400,33 @@ def _execute_query(conn, query_dict, columns="zoid, path, idx, state"):
 # ---------------------------------------------------------------------------
 
 
+def _warn_unknown_key(name, registry):
+    """Log once per process that *name* is queried as a plain field (#229).
+
+    The fallback compares ``idx->>'name'`` by exact equality, which is right
+    only for FieldIndex-shaped data: a custom KeywordIndex never matches, a
+    custom ZCTextIndex gets no full-text search.  The result set is wrong
+    and smaller, so leave a trace.
+    """
+    if name in _warned_unknown_keys:
+        return
+    _warned_unknown_keys.add(name)
+    hint = (
+        " The IndexRegistry is empty: it was not synced from a portal_catalog "
+        "at startup, so every non-builtin index takes this path."
+        if not len(registry)
+        else ""
+    )
+    log.warning(
+        "Catalog query key %r is neither a registered index nor a builtin; "
+        "it is compared by exact equality on idx->>%r, which is wrong for "
+        "anything but FieldIndex-shaped data.%s",
+        name,
+        name,
+        hint,
+    )
+
+
 class _QueryBuilder:
     def __init__(self):
         self.clauses = []
@@ -517,6 +547,7 @@ class _QueryBuilder:
         # field query (e.g. Language, TranslationGroup from
         # plone.app.multilingual).
         validate_identifier(name)
+        _warn_unknown_key(name, registry)
         spec = _normalize_query(raw)
         self._handle_field(name, name, spec)
 

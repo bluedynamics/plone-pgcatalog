@@ -11,6 +11,9 @@ from plone.pgcatalog.query import parse_search_terms
 from psycopg.types.json import Json
 from unittest import mock
 
+import logging
+import pytest
+
 
 # ---------------------------------------------------------------------------
 # FieldIndex
@@ -1714,3 +1717,50 @@ class TestParseSearchTerms:
     def test_capped(self):
         many = " ".join(f"term{i}" for i in range(_MAX_SEARCH_TERMS + 10))
         assert len(parse_search_terms(many)) == _MAX_SEARCH_TERMS
+
+
+# ---------------------------------------------------------------------------
+# Unknown index keys leave a trace (#229)
+# ---------------------------------------------------------------------------
+
+
+class TestUnknownIndexWarning:
+    @pytest.fixture(autouse=True)
+    def _fresh(self):
+        from plone.pgcatalog import query
+
+        query._warned_unknown_keys.clear()
+        yield
+        query._warned_unknown_keys.clear()
+
+    def test_warns_once_per_key(self, caplog):
+        with caplog.at_level(logging.WARNING, logger="plone.pgcatalog.query"):
+            build_query({"no_such_index": "x"})
+            build_query({"no_such_index": "y"})
+        assert len(caplog.records) == 1
+        assert "'no_such_index'" in caplog.text
+        assert "exact equality" in caplog.text
+
+    def test_each_key_warns(self, caplog):
+        with caplog.at_level(logging.WARNING, logger="plone.pgcatalog.query"):
+            build_query({"unknown_a": "x"})
+            build_query({"unknown_b": "x"})
+        assert "unknown_a" in caplog.text
+        assert "unknown_b" in caplog.text
+
+    def test_registered_and_builtin_keys_do_not_warn(self, caplog):
+        with caplog.at_level(logging.WARNING, logger="plone.pgcatalog.query"):
+            build_query({"portal_type": "Document", "path": "/plone"})
+        assert caplog.text == ""
+
+    def test_mentions_empty_registry(self, caplog):
+        from plone.pgcatalog.columns import IndexRegistry
+
+        with (
+            mock.patch(
+                "plone.pgcatalog.query.get_registry", return_value=IndexRegistry()
+            ),
+            caplog.at_level(logging.WARNING, logger="plone.pgcatalog.query"),
+        ):
+            build_query({"portal_type": "Document"})
+        assert "IndexRegistry is empty" in caplog.text
