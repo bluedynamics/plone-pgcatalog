@@ -9,6 +9,7 @@ IDatabaseOpenedWithRoot subscriber that:
 6. Registers IPGIndexTranslator utilities for DateRangeInRangeIndex instances
 """
 
+from plone.pgcatalog import undo
 from plone.pgcatalog.addons_compat.driri import DateRangeInRangeIndexTranslator
 from plone.pgcatalog.backends import detect_and_set_backend
 from plone.pgcatalog.columns import get_registry
@@ -173,10 +174,12 @@ def register_catalog_processor(event):
         detect_and_set_backend(dsn, languages=languages)
         if dsn:
             check_lc_ctype(dsn)
+            undo.warn_if_queue_not_empty(dsn)
 
         processor = CatalogStateProcessor()
         storage.register_state_processor(processor)
         log.info("Registered CatalogStateProcessor on %s", storage)
+        undo.check_hook_support(storage)
         _sync_registry_from_db(db)
         # Defer index creation to first write transaction (#100).
         # At this point a ZODB Connection holds an open REPEATABLE READ

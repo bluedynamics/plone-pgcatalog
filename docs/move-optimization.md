@@ -225,10 +225,14 @@ modes:
 
 ## Undo
 
-`ZODB.undo()` operates at storage level only — no OFS events fire.  After undo
-of a move, catalog columns are stale (still show post-move paths).  A catalog
-rebuild is needed — this is the same behavior as the current system without
-the optimization.
+`ZODB.undo()` operates at storage level only: no OFS events fire.  Since
+#265, zodb-pgjsonb's `undone()` hook (zodb-pgjsonb >= 1.18.0) lets
+`plone.pgcatalog.undo` hide the moved object's row and the `allowed_roles` of
+its descendants inside the undo's transaction.  The follow-up then recatalogs
+the object at its restored path, registers the inverse bulk path move for the
+descendants (one `UPDATE` in `finalize()`, like the move itself) and replays
+their security partial reindex.  No rebuild is needed.  See
+`docs/sources/how-to/rebuild-catalog.md` ("Catalog after undo").
 
 ## Expected Impact
 

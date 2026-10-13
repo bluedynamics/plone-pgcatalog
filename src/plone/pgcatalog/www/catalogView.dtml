@@ -34,6 +34,25 @@
           </dtml-if>
         </td>
       </tr>
+      <dtml-if "summary['undo_queue'] is not None">
+      <tr>
+        <td class="text-muted">Undo follow-up</td>
+        <td>
+          <dtml-if "summary['undo_queue']">
+            <form method="post" action="&dtml-URL1;" class="form-inline">
+              <span class="badge badge-warning mr-2"><dtml-var "summary['undo_queue']" thousands_commas> rows hidden</span>
+              <button class="btn btn-sm btn-primary" type="submit"
+                      name="manage_processUndoQueue:method" value="Process">
+                Process now
+              </button>
+            </form>
+            <small class="text-muted">Catalog rows an undo hid until they are recomputed from the restored content.</small>
+          <dtml-else>
+            <span class="text-muted">queue empty</span>
+          </dtml-if>
+        </td>
+      </tr>
+      </dtml-if>
     </table>
   </div>
 </div>

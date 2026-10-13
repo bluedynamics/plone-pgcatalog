@@ -1,5 +1,47 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- Undo on a history-preserving storage no longer leaves catalog data of the
+  undone transaction behind. The restored objects kept the catalog columns
+  of the undone transaction, and rows the undone transaction had changed
+  without writing them were not touched at all: after undoing a sharing
+  change, the folder's content stayed findable for the user whose access was
+  revoked; after undoing a move, the catalog showed the moved paths; after
+  undoing a delete, the restored content stayed invisible. Now the undo
+  itself hides the affected rows, in its own transaction: restored content
+  loses all catalog data, and the rows below a deleted object, and below a
+  restored one whose undone change could reach them, lose their
+  `allowedRolesAndUsers` data, so no restricted search finds them. The
+  latter is decided by comparing what the undone transaction wrote with what
+  the undo writes back: any difference but `modification_date` and
+  `cmf_uid`, a class change or a move counts. Undoing an add, a delete or a
+  move therefore leaves the rest of the container's content alone, while an
+  undone edit of a container, even of its title, hides the rows below it
+  until the follow-up is done. The known gaps (local roles kept outside the
+  object by add-ons, changes on the Zope root) are listed in the how-to
+  "Rebuild or reindex the catalog". A follow-up recomputes the hidden rows
+  from the restored content: at the end of the request that did the undo (up
+  to `PGCATALOG_UNDO_FOLLOWUP_LIMIT` rows, default 2000), from the ZMI
+  Catalog tab, with the new `plone.pgcatalog.undo.process_queue()`, and as
+  the first step of `maintenance.repair_uncataloged()`. Rows the follow-up
+  has not reached stay hidden; Zope warns at startup while any are queued.
+  Requires zodb-pgjsonb >= 1.18.0 (its new `undone()` hook with both
+  revisions of every undone object); with an older one, Zope warns at
+  startup on a history-preserving storage. Sites that undid transactions on
+  a history-preserving storage before this release have stale rows that
+  nothing can detect: run one Clear and Rebuild after upgrading. #265
+
+### Tests
+
+- New history-preserving variant of the PG test layer,
+  `plone.pgcatalog.testing.PGCATALOG_PG_HP_FIXTURE`, used by
+  `test_undo_integration.py`. Its snapshot includes `object_history`,
+  `pack_state` and the undo queue, so an undo cannot pick a revision another
+  test left behind. #265
+
 ## 1.0.0rc8 (2026-10-13)
 
 ### Fixed

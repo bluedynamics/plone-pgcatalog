@@ -14,6 +14,7 @@ from Persistence import Persistent
 from persistent.mapping import PersistentMapping
 from plone.folder.interfaces import IExplicitOrdering
 from plone.pgcatalog import processor
+from plone.pgcatalog import undo
 from plone.pgcatalog.backends import get_backend
 from plone.pgcatalog.gopip import sync_folder_ranks
 from plone.pgcatalog.indexing import reindex_object as _sql_reindex
@@ -366,10 +367,15 @@ def repair_uncataloged(
     so an interrupted run is simply repeated.  With ``dry_run=True`` it
     only reports and writes nothing.
 
+    First drains the undo follow-up queue completely (#265): the site walk
+    cannot see rows an undo hid only from restricted searches.
+
     Returns:
         RepairResult(checked, paths, failed)
     """
     _check_storage_fixed()
+    if not dry_run:
+        undo.process_queue(catalog)
     jar = catalog._p_jar
     checked = 0
     paths, failed = [], []

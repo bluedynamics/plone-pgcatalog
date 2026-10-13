@@ -27,6 +27,7 @@ from App.special_dtml import DTMLFile
 from collections import deque
 from contextlib import contextmanager
 from OFS.Folder import Folder
+from plone.pgcatalog import undo
 from plone.pgcatalog.backends import BM25Backend
 from plone.pgcatalog.backends import get_backend
 from plone.pgcatalog.brain import CatalogSearchResults
@@ -189,6 +190,7 @@ class PlonePGCatalogTool(UniqueObject, Folder):
     security.declareProtected(manage_zcatalog_entries, "manage_get_cache_stats")
     security.declareProtected(manage_zcatalog_entries, "manage_clear_cache")
     security.declareProtected(manage_zcatalog_entries, "manage_get_catalog_summary")
+    security.declareProtected(manage_zcatalog_entries, "manage_processUndoQueue")
     security.declareProtected(manage_zcatalog_entries, "manage_get_catalog_objects")
     security.declareProtected(manage_zcatalog_entries, "manage_get_object_detail")
     security.declareProtected(
@@ -1185,18 +1187,37 @@ class PlonePGCatalogTool(UniqueObject, Folder):
             )
             row = cur.fetchone()
         object_count = row["cnt"] if row else 0
+        try:
+            undo_queue = undo.queue_length(conn)
+        except (KeyError, TypeError):
+            undo_queue = None
 
         registry = get_registry()
         backend = get_backend()
         has_bm25 = isinstance(backend, BM25Backend)
         return {
             "object_count": object_count,
+            "undo_queue": undo_queue,
             "index_count": len(registry),
             "metadata_count": len(registry.metadata),
             "backend_name": "BM25" if has_bm25 else "Tsvector",
             "has_bm25": has_bm25,
             "bm25_languages": list(getattr(backend, "languages", [])),
         }
+
+    def manage_processUndoQueue(self, REQUEST=None):
+        """ZMI action: run the undo follow-up (#265), up to the request budget."""
+        result = undo.process_queue(self, undo.followup_limit())
+        if REQUEST is not None:
+            msg = (
+                f"Undo+follow-up:+{result.processed}+processed,+"
+                f"{result.dropped}+dropped,+{result.failed}+failed,+"
+                f"{result.remaining}+remaining"
+            )
+            REQUEST.RESPONSE.redirect(
+                f"{self.absolute_url()}/manage_catalogView?manage_tabs_message={msg}"
+            )
+        return result
 
     def manage_get_tika_status(self):
         """Return Tika extraction status dict for the Advanced tab."""
