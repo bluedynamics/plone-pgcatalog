@@ -9,7 +9,10 @@ from Acquisition import aq_base
 from Acquisition import aq_inner
 from Acquisition import aq_parent
 from Acquisition import Implicit
+from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _dist_version
+from packaging.version import InvalidVersion
+from packaging.version import Version
 from Persistence import Persistent
 from persistent.mapping import PersistentMapping
 from plone.folder.interfaces import IExplicitOrdering
@@ -29,7 +32,6 @@ from zope.component.hooks import site as site_context
 
 import importlib
 import logging
-import re
 import transaction
 
 
@@ -207,7 +209,36 @@ def resync_gopip(root, conn):
     return folders, rows
 
 
-_PGJSONB_FIXED = (1, 17, 0)  # zodb-pgjsonb#120: plain writes no longer wipe columns
+_PGJSONB_FIXED = "1.17.0"  # zodb-pgjsonb#120: plain writes no longer wipe columns
+
+
+def installed_zodb_pgjsonb():
+    """The installed zodb-pgjsonb version string, or None if not installed."""
+    try:
+        return _dist_version("zodb-pgjsonb")
+    except PackageNotFoundError:
+        return None
+
+
+def zodb_pgjsonb_at_least(minimum):
+    """Whether the installed zodb-pgjsonb is *minimum* or newer (PEP 440).
+
+    None when the installed version carries no information: not installed,
+    unparsable, or ``0.*``, which is what hatch-vcs reports for a source
+    checkout without tags or without ``.git`` (#256).  Pre- and dev
+    releases compare as PEP 440 says: ``1.18.0.dev3`` is newer than
+    ``1.17.0`` and older than ``1.18.0``.
+    """
+    installed = installed_zodb_pgjsonb()
+    if installed is None:
+        return None
+    try:
+        version = Version(installed)
+    except InvalidVersion:
+        return None
+    if version.major == 0:
+        return None
+    return version >= Version(minimum)
 
 
 def _check_storage_fixed():
@@ -216,13 +247,23 @@ def _check_storage_fixed():
     The version pin in pyproject.toml only binds at install time; a build
     with --no-deps or overridden constraints can still run the old storage,
     which would uncatalog repaired objects again on their next plain write.
+    A version that cannot be verified (a source install) is accepted with a
+    warning.
     """
-    installed = _dist_version("zodb-pgjsonb")
-    match = re.match(r"(\d+)\.(\d+)\.(\d+)", installed)
-    if match is None or tuple(map(int, match.groups())) < _PGJSONB_FIXED:
+    fixed = zodb_pgjsonb_at_least(_PGJSONB_FIXED)
+    if fixed is None:
+        log.warning(
+            "cannot verify zodb-pgjsonb version %s; assuming it is >= %s "
+            "(it must be, or repaired objects are uncataloged again on "
+            "their next plain write, zodb-pgjsonb#120)",
+            installed_zodb_pgjsonb(),
+            _PGJSONB_FIXED,
+        )
+    elif not fixed:
         raise RuntimeError(
-            f"zodb-pgjsonb {installed} still wipes catalog columns on plain "
-            "writes (zodb-pgjsonb#120); upgrade to >= 1.17.0 before repairing"
+            f"zodb-pgjsonb {installed_zodb_pgjsonb()} still wipes catalog "
+            "columns on plain writes (zodb-pgjsonb#120); upgrade to "
+            f">= {_PGJSONB_FIXED} before repairing"
         )
 
 

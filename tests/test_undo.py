@@ -4,6 +4,7 @@ The undo flows themselves are tested on a history-preserving storage in
 test_undo_integration.py.
 """
 
+from plone.pgcatalog import maintenance
 from plone.pgcatalog import undo
 from plone.pgcatalog.schema import UNDO_QUEUE
 from psycopg.types.json import Json
@@ -374,13 +375,13 @@ class TestCheckHookSupport:
         [("1.18.0", True), ("1.19.2", True), ("2.0.0", True), ("1.17.1", False)],
     )
     def test_history_preserving(self, monkeypatch, caplog, version, covered):
-        monkeypatch.setattr(undo, "_dist_version", lambda name: version)
+        monkeypatch.setattr(maintenance, "_dist_version", lambda name: version)
         with caplog.at_level(logging.WARNING, logger="plone.pgcatalog.undo"):
             assert undo.check_hook_support(_Storage(True)) is covered
         assert ("has no undone() hook" in caplog.text) is not covered
 
     def test_history_free_needs_no_hook(self, monkeypatch, caplog):
-        monkeypatch.setattr(undo, "_dist_version", lambda name: "1.16.0")
+        monkeypatch.setattr(maintenance, "_dist_version", lambda name: "1.16.0")
         with caplog.at_level(logging.WARNING, logger="plone.pgcatalog.undo"):
             assert undo.check_hook_support(_Storage(False)) is False
         assert caplog.text == ""

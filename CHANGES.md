@@ -22,6 +22,17 @@
   results skipped as too large. Workaround on releases before this fix:
   `PGCATALOG_QUERY_CACHE_SIZE=0`. (#280)
 
+- The zodb-pgjsonb version checks no longer refuse source installs.
+  `repair_uncataloged()`, `requeue_lost_extractions()` and with them the
+  upgrade step 3 to 4 refused any zodb-pgjsonb whose version did not start
+  with three numbers of at least 1.17.0, blaming the storage: a checkout
+  without tags (`0.1.devN`), a source tree without `.git` (`0.0.0`) and a
+  two-part version like `2.0`. The undo startup check had the same flaw and
+  warned that the undo hook was missing. Both now compare PEP 440 versions
+  with `packaging` (now an explicit dependency, already installed through
+  Products.CMFPlone); a version without information (`0.*`, unparsable)
+  logs that it cannot be verified and continues. #256
+
 - Undo on a history-preserving storage no longer leaves catalog data of the
   undone transaction behind. The restored objects kept the catalog columns
   of the undone transaction, and rows the undone transaction had changed
