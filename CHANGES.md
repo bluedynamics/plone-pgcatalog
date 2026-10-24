@@ -4,6 +4,24 @@
 
 ### Fixed
 
+- The query result cache no longer grows each Zope process by up to
+  gigabytes. Brains wrote `idx` and `meta` into the row dicts they were
+  built from, and those were the cache's own rows: on the first metadata
+  access a cached result kept the metadata of every object in it, tens of
+  thousands for a site search, until the next catalog write. The cache now
+  stores and hands out copies, so it holds only `zoid` and `path`. It is
+  also bounded by rows, not only by entries: `PGCATALOG_QUERY_CACHE_MAX_ROWS`
+  (default 100 000, roughly 32 MiB) over all entries, and results over
+  `PGCATALOG_QUERY_CACHE_MAX_ENTRY_ROWS` (default 10 000) are not cached.
+  The least recently used entry is evicted first, instead of the cheapest,
+  which kept the large result sets in. The first metadata access now loads
+  `idx` and `meta` only for the block of `PGCATALOG_IDX_BATCH` brains
+  (default 500) holding the accessed brain, not for the whole result set,
+  so a search page showing 20 of 27 000 hits no longer loads the metadata
+  of all of them. The ZMI cache statistics show the cached rows and the
+  results skipped as too large. Workaround on releases before this fix:
+  `PGCATALOG_QUERY_CACHE_SIZE=0`. (#280)
+
 - Undo on a history-preserving storage no longer leaves catalog data of the
   undone transaction behind. The restored objects kept the catalog columns
   of the undone transaction, and rows the undone transaction had changed

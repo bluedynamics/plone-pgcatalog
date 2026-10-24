@@ -154,24 +154,25 @@ class TestQueryCache:
         result = cache.get("key2", tid2)
         assert result is not None
 
-    def test_cache_cost_eviction(self):
+    def test_cache_lru_eviction(self):
+        """The least recently used entry goes first, whatever it cost (#280)."""
         from plone.pgcatalog.cache import QueryCache
 
         cache = QueryCache(max_entries=2)
         tid = b"\x00\x01"
 
-        # Fill cache with two entries
-        cache.put("cheap", [{"zoid": 1}], None, 10.0, tid)
-        cache.put("expensive", [{"zoid": 2}], None, 100.0, tid)
+        cache.put("expensive", [{"zoid": 1}], None, 100.0, tid)
+        cache.put("cheap", [{"zoid": 2}], None, 10.0, tid)
+        # Touch "cheap" so "expensive" becomes the least recently used
+        cache.get("cheap", tid)
 
-        # Adding a third should evict the cheapest
         cache.put("medium", [{"zoid": 3}], None, 50.0, tid)
 
-        assert cache.get("cheap", tid) is None  # evicted
-        assert cache.get("expensive", tid) is not None  # kept
+        assert cache.get("expensive", tid) is None  # evicted
+        assert cache.get("cheap", tid) is not None  # kept
         assert cache.get("medium", tid) is not None  # kept
 
-    def test_cache_cost_eviction_does_not_evict_existing_key(self):
+    def test_cache_eviction_does_not_evict_existing_key(self):
         from plone.pgcatalog.cache import QueryCache
 
         cache = QueryCache(max_entries=2)
@@ -182,8 +183,87 @@ class TestQueryCache:
 
         # Updating key1 should not evict anything (key already exists)
         cache.put("key1", [{"zoid": 1, "extra": True}], None, 5.0, tid)
-        assert cache.get("key1", tid) is not None
+        assert cache.get("key1", tid) == ([{"zoid": 1, "extra": True}], None)
         assert cache.get("key2", tid) is not None
+        assert cache.stats()["current_rows"] == 2
+
+    def test_put_stores_copies(self):
+        """Rows mutated by the caller after put() do not reach the cache (#280)."""
+        from plone.pgcatalog.cache import QueryCache
+
+        cache = QueryCache(max_entries=10)
+        tid = b"\x00\x01"
+        rows = [{"zoid": 1, "path": "/plone/a"}]
+
+        cache.put("key1", rows, None, 10.0, tid)
+        rows[0]["idx"] = {"Title": "fat"}
+
+        cached_rows, _ = cache.get("key1", tid)
+        assert cached_rows == [{"zoid": 1, "path": "/plone/a"}]
+
+    def test_get_returns_copies(self):
+        """Rows mutated by a reader do not reach the cache or other readers (#280)."""
+        from plone.pgcatalog.cache import QueryCache
+
+        cache = QueryCache(max_entries=10)
+        tid = b"\x00\x01"
+        cache.put("key1", [{"zoid": 1, "path": "/plone/a"}], None, 10.0, tid)
+
+        first, _ = cache.get("key1", tid)
+        first[0]["idx"] = {"Title": "fat"}
+        second, _ = cache.get("key1", tid)
+
+        assert second == [{"zoid": 1, "path": "/plone/a"}]
+        assert second[0] is not first[0]
+
+    def test_result_over_entry_row_limit_not_cached(self):
+        from plone.pgcatalog.cache import QueryCache
+
+        cache = QueryCache(max_entries=10, max_rows=100, max_entry_rows=3)
+        tid = b"\x00\x01"
+
+        cache.put("small", [{"zoid": i} for i in range(3)], None, 10.0, tid)
+        cache.put("large", [{"zoid": i} for i in range(4)], None, 999.0, tid)
+
+        assert cache.get("small", tid) is not None
+        assert cache.get("large", tid) is None
+        stats = cache.stats()
+        assert stats["current_rows"] == 3
+        assert stats["too_large"] == 1
+
+    def test_row_budget_evicts_least_recently_used(self):
+        from plone.pgcatalog.cache import QueryCache
+
+        cache = QueryCache(max_entries=10, max_rows=5, max_entry_rows=5)
+        tid = b"\x00\x01"
+
+        cache.put("a", [{"zoid": i} for i in range(2)], None, 10.0, tid)
+        cache.put("b", [{"zoid": i} for i in range(2)], None, 10.0, tid)
+        cache.get("a", tid)  # "b" is now the least recently used
+        cache.put("c", [{"zoid": i} for i in range(3)], None, 10.0, tid)
+
+        assert cache.get("b", tid) is None
+        assert cache.get("a", tid) is not None
+        assert cache.get("c", tid) is not None
+        assert cache.stats()["current_rows"] == 5
+
+    def test_row_count_resets_on_invalidation(self):
+        from plone.pgcatalog.cache import QueryCache
+
+        cache = QueryCache(max_entries=10, max_rows=5, max_entry_rows=5)
+        cache.put("a", [{"zoid": i} for i in range(4)], None, 10.0, b"\x01")
+        cache.put("b", [{"zoid": i} for i in range(4)], None, 10.0, b"\x02")
+
+        assert cache.get("b", b"\x02") is not None
+        assert cache.stats()["current_rows"] == 4
+
+    def test_clear_resets_row_count(self):
+        from plone.pgcatalog.cache import QueryCache
+
+        cache = QueryCache(max_entries=10)
+        cache.put("a", [{"zoid": 1}], None, 10.0, b"\x01")
+        cache.clear()
+        assert cache.stats()["current_rows"] == 0
 
     def test_cache_disabled_when_size_zero(self):
         from plone.pgcatalog.cache import QueryCache
@@ -232,6 +312,10 @@ class TestQueryCache:
         assert stats["enabled"] is True
         assert stats["max_entries"] == 10
         assert stats["current_entries"] == 2
+        assert stats["current_rows"] == 3
+        assert stats["max_rows"] == cache.max_rows
+        assert stats["max_entry_rows"] == cache.max_entry_rows
+        assert stats["too_large"] == 0
         assert stats["hits"] == 2
         assert stats["misses"] == 1
         assert stats["hit_rate"] == pytest.approx(66.7, abs=0.1)
@@ -293,3 +377,89 @@ class TestGetQueryCache:
 
         cache = get_query_cache()
         assert isinstance(cache, QueryCache)
+
+
+class _FakeCursor:
+    """Answers the three statements ``_run_search`` and lazy loading issue."""
+
+    def __init__(self, conn):
+        self._conn = conn
+        self._result = []
+
+    def execute(self, sql, params=None, **kwargs):
+        if "pgcatalog_change_seq" in sql:
+            self._result = [{"last_value": 1}]
+        elif "SELECT zoid, idx" in sql:
+            self._conn.idx_loads.append(list(params["zoids"]))
+            self._result = [
+                {"zoid": z, "idx": {"Title": f"Doc {z}"}, "meta": None}
+                for z in params["zoids"]
+            ]
+        else:
+            self._conn.searches += 1
+            self._result = [
+                {"zoid": z, "path": f"/plone/doc{z}"} for z in range(self._conn.count)
+            ]
+
+    def fetchone(self):
+        return self._result[0]
+
+    def fetchall(self):
+        return list(self._result)
+
+    def __iter__(self):
+        return iter(self._result)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        pass
+
+
+class _FakeConn:
+    def __init__(self, count):
+        self.count = count
+        self.searches = 0
+        self.idx_loads = []
+
+    def cursor(self):
+        return _FakeCursor(self)
+
+
+class TestRunSearchCacheIsolation:
+    """Cached rows stay slim however the brains built from them are used (#280)."""
+
+    def _search(self, conn):
+        from plone.pgcatalog.search import _run_search
+
+        catalog = mock.Mock()
+        catalog.indexes.return_value = ["path"]
+        return _run_search(conn, {"path": "/plone"}, catalog=catalog, lazy_conn=conn)
+
+    def test_metadata_access_does_not_fatten_cached_rows(self):
+        from plone.pgcatalog.cache import QueryCache
+
+        cache = QueryCache(max_entries=10)
+        conn = _FakeConn(count=3)
+        with mock.patch("plone.pgcatalog.cache._query_cache", cache):
+            results = self._search(conn)
+            assert results[0].Title == "Doc 0"  # loads idx into the brains
+            cached_rows, _ = cache.get(next(iter(cache._cache)), 1)
+
+        assert conn.searches == 1
+        assert cached_rows == [{"zoid": z, "path": f"/plone/doc{z}"} for z in range(3)]
+
+    def test_cache_hit_brains_do_not_share_rows(self):
+        from plone.pgcatalog.cache import QueryCache
+
+        cache = QueryCache(max_entries=10)
+        conn = _FakeConn(count=3)
+        with mock.patch("plone.pgcatalog.cache._query_cache", cache):
+            first = self._search(conn)
+            second = self._search(conn)
+            assert second[0].Title == "Doc 0"
+
+        assert conn.searches == 1  # second search was a cache hit
+        assert first[0]._row is not second[0]._row
+        assert "idx" not in first[0]._row

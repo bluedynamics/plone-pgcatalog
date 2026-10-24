@@ -166,6 +166,17 @@
           <td><dtml-var "cache['current_entries']"> / <dtml-var "cache['max_entries']"></td>
         </tr>
         <tr>
+          <td class="text-muted">Rows</td>
+          <td><dtml-var "cache['current_rows']"> / <dtml-var "cache['max_rows']"></td>
+        </tr>
+        <tr>
+          <td class="text-muted">Not cached (too large)</td>
+          <td>
+            <dtml-var "cache['too_large']">
+            (results over <dtml-var "cache['max_entry_rows']"> rows)
+          </td>
+        </tr>
+        <tr>
           <td class="text-muted">Hit rate</td>
           <td>
             <strong><dtml-var "cache['hit_rate']">%</strong>

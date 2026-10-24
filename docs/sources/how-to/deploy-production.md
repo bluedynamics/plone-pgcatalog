@@ -140,7 +140,10 @@ plone.pgcatalog includes a process-wide query result cache and a batch
 object prefetcher. Both are enabled by default:
 
 - `PGCATALOG_QUERY_CACHE_SIZE=200` -- cached query results per process,
-  invalidated on every ZODB commit. Set to `0` to disable.
+  invalidated on every catalog write. Set to `0` to disable.
+- `PGCATALOG_QUERY_CACHE_MAX_ROWS=100000` -- rows over all cached results
+  per process (roughly 32 MiB); results over
+  `PGCATALOG_QUERY_CACHE_MAX_ENTRY_ROWS=10000` rows are not cached.
 - `PGCATALOG_PREFETCH_BATCH=100` -- objects prefetched when
   `brain.getObject()` is called (requires zodb-pgjsonb >= 1.8.0).
   Set to `0` to disable.
