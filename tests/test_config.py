@@ -8,6 +8,7 @@ from plone.pgcatalog.pool import get_storage_connection
 from plone.pgcatalog.pool import release_request_connection
 from unittest import mock
 
+import logging
 import os
 import plone.pgcatalog.pending as pending_mod
 import plone.pgcatalog.pool as pool_mod
@@ -856,6 +857,30 @@ class TestRegisterCatalogProcessor:
 
 
 class TestSyncRegistryFromDb:
+    def test_warns_when_no_catalog_found(self, caplog):
+        """#229: iterating the root without finding a catalog is not silent."""
+        from plone.pgcatalog.startup import _sync_registry_from_db
+
+        db = mock.Mock()
+        conn = mock.Mock()
+        db.open.return_value = conn
+        child = mock.Mock(spec=["getId"])
+        child.getId.return_value = "Control_Panel"
+        root = mock.Mock()
+        root.get.return_value = root
+        root.values.return_value = [child]
+        conn.root.return_value = root
+
+        with (
+            mock.patch("plone.pgcatalog.startup.get_registry") as get_reg,
+            caplog.at_level(logging.WARNING, logger="plone.pgcatalog.startup"),
+        ):
+            get_reg.return_value = mock.Mock()
+            _sync_registry_from_db(db)
+
+        assert "no portal_catalog found" in caplog.text
+        assert "Control_Panel" in caplog.text
+
     def test_syncs_from_plone_site(self):
         from plone.pgcatalog.startup import _sync_registry_from_db
 

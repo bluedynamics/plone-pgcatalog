@@ -840,6 +840,14 @@ def _register_driri_translators(catalog):  # pragma: no cover
         )
 
 
+def _child_id(obj):
+    """Id of a Zope root child for log messages, '?' if it has none."""
+    try:
+        return str(obj.getId())
+    except Exception:
+        return "?"
+
+
 def _sync_registry_from_db(db):  # pragma: no cover
     """Populate the IndexRegistry from portal_catalog at startup.
 
@@ -852,9 +860,12 @@ def _sync_registry_from_db(db):  # pragma: no cover
     try:
         root = conn.root()
         app = root.get("Application", root)
-        for obj in app.values():
+        children = list(app.values())
+        synced = 0
+        for obj in children:
             catalog = getattr(obj, "portal_catalog", None)
             if catalog is not None and hasattr(catalog, "_catalog"):
+                synced += 1
                 try:
                     registry.sync_from_catalog(catalog)
                     _register_dri_translators(catalog)
@@ -871,6 +882,15 @@ def _sync_registry_from_db(db):  # pragma: no cover
                         "catalog queries may return incorrect results until next restart",
                         exc_info=True,
                     )
+        if not synced:
+            log.warning(
+                "IndexRegistry: no portal_catalog found among the children of "
+                "the Zope root (%s); it stays empty, so queries on any index "
+                "but the builtin ones fall back to exact equality on idx and "
+                "can return wrong results. Restart once the Plone site exists "
+                "(#229).",
+                ", ".join(_child_id(obj) for obj in children) or "none",
+            )
     except Exception:
         log.error(
             "Could not sync IndexRegistry from ZODB — "
