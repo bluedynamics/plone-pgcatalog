@@ -26,6 +26,8 @@ import os
 log = logging.getLogger(__name__)
 
 _PREFETCH_BATCH = int(os.environ.get("PGCATALOG_PREFETCH_BATCH", "100"))
+# Brains per lazy idx/meta load: the block holding the accessed brain (#280).
+_IDX_BATCH = max(1, int(os.environ.get("PGCATALOG_IDX_BATCH", "500")))
 
 
 def _traversal_root():
@@ -66,8 +68,8 @@ class PGCatalogBrain:
     Supports two modes:
     - **Eager** (default): row contains ``idx`` dict, metadata access is direct.
     - **Lazy**: row has no ``idx``; on first metadata access, triggers a batch
-      load via ``_result_set._load_idx_batch()`` which fetches idx for all
-      brains in the result set in a single query.
+      load via ``_result_set._load_idx_batch()`` which fetches idx for the
+      block of ``PGCATALOG_IDX_BATCH`` brains holding this one.
 
     Args:
         row: dict with keys zoid, path (and optionally idx)
@@ -200,7 +202,7 @@ class PGCatalogBrain:
         if idx is None:
             result_set = object.__getattribute__(self, "_result_set")
             if result_set is not None:
-                result_set._load_idx_batch()
+                result_set._load_idx_batch(self)
                 idx = self._row.get("idx")
         # Check dedicated meta column first
         meta_col = self._row.get("meta")
@@ -295,7 +297,7 @@ class PGCatalogBrain:
         # Lazy path: trigger batch load via result set
         result_set = object.__getattribute__(self, "_result_set")
         if result_set is not None:
-            result_set._load_idx_batch()
+            result_set._load_idx_batch(self)
             idx = row.get("idx")
             if idx is not None:
                 return self._resolve_from_idx(name, idx)
@@ -318,9 +320,12 @@ class CatalogSearchResults(Lazy):
     can serialize it via the existing ISerializeToJson adapter.
 
     Supports lazy idx loading: when ``conn`` is provided, the main query
-    skips the ``idx`` column.  On first metadata access on any brain,
-    ``_load_idx_batch()`` fetches idx for ALL brains in a single query
-    using the same connection (and thus the same REPEATABLE READ snapshot).
+    skips the ``idx`` column.  On first metadata access on a brain,
+    ``_load_idx_batch()`` fetches idx for the block of ``PGCATALOG_IDX_BATCH``
+    brains holding it, using the same connection (and thus the same
+    REPEATABLE READ snapshot).  Loading the whole result set at once kept
+    idx and meta of tens of thousands of objects in memory for a page
+    showing twenty of them (#280).
     """
 
     def __init__(self, brains, actual_result_count=None, conn=None, catalog=None):
@@ -332,26 +337,38 @@ class CatalogSearchResults(Lazy):
         )
         self._conn = conn
         self._catalog = catalog  # used only for ZODB prefetch (needs _p_jar)
-        self._idx_loaded = conn is None  # eager if no conn
+        self._idx_loaded = conn is None  # eager if no conn; else all blocks loaded
+        self._idx_loaded_blocks = set()
         self._prefetched_ranges = set()  # set of (start, end) tuples
         # Build index for O(1) brain → position lookup (used by prefetch)
         self._brain_index = {id(b): i for i, b in enumerate(self._brains)}
 
-    def _load_idx_batch(self):
-        """Batch-load idx for all brains in this result set.
+    def _load_idx_batch(self, brain=None):
+        """Load idx and meta for the block of brains holding *brain*.
 
-        Called on first metadata access on any brain.  Issues a single
-        SELECT for all zoids, populates each brain's ``_row["idx"]``.
-        Uses the same connection as the original search query, so idx
-        data is consistent with the REPEATABLE READ snapshot.
+        Blocks are ``PGCATALOG_IDX_BATCH`` brains wide, aligned to the
+        start of the result set; without *brain* the first block is loaded.
+        Issues a single SELECT for the block's zoids and populates each
+        brain's ``_row["idx"]`` / ``_row["meta"]``.  Uses the same
+        connection as the original search query, so idx data is consistent
+        with the REPEATABLE READ snapshot.
         """
         if self._idx_loaded:
             return
-        self._idx_loaded = True
         if not self._brains or self._conn is None:
+            self._idx_loaded = True
             return
 
-        brain_map = {b.getRID(): b for b in self._brains}
+        position = self._brain_index.get(id(brain), 0) if brain is not None else 0
+        block = position // _IDX_BATCH
+        if block in self._idx_loaded_blocks:
+            return
+        self._idx_loaded_blocks.add(block)
+        if len(self._idx_loaded_blocks) * _IDX_BATCH >= len(self._brains):
+            self._idx_loaded = True
+
+        start = block * _IDX_BATCH
+        brain_map = {b.getRID(): b for b in self._brains[start : start + _IDX_BATCH]}
         zoids = list(brain_map.keys())
 
         with self._conn.cursor() as cur:
@@ -373,11 +390,11 @@ class CatalogSearchResults(Lazy):
                     prepare=True,
                 )
             for row in cur:
-                brain = brain_map.get(row["zoid"])
-                if brain is not None:
-                    brain._row["idx"] = row["idx"]
+                loaded = brain_map.get(row["zoid"])
+                if loaded is not None:
+                    loaded._row["idx"] = row["idx"]
                     if "meta" in row:
-                        brain._row["meta"] = row["meta"]
+                        loaded._row["meta"] = row["meta"]
 
     def _maybe_prefetch_objects(self, brain):
         """Prefetch ZODB objects for a batch of brains around *brain*.
@@ -443,7 +460,8 @@ class CatalogSearchResults(Lazy):
                 conn=self._conn,
                 catalog=self._catalog,
             )
-            # Re-wire brains to new result set if idx not yet loaded
+            # Re-wire brains to new result set if idx not yet loaded;
+            # brains already holding idx are skipped by the new set's loads.
             if not self._idx_loaded:
                 for brain in sr._brains:
                     brain._result_set = sr

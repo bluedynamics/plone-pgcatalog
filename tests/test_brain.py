@@ -434,9 +434,10 @@ def _make_lazy_row(zoid=1, path="/plone/doc"):
 class _MockConn:
     def __init__(self, idx_data):
         self._idx_data = idx_data
+        self.loads = []  # zoid list of every idx batch load
 
     def cursor(self):
-        return _MockCursor(self._idx_data)
+        return _MockCursor(self._idx_data, self.loads)
 
     def __enter__(self):
         return self
@@ -446,12 +447,14 @@ class _MockConn:
 
 
 class _MockCursor:
-    def __init__(self, idx_data):
+    def __init__(self, idx_data, loads):
         self._idx_data = idx_data
+        self._loads = loads
         self._rows = []
 
     def execute(self, sql, params=None, **kwargs):
         zoids = params.get("zoids", []) if params else []
+        self._loads.append(list(zoids))
         self._rows = [
             {"zoid": z, "idx": self._idx_data[z]} for z in zoids if z in self._idx_data
         ]
@@ -543,6 +546,59 @@ class TestLazyIdxLoading:
         assert sliced._idx_loaded
         # Original result set NOT loaded (sliced brains rewired)
         assert not results._idx_loaded
+
+    def test_idx_loaded_in_blocks_around_accessed_brain(self):
+        """Only the block holding the accessed brain is loaded (#280)."""
+        from unittest import mock
+
+        results, conn = self._make_lazy_results(5)
+        with mock.patch("plone.pgcatalog.brain._IDX_BATCH", 2):
+            assert results[3].Title == "Doc 3"
+            assert conn.loads == [[2, 3]]
+            assert "idx" not in results[0]._row
+            assert "idx" not in results[4]._row
+            assert not results._idx_loaded
+
+            assert results[2].Title == "Doc 2"  # same block, no new query
+            assert conn.loads == [[2, 3]]
+
+            assert results[0].Title == "Doc 0"
+            assert results[4].Title == "Doc 4"
+            assert conn.loads == [[2, 3], [0, 1], [4]]
+            assert results._idx_loaded
+
+    def test_contains_loads_only_its_block(self):
+        from unittest import mock
+
+        results, conn = self._make_lazy_results(5)
+        with mock.patch("plone.pgcatalog.brain._IDX_BATCH", 2):
+            assert "portal_type" in results[4]
+        assert conn.loads == [[4]]
+
+    def test_block_without_rows_is_not_reloaded(self):
+        """A block whose zoids return no rows is still marked as loaded."""
+        from unittest import mock
+
+        conn = _MockConn({})
+        brains = [PGCatalogBrain(_make_lazy_row(zoid=i)) for i in range(3)]
+        results = CatalogSearchResults(brains, conn=conn)
+        for brain in brains:
+            brain._result_set = results
+        with mock.patch("plone.pgcatalog.brain._IDX_BATCH", 2):
+            assert brains[0].Title is Missing.Value
+            assert brains[1].Title is Missing.Value
+        assert conn.loads == [[0, 1]]
+
+    def test_slice_after_partial_load_stays_lazy(self):
+        """Slicing a partially loaded result set keeps lazy loading working."""
+        from unittest import mock
+
+        results, conn = self._make_lazy_results(5)
+        with mock.patch("plone.pgcatalog.brain._IDX_BATCH", 2):
+            assert results[0].Title == "Doc 0"
+            sliced = results[2:5]
+            assert sliced[2].Title == "Doc 4"
+        assert conn.loads == [[0, 1], [4]]
 
     def test_eager_mode_still_works(self):
         """No conn → eager mode, idx in row, no lazy loading."""

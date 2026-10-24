@@ -418,10 +418,10 @@ attributes (for example, `brain.portal_type`, `brain.Title`, `brain.Subject`).
 
 When a request-scoped connection is available, brains are created in
 lazy mode (without `idx` data).
-On first attribute access, all brains
-in the result set have their `idx` loaded in a single batch query via
-`CatalogSearchResults._load_idx_batch()`, using the same REPEATABLE
-READ snapshot as the original search.
+On first attribute access, the block of `PGCATALOG_IDX_BATCH` brains
+(default 500) holding the accessed brain has its `idx` loaded in a single
+batch query via `CatalogSearchResults._load_idx_batch()`, using the same
+REPEATABLE READ snapshot as the original search.
 
 ## Common pitfalls
 

@@ -124,7 +124,8 @@ The lazy loading optimization splits the query into two phases:
 The initial search selects only `zoid` and `path`.
 2.
 On first brain metadata access, `_load_idx_batch()` issues a single
-   `SELECT zoid, idx WHERE zoid = ANY(...)` for all brains in the result set.
+   `SELECT zoid, idx WHERE zoid = ANY(...)` for the block of
+   `PGCATALOG_IDX_BATCH` brains (default 500) holding the accessed brain.
 
 For search results pages that never access metadata (count queries, batched listings
 where only a page is rendered), the second query never fires.
@@ -313,9 +314,11 @@ queries dropped from 3900ms to 20ms.
 
 Process-wide in-memory cache for catalog query results. Cache key is a
 hash of the normalized query dict (datetime values rounded to
-`PGCATALOG_QUERY_CACHE_TTR` seconds). Invalidated when `MAX(tid)` changes
-(any ZODB commit). Cost-based eviction keeps expensive queries (navigation
-85ms) in cache while cheap ones are evicted first.
+`PGCATALOG_QUERY_CACHE_TTR` seconds). Invalidated when
+`pgcatalog_change_seq` changes (any catalog write). Bounded by entries and
+by rows (`PGCATALOG_QUERY_CACHE_MAX_ROWS`); the least recently used entry
+is evicted first. The cache holds slim rows (`zoid`, `path`) and hands out
+copies, so metadata loaded by brains never stays in the cache.
 
 On a typical page with 10-15 catalog queries, the second page load is
 nearly free (cache hits cost <0.1ms vs 20-300ms for SQL execution).

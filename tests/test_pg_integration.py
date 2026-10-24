@@ -1235,6 +1235,39 @@ class TestBrainAttributes(_PGLayerTest):
         assert rid > 0
 
 
+class TestQueryCacheStaysSlim(_PGLayerTest):
+    """Metadata loaded by brains never ends up in the query cache (#280)."""
+
+    def test_block_loading_and_slim_cache_rows(self, pg_functional):
+        from plone.pgcatalog.cache import QueryCache
+        from unittest import mock
+
+        portal = pg_functional["portal"]
+        setRoles(portal, TEST_USER_ID, ["Manager"])
+        catalog = portal["portal_catalog"]
+        for i in range(5):
+            portal.invokeFactory("Document", f"slim-{i}", title=f"Slim {i}")
+        transaction.commit()
+
+        cache = QueryCache(max_entries=10)
+        query = {"portal_type": "Document", "sort_on": "id"}
+        with (
+            mock.patch("plone.pgcatalog.cache._query_cache", cache),
+            mock.patch("plone.pgcatalog.brain._IDX_BATCH", 2),
+        ):
+            first = catalog.unrestrictedSearchResults(**query)
+            titles = [b.Title for b in first if b.getId.startswith("slim-")]
+            second = catalog.unrestrictedSearchResults(**query)
+            assert [b.Title for b in second if b.getId.startswith("slim-")] == titles
+
+        assert titles == [f"Slim {i}" for i in range(5)]
+        stats = cache.stats()
+        assert stats["hits"] == 1
+        assert stats["current_rows"] == len(first)
+        [entry] = cache._cache.values()
+        assert {key for row in entry["rows"] for key in row} == {"zoid", "path"}
+
+
 # ---------------------------------------------------------------------------
 # Security filtering (allowedRolesAndUsers)
 # ---------------------------------------------------------------------------

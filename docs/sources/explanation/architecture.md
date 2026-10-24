@@ -246,9 +246,12 @@ This is the biggest single performance optimization in the read path.
 When brain attribute access first touches a metadata field (for example, `brain.Title`,
 `brain.portal_type`), the brain delegates to its parent `CatalogSearchResults`, which
 calls `_load_idx_batch()`.
-This issues a single `SELECT zoid, idx FROM object_state
-WHERE zoid = ANY(%(zoids)s)` for ALL brains in the result set, populating every
-brain's `idx` in one round-trip.
+This issues a single `SELECT zoid, idx, meta FROM object_state
+WHERE zoid = ANY(%(zoids)s)` for the block of `PGCATALOG_IDX_BATCH` brains
+(default 500) holding the accessed brain, populating their `idx` in one
+round-trip.
+A page showing 20 of 30 000 results loads one block instead of the
+metadata of all 30 000 objects.
 
 Why this matters:
 

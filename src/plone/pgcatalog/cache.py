@@ -2,14 +2,22 @@
 
 Caches catalog query results in memory. Invalidated when the
 ``pgcatalog_change_seq`` counter changes (only on actual catalog
-writes, not on unrelated ZODB commits). Cost-based eviction keeps
-expensive queries in cache while cheap ones are evicted first.
+writes, not on unrelated ZODB commits). Bounded by entries and by
+rows; the least recently used entry is evicted first.
+
+The cache owns its rows: ``put`` stores copies and ``get`` returns
+copies, so brains built from a cached result never write ``idx`` or
+``meta`` into the cache (#280).
 
 Configured via environment variables:
 - PGCATALOG_QUERY_CACHE_SIZE: max entries (default 200, 0 = disabled)
+- PGCATALOG_QUERY_CACHE_MAX_ROWS: max rows over all entries (default 100000)
+- PGCATALOG_QUERY_CACHE_MAX_ENTRY_ROWS: larger results are not cached
+  (default 10000)
 - PGCATALOG_QUERY_CACHE_TTR: datetime rounding in seconds (default 60)
 """
 
+from collections import OrderedDict
 from datetime import datetime
 
 import logging
@@ -20,6 +28,10 @@ import threading
 log = logging.getLogger(__name__)
 
 _CACHE_SIZE = int(os.environ.get("PGCATALOG_QUERY_CACHE_SIZE", "200"))
+_CACHE_MAX_ROWS = int(os.environ.get("PGCATALOG_QUERY_CACHE_MAX_ROWS", "100000"))
+_CACHE_MAX_ENTRY_ROWS = int(
+    os.environ.get("PGCATALOG_QUERY_CACHE_MAX_ENTRY_ROWS", "10000")
+)
 _CACHE_TTR = int(os.environ.get("PGCATALOG_QUERY_CACHE_TTR", "60"))
 
 
@@ -77,57 +89,90 @@ def _normalize_value(value):
 class QueryCache:
     """Process-wide query result cache."""
 
-    def __init__(self, max_entries=_CACHE_SIZE):
+    def __init__(
+        self,
+        max_entries=_CACHE_SIZE,
+        max_rows=_CACHE_MAX_ROWS,
+        max_entry_rows=_CACHE_MAX_ENTRY_ROWS,
+    ):
         self.max_entries = max_entries
+        self.max_rows = max_rows
+        self.max_entry_rows = max_entry_rows
         self._lock = threading.Lock()
-        self._cache = {}  # key -> {"rows": [...], "actual_count": int|None, "cost_ms": float, "hits": int}
+        # key -> {"rows": [...], "actual_count": int|None, "cost_ms": float, "hits": int}
+        # Ordered from least to most recently used.
+        self._cache = OrderedDict()
+        self._rows = 0
         self._last_tid = None
         self._hits = 0
         self._misses = 0
         self._invalidations = 0
+        self._too_large = 0
+
+    def _check_tid(self, current_tid):
+        """Drop all entries when the catalog changed.  Caller holds the lock."""
+        if current_tid == self._last_tid:
+            return True
+        self._cache.clear()
+        self._rows = 0
+        self._last_tid = current_tid
+        self._invalidations += 1
+        return False
 
     def get(self, key, current_tid):
-        """Look up a cached result. Returns (rows, actual_count) or None."""
+        """Look up a cached result. Returns (rows, actual_count) or None.
+
+        The rows are fresh copies; callers may mutate them.
+        """
         if self.max_entries <= 0:
             return None
         with self._lock:
-            if current_tid != self._last_tid:
-                self._cache.clear()
-                self._last_tid = current_tid
-                self._invalidations += 1
+            if not self._check_tid(current_tid):
                 return None
             entry = self._cache.get(key)
-            if entry is not None:
-                entry["hits"] += 1
-                self._hits += 1
-                return entry["rows"], entry["actual_count"]
-            self._misses += 1
-            return None
+            if entry is None:
+                self._misses += 1
+                return None
+            self._cache.move_to_end(key)
+            entry["hits"] += 1
+            self._hits += 1
+            rows = entry["rows"]
+            actual_count = entry["actual_count"]
+        return [dict(row) for row in rows], actual_count
 
     def put(self, key, rows, actual_count, cost_ms, current_tid):
-        """Store a result. Evicts cheapest entry if full."""
+        """Store a copy of a result.  Evicts least recently used entries."""
         if self.max_entries <= 0:
             return
+        if len(rows) > min(self.max_entry_rows, self.max_rows):
+            with self._lock:
+                self._too_large += 1
+            return
+        rows = [dict(row) for row in rows]
         with self._lock:
-            if current_tid != self._last_tid:
-                self._cache.clear()
-                self._last_tid = current_tid
-                self._invalidations += 1
-            if len(self._cache) >= self.max_entries and key not in self._cache:
-                # Evict entry with lowest cost_ms
-                cheapest_key = min(self._cache, key=lambda k: self._cache[k]["cost_ms"])
-                del self._cache[cheapest_key]
+            self._check_tid(current_tid)
+            old = self._cache.pop(key, None)
+            if old is not None:
+                self._rows -= len(old["rows"])
+            while self._cache and (
+                len(self._cache) >= self.max_entries
+                or self._rows + len(rows) > self.max_rows
+            ):
+                _key, evicted = self._cache.popitem(last=False)
+                self._rows -= len(evicted["rows"])
             self._cache[key] = {
                 "rows": rows,
                 "actual_count": actual_count,
                 "cost_ms": cost_ms,
                 "hits": 0,
             }
+            self._rows += len(rows)
 
     def clear(self):
         """Clear the cache."""
         with self._lock:
             self._cache.clear()
+            self._rows = 0
 
     def stats(self):
         """Return cache statistics for ZMI display."""
@@ -147,6 +192,10 @@ class QueryCache:
                 "enabled": self.max_entries > 0,
                 "max_entries": self.max_entries,
                 "current_entries": len(self._cache),
+                "max_rows": self.max_rows,
+                "max_entry_rows": self.max_entry_rows,
+                "current_rows": self._rows,
+                "too_large": self._too_large,
                 "hits": self._hits,
                 "misses": self._misses,
                 "hit_rate": round(

@@ -21,7 +21,7 @@ touches, in the order it walks through them.
 
 | # | Layer | Owner | Scope | Lifetime and eviction |
 |---|-------|-------|-------|-----------------------|
-| 1 | Query result cache | plone.pgcatalog (`cache.py`) | Process | Cost-based LRU evict; whole cache cleared on TID change |
+| 1 | Query result cache | plone.pgcatalog (`cache.py`) | Process | LRU, bounded by entries and rows; whole cache cleared on catalog change |
 | 2 | Prepared statement cache | psycopg | Connection | Connection lifetime; invalidated by schema changes |
 | 3 | Request connection pool | plone.pgcatalog (`pool.py`) | Request | Released at `IPubEnd` |
 | 4 | zodb-pgjsonb `LoadCache` | zodb-pgjsonb (`PGJsonbStorageInstance`) | ZODB Connection | LRU by bytes (`cache_local_mb`, default 16 MB); entries invalidated on TID change |
@@ -121,7 +121,10 @@ sequenceDiagram
 A few properties are worth pulling out of the diagram.
 
 The query path ends at layer 1: on a cache hit no SQL is sent at all,
-and the brains are assembled from the cached row dicts.
+and the brains are assembled from copies of the cached row dicts.
+The cache never hands out its own rows: brains write `idx` and `meta`
+into their row on the first metadata access, and with shared rows every
+cache entry used to end up holding the metadata of its whole result set.
 
 The `getObject()` path never touches the query cache; it goes through
 ZODB and the zodb-pgjsonb storage instance.
@@ -206,6 +209,15 @@ The knobs live in environment variables for plone.pgcatalog, in
     Default `200`.
     Set to `0` to disable.
 
+`PGCATALOG_QUERY_CACHE_MAX_ROWS`
+:   Maximum number of rows over all entries of the query result cache.
+    Default `100000`, roughly 32 MiB per process.
+    The least recently used entries are evicted to make room.
+
+`PGCATALOG_QUERY_CACHE_MAX_ENTRY_ROWS`
+:   Query results with more rows are not cached.
+    Default `10000`.
+
 `PGCATALOG_QUERY_CACHE_TTR`
 :   Time-to-round, in seconds, for datetime parameters during cache key
     normalization (not a time-to-live).
@@ -213,6 +225,12 @@ The knobs live in environment variables for plone.pgcatalog, in
     Two queries with `modified > now()` issued within the same minute
     hash to the same key and share a cache slot.
     Set to `0` to disable rounding.
+
+`PGCATALOG_IDX_BATCH`
+:   Number of brains whose `idx` and `meta` are loaded together on the
+    first metadata access; only the block holding the accessed brain is
+    loaded.
+    Default `500`.
 
 `PGCATALOG_PREFETCH_BATCH`
 :   Window size for `_maybe_prefetch_objects`.
@@ -259,7 +277,8 @@ tuning advice for your workload.
 Cache stats for layer 1 are available through `get_query_cache().stats()`
 and in the ZMI under the catalog tool's management tabs.
 The output includes `hits`, `misses`, `hit_rate`, `invalidations`, the
-top entries by cost, and the `last_tid` the cache is pinned to.
+current number of cached rows, how many results were too large to cache,
+the top entries by cost, and the `last_tid` the cache is pinned to.
 
 When a query unexpectedly hits PostgreSQL on every call, the most common
 causes are: a datetime parameter that is not being rounded (check
