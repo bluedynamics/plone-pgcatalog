@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.0.0rc10 (unreleased)
+
+### Changed
+
+- Declare and test Python 3.15 support: trove classifier and CI test matrix.
+  The test suite passes on 3.15.0 without code changes.
+
 ## 1.0.0rc9 (2026-10-24)
 
 ### Fixed
