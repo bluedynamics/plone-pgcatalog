@@ -2,6 +2,20 @@
 
 ## 1.0.0rc10 (unreleased)
 
+### Fixed
+
+- `@@metrics` of plone.observability no longer exports `plone_content_total`
+  and `plone_content_by_state` twice. plone.observability's generic content
+  provider works on pgcatalog too, through the PG-backed
+  `Indexes[...].uniqueValues()`, so it ran next to our `pgcontent` provider
+  with the same labels and different values, and Prometheus fired
+  `PrometheusDuplicateTimestamps`. The generic one also counts the whole
+  database for every site. Our provider is now registered in
+  `overrides.zcml` under the generic one's name `content` and replaces it.
+  Sites that still use a ZCatalog are counted through the index API, as
+  before. Dashboards and alerts are unaffected: the metric names and labels
+  stay the same. (#285)
+
 ### Changed
 
 - Declare and test Python 3.15 support: trove classifier and CI test matrix.

@@ -71,15 +71,7 @@
   <!-- GenericSetup profile upgrade steps -->
   <include package=".upgrades" />
 
-  <!-- plone.observability content-count metric provider (soft dependency).
-       Registered only when plone.observability is installed; the provider
-       itself emits only for IPGCatalogTool-backed sites. -->
-  <adapter
-      factory=".observability.PGContentMetricProvider"
-      provides="plone.observability.interfaces.IMetricProvider"
-      for="OFS.interfaces.IApplication"
-      name="pgcontent"
-      zcml:condition="installed plone.observability"
-      />
+  <!-- plone.observability content-count metric provider: registered in
+       overrides.zcml, it replaces the generic one (#285). -->
 
 </configure>

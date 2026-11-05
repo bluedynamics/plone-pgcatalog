@@ -1,0 +1,10 @@
+<configure xmlns="http://namespaces.zope.org/zope">
+  <!-- Same adapter name as plone.observability's generic ContentMetricProvider,
+       so this one replaces it instead of emitting the same series twice. -->
+  <adapter
+      factory=".observability.PGContentMetricProvider"
+      provides="plone.observability.interfaces.IMetricProvider"
+      for="OFS.interfaces.IApplication"
+      name="content"
+      />
+</configure>

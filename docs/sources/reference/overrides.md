@@ -29,6 +29,7 @@ To undo one, override it again in your own package's `overrides.zcml`.
 | Vocabulary `plone.app.vocabularies.Keywords` | `vocabularies.PGKeywordsVocabularyFactory` | always | Lists the keywords of a section (`plone.subjects_of_navigation_root`) in one query instead of one per keyword. Subclass `PGKeywordsVocabulary` for vocabularies over other keyword indexes. See #234. |
 | Indexer `SearchableText` for `IFile` | `indexers.indexer_SearchableText_file_override` | always; acts only when `PGCATALOG_TIKA_URL` is set | Skips `portal_transforms` for file bodies, which the Tika worker extracts. Delegates to `plone.app.contenttypes` otherwise. |
 | `NamedfileFieldConverter` of `plone.app.dexterity.textindexer` | `indexers.TikaAwareNamedfileFieldConverter` | `plone.app.dexterity` installed; acts only when `PGCATALOG_TIKA_URL` is set | The same for blob fields marked *searchable*. |
+| `IMetricProvider` named `content` of plone.observability | `observability.PGContentMetricProvider` | `plone.observability` installed | The generic provider also works with plone.pgcatalog, but counts the whole database for every site, and would emit the same series a second time. Ours counts per site in SQL and reads ZCatalog-backed sites through the index API. See #285. |
 | `IFacetedCatalog` utility of eea.facetednavigation | `addons_compat.eeafacetednavigation.PGFacetedCatalog` | `eea.facetednavigation` installed | Facet counts from PostgreSQL. See {doc}`../explanation/addon-integrations`. |
 
 ## Replaced persistent objects
@@ -64,4 +65,3 @@ These add behaviour without replacing anything.
 | `pool.release_request_connection` | `IPubEnd` | Returns the request's PostgreSQL connection to the pool. |
 | `gopip.container_modified` | `(IOrderableFolder, IContainerModifiedEvent)` | Keeps `getObjPositionInParent` ranks in folder order. |
 | `querymodifier.SanitizeRowsModifier` | `IQueryModifier`, named `plone.pgcatalog.sanitize_rows` | Drops malformed Collection query rows before `parseFormquery`. |
-| `observability.PGContentMetricProvider` | `IMetricProvider`, named `pgcontent` | Content count metric, when `plone.observability` is installed. |
