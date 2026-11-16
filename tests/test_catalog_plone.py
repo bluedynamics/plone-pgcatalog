@@ -1573,3 +1573,22 @@ class TestSetPgAnnotationRefusesNonRootedPath:
             mock.patch("plone.pgcatalog.catalog.register_parent"),
         ):
             assert tool._set_pg_annotation(obj, uid="/plone/doc") is True
+
+    def test_partial_reindex_of_detached_object_is_refused(self, caplog):
+        tool = self._tool()
+        caplog.set_level(logging.WARNING, "plone.pgcatalog.catalog")
+        with (
+            mock.patch.object(tool, "_obj_to_zoid", return_value=42),
+            mock.patch.object(tool, "_wrap_object", side_effect=lambda o: o),
+            mock.patch.object(
+                tool, "_extract_idx", return_value={"portal_type": "Folder"}
+            ),
+            mock.patch("plone.pgcatalog.catalog.note_pool"),
+            mock.patch("plone.pgcatalog.catalog.get_pool"),
+            mock.patch("plone.pgcatalog.catalog.set_partial_pending") as partial_mock,
+            mock.patch("plone.pgcatalog.catalog.set_pending") as pending_mock,
+        ):
+            tool.catalog_object(detached_content(), idxs=["portal_type"])
+            partial_mock.assert_not_called()
+            pending_mock.assert_not_called()
+        assert "non-rooted path" in caplog.text

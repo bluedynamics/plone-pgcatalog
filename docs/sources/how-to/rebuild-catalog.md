@@ -150,17 +150,16 @@ The row's `path` held only the id of the removed object, so the deleted content 
 The upgrade step to profile version 7 repairs this once.
 It clears the catalog data of every row whose `path` does not start with `/`.
 
-To run it outside the upgrade, for example from a script:
+To run it outside the upgrade, for example from a script, call the step's handler:
 
 ```python
-from plone.pgcatalog.maintenance import remove_detached_rows
+from plone.pgcatalog.upgrades.profile_7 import uncatalog_detached_rows
 
-with portal.portal_catalog._pg_connection() as conn:
-    count = remove_detached_rows(conn)
-    conn.commit()
-print(count)
+uncatalog_detached_rows(portal.portal_setup)
 ```
 
+`remove_detached_rows(conn)` in `plone.pgcatalog.maintenance` is the SQL-level function for callers that hold their own connection.
+It does not commit.
 It is a single SQL statement and runs in well under a second.
 
 (undo-follow-up)=

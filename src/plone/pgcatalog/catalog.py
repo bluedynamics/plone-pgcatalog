@@ -579,6 +579,10 @@ class PlonePGCatalogTool(UniqueObject, Folder):
         zoid = self._obj_to_zoid(obj)
         if zoid is None:
             return False
+        # A detached object falls through so that _set_pg_annotation refuses
+        # it with the single non-rooted-path warning (#290).
+        if not self.__url(obj).startswith("/"):
+            return False
 
         # Special indexes (SearchableText, effectiveRange, path) need
         # full reindex because they use dedicated columns, not idx JSONB.

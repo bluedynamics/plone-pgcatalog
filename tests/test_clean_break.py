@@ -1011,6 +1011,7 @@ class TestPartialReindex:
         from unittest import mock
 
         obj = mock.Mock()
+        obj.getPhysicalPath.return_value = ("", "plone", "doc")
         obj._p_oid = b"\x00" * 8
         assert tool._partial_reindex(obj, ["SearchableText"]) is False
 
@@ -1019,6 +1020,7 @@ class TestPartialReindex:
         from unittest import mock
 
         obj = mock.Mock()
+        obj.getPhysicalPath.return_value = ("", "plone", "doc")
         obj._p_oid = (42).to_bytes(8, "big")
         obj.portal_type = "Document"
         # _wrap_object uses Acquisition — mock it
@@ -1031,6 +1033,7 @@ class TestPartialReindex:
         from unittest import mock
 
         obj = mock.Mock()
+        obj.getPhysicalPath.return_value = ("", "plone", "doc")
         obj._p_oid = (42).to_bytes(8, "big")
         with (
             mock.patch.object(tool, "_wrap_object", return_value=obj),

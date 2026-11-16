@@ -22,6 +22,12 @@ def uncatalog_detached_rows(context):
     Accepts either shape GenericSetup hands to upgrade handlers (the
     portal_setup tool or an ImportContext).  No-ops when the active
     catalog is not the PG tool.
+
+    The connection from the pool does not join the Zope transaction.
+    In production (zodb-pgjsonb) pool connections are autocommit, so the
+    commit is a no-op there; the ``PGCATALOG_DSN`` fallback pool needs it.
+    The repair is idempotent, so a re-run after an aborted upgrade is
+    harmless.
     """
     getSite = getattr(context, "getSite", None)
     site = getSite() if getSite is not None else aq_parent(context)
@@ -35,6 +41,5 @@ def uncatalog_detached_rows(context):
         return
 
     with catalog._pg_connection() as conn:
-        count = remove_detached_rows(conn)
+        remove_detached_rows(conn)
         conn.commit()
-    log.info("uncatalog_detached_rows: uncataloged %d rows", count)
