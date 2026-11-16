@@ -1094,36 +1094,76 @@ class TestPendingBrainsForPath:
             result = tool._pending_brains_for_path("/plone", set())
         assert result == []
 
-    def test_no_jar_returns_empty(self, tool):
-        """No _p_jar → empty list."""
+    @staticmethod
+    def _fake(zoid):
+        from unittest import mock
+        from ZODB.utils import p64
+
+        fake = mock.Mock()
+        fake._p_oid = p64(zoid)
+        return fake
+
+    def test_matching_path_returns_brain_with_traversed_object(self, tool):
+        """Pending entry is resolved by traversal and wrapped like a committed brain."""
         from unittest import mock
 
+        fake_obj = self._fake(1)
         pending = {1: {"path": "/plone/doc1"}}
-        tool._p_jar = None
-        with mock.patch("plone.pgcatalog.catalog._get_pending", return_value=pending):
-            result = tool._pending_brains_for_path("/plone", set())
-        assert result == []
-
-    def test_matching_path_returns_brain(self, tool):
-        """Pending object matching path prefix → returned as brain."""
-        from unittest import mock
-
-        fake_obj = mock.Mock()
-        fake_jar = mock.Mock()
-        fake_jar.get.return_value = fake_obj
-
-        tool._p_jar = fake_jar
-        pending = {1: {"path": "/plone/doc1"}}
-        with mock.patch("plone.pgcatalog.catalog._get_pending", return_value=pending):
+        with (
+            mock.patch("plone.pgcatalog.catalog._get_pending", return_value=pending),
+            mock.patch.object(
+                tool, "unrestrictedTraverse", return_value=fake_obj
+            ) as trav,
+        ):
             result = tool._pending_brains_for_path("/plone", set())
         assert len(result) == 1
         assert result[0].getPath() == "/plone/doc1"
+        assert result[0]._unrestrictedGetObject() is fake_obj
+        trav.assert_called_once_with("/plone/doc1", None)
+
+    def test_unresolvable_path_skipped(self, tool):
+        """Path that no longer resolves yields no brain."""
+        from unittest import mock
+
+        pending = {1: {"path": "/plone/doc1"}}
+        with (
+            mock.patch("plone.pgcatalog.catalog._get_pending", return_value=pending),
+            mock.patch.object(tool, "unrestrictedTraverse", return_value=None),
+        ):
+            result = tool._pending_brains_for_path("/plone", set())
+        assert result == []
+
+    def test_foreign_object_at_path_skipped(self, tool):
+        """A different object at the stored path yields no brain."""
+        from unittest import mock
+
+        pending = {1: {"path": "/plone/doc1"}}
+        with (
+            mock.patch("plone.pgcatalog.catalog._get_pending", return_value=pending),
+            mock.patch.object(tool, "unrestrictedTraverse", return_value=self._fake(2)),
+        ):
+            result = tool._pending_brains_for_path("/plone", set())
+        assert result == []
+
+    def test_only_matching_paths_are_traversed(self, tool):
+        """Entries outside the queried subtree are never traversed."""
+        from unittest import mock
+
+        pending = {1: {"path": "/plone/a/doc"}, 2: {"path": "/plone/b/doc"}}
+        with (
+            mock.patch("plone.pgcatalog.catalog._get_pending", return_value=pending),
+            mock.patch.object(
+                tool, "unrestrictedTraverse", return_value=self._fake(1)
+            ) as trav,
+        ):
+            result = tool._pending_brains_for_path("/plone/a", set())
+        assert len(result) == 1
+        trav.assert_called_once_with("/plone/a/doc", None)
 
     def test_already_found_path_skipped(self, tool):
         """Path already in found_paths → skipped."""
         from unittest import mock
 
-        tool._p_jar = mock.Mock()
         pending = {1: {"path": "/plone/doc1"}}
         with mock.patch("plone.pgcatalog.catalog._get_pending", return_value=pending):
             result = tool._pending_brains_for_path("/plone", {"/plone/doc1"})
@@ -1133,7 +1173,6 @@ class TestPendingBrainsForPath:
         """None sentinel (uncatalog) → skipped."""
         from unittest import mock
 
-        tool._p_jar = mock.Mock()
         pending = {1: None}
         with mock.patch("plone.pgcatalog.catalog._get_pending", return_value=pending):
             result = tool._pending_brains_for_path("/plone", set())
@@ -1143,7 +1182,6 @@ class TestPendingBrainsForPath:
         """Path not matching prefix → skipped."""
         from unittest import mock
 
-        tool._p_jar = mock.Mock()
         pending = {1: {"path": "/other/doc1"}}
         with mock.patch("plone.pgcatalog.catalog._get_pending", return_value=pending):
             result = tool._pending_brains_for_path("/plone", set())
@@ -1153,13 +1191,11 @@ class TestPendingBrainsForPath:
         """Path query as dict → uses 'query' key."""
         from unittest import mock
 
-        fake_obj = mock.Mock()
-        fake_jar = mock.Mock()
-        fake_jar.get.return_value = fake_obj
-        tool._p_jar = fake_jar
-
         pending = {1: {"path": "/plone/doc1"}}
-        with mock.patch("plone.pgcatalog.catalog._get_pending", return_value=pending):
+        with (
+            mock.patch("plone.pgcatalog.catalog._get_pending", return_value=pending),
+            mock.patch.object(tool, "unrestrictedTraverse", return_value=self._fake(1)),
+        ):
             result = tool._pending_brains_for_path({"query": "/plone"}, set())
         assert len(result) == 1
 
@@ -1167,7 +1203,6 @@ class TestPendingBrainsForPath:
         """Empty prefix string → empty list."""
         from unittest import mock
 
-        tool._p_jar = mock.Mock()
         pending = {1: {"path": "/plone/doc1"}}
         with mock.patch("plone.pgcatalog.catalog._get_pending", return_value=pending):
             result = tool._pending_brains_for_path("", set())
@@ -1177,7 +1212,6 @@ class TestPendingBrainsForPath:
         """Non-string, non-dict path_query → empty list."""
         from unittest import mock
 
-        tool._p_jar = mock.Mock()
         pending = {1: {"path": "/plone/doc1"}}
         with mock.patch("plone.pgcatalog.catalog._get_pending", return_value=pending):
             result = tool._pending_brains_for_path(42, set())

@@ -68,6 +68,7 @@ from Products.CMFCore.utils import _checkPermission
 from Products.CMFCore.utils import UniqueObject
 from Products.ZCatalog.interfaces import IZCatalog
 from zExceptions import Unauthorized
+from ZODB.utils import p64
 from zope.component.hooks import getSite
 from zope.interface import implementer
 
@@ -892,16 +893,13 @@ class PlonePGCatalogTool(UniqueObject, Folder):
 
         Scans the thread-local pending store for objects whose path
         matches ``path_query`` and that are not already in ``found_paths``.
-        Loads objects from the ZODB connection cache by OID.
+        Each object is resolved by traversing its stored path, so that
+        ``reindexObjectSecurity`` gets a wrapped object, as it does for
+        committed brains.  Entries that do not resolve to the pending zoid
+        are skipped (#291).
         """
-        from ZODB.utils import p64
-
         pending = _get_pending()
         if not pending:
-            return []
-
-        jar = getattr(self, "_p_jar", None)
-        if jar is None:
             return []
 
         # Normalize path query to a prefix string
@@ -926,10 +924,10 @@ class PlonePGCatalogTool(UniqueObject, Folder):
             if obj_path != prefix and not obj_path.startswith(prefix + "/"):
                 continue
             try:
-                obj = jar.get(p64(zoid))
+                obj = self.unrestrictedTraverse(obj_path, None)
             except Exception:
-                continue
-            if obj is not None:
+                obj = None
+            if obj is not None and getattr(aq_base(obj), "_p_oid", None) == p64(zoid):
                 brains.append(_PendingBrain(obj_path, obj))
 
         return brains

@@ -2448,6 +2448,46 @@ class TestRepairUpgradeStep(_PGLayerTest):
         assert "<version>7</version>" in metadata
 
 
+class TestPendingBrainSecurity(_PGLayerTest):
+    """#291: reindexObjectSecurity must see pasted children as wrapped objects."""
+
+    def _paste_published_folder(
+        self, pg_functional, child_type="Image", document_workflow=False
+    ):
+        portal = pg_functional["portal"]
+        setRoles(portal, TEST_USER_ID, ["Manager"])
+        wft = portal["portal_workflow"]
+        wft.setChainForPortalTypes(("Folder",), "simple_publication_workflow")
+        if document_workflow:
+            wft.setChainForPortalTypes(("Document",), "simple_publication_workflow")
+        portal.invokeFactory("Folder", "src", title="Src")
+        wft.doActionFor(portal["src"], "publish")
+        portal["src"].invokeFactory(child_type, "child", title="Child")
+        portal.invokeFactory("Folder", "dest", title="Dest")
+        transaction.commit()
+        portal["dest"].manage_pasteObjects(portal.manage_copyObjects(["src"]))
+        transaction.commit()
+        return portal
+
+    def test_paste_recomputes_roles_of_workflowless_child(self, pg_functional):
+        self._paste_published_folder(pg_functional)
+        folder = set(_allowed_roles(pg_functional, "/plone/dest/src"))
+        child = set(_allowed_roles(pg_functional, "/plone/dest/src/child"))
+        assert "Anonymous" not in folder  # the copy is private
+        assert child == folder
+        assert child != {"Manager"}
+
+    def test_paste_keeps_workflow_child_roles(self, pg_functional):
+        # A Document has its own workflow; the pasted copy starts private
+        # on its own, so its roles equal the folder's without acquisition.
+        self._paste_published_folder(
+            pg_functional, child_type="Document", document_workflow=True
+        )
+        child = set(_allowed_roles(pg_functional, "/plone/dest/src/child"))
+        assert child == set(_allowed_roles(pg_functional, "/plone/dest/src"))
+        assert "Anonymous" not in child
+
+
 class TestReindexSecurity(_PGLayerTest):
     """maintenance.reindex_security repairs stale allowedRolesAndUsers (#271)."""
 
