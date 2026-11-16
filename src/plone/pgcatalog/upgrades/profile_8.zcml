@@ -1,0 +1,20 @@
+<configure
+    xmlns="http://namespaces.zope.org/zope"
+    xmlns:gs="http://namespaces.zope.org/genericsetup"
+    i18n_domain="plone.pgcatalog"
+    >
+
+  <gs:upgradeStep
+      profile="plone.pgcatalog:default"
+      source="7"
+      destination="8"
+      title="Recompute allowedRolesAndUsers of Manager-only rows"
+      description="Children pasted or restored together with their container
+                   were only visible to Managers or, since the first fix in
+                   1.0.0rc11, kept the roles of the source.  Recompute the
+                   security indexes of all rows whose allowed roles are only
+                   Manager, one partial reindex per affected row.  See #291."
+      handler=".profile_8.recompute_manager_only_security"
+      />
+
+</configure>

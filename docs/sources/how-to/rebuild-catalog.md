@@ -142,6 +142,19 @@ transaction.commit()
 
 It commits every 500 objects and can be repeated after an interruption.
 
+[#291](https://github.com/bluedynamics/plone-pgcatalog/issues/291) did the same to children that were pasted or restored together with their container.
+They were indexed with only `Manager` in `allowedRolesAndUsers`, or kept the roles of the source.
+The upgrade step to profile version 8 recomputes all rows whose `allowed_roles` is exactly `Manager`.
+To run it from a script:
+
+```python
+from plone.pgcatalog.upgrades.profile_8 import recompute_manager_only_security
+
+recompute_manager_only_security(portal.portal_setup)
+```
+
+`reindex_security(catalog, site, paths=[...])` recomputes any given list of paths.
+
 ## Repair rows of deleted content
 
 Before [#290](https://github.com/bluedynamics/plone-pgcatalog/issues/290) was fixed, deleting a folder could leave a catalog row behind.

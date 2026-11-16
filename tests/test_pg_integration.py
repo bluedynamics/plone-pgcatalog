@@ -2393,6 +2393,34 @@ class TestDetachedRowsUpgradeStep(_PGLayerTest):
         )
 
 
+class TestManagerOnlyUpgradeStep(_PGLayerTest):
+    def test_upgrade_step_recomputes_manager_only_rows(self, pg_functional):
+        from plone.pgcatalog.upgrades.profile_8 import recompute_manager_only_security
+
+        portal = pg_functional["portal"]
+        setRoles(portal, TEST_USER_ID, ["Manager"])
+        wft = portal["portal_workflow"]
+        wft.setChainForPortalTypes(("Folder",), "simple_publication_workflow")
+        portal.invokeFactory("Folder", "f", title="F")  # private initial state
+        portal["f"].invokeFactory("Image", "img", title="Img")
+        transaction.commit()
+        # simulate rc8..rc10 damage
+        with pg_functional["pgTestDB"].connection.cursor() as cur:
+            cur.execute(
+                "UPDATE object_state SET allowed_roles = ARRAY['Manager'] "
+                "WHERE path = '/plone/f/img'"
+            )
+            assert cur.rowcount == 1
+        pg_functional["pgTestDB"].connection.commit()
+
+        recompute_manager_only_security(portal["portal_setup"])
+        transaction.commit()
+
+        img = set(_allowed_roles(pg_functional, "/plone/f/img"))
+        assert img == set(_allowed_roles(pg_functional, "/plone/f"))
+        assert img != {"Manager"}
+
+
 class TestRepairUpgradeStep(_PGLayerTest):
     def test_upgrade_step_repairs(self, pg_functional):
         from plone.pgcatalog.upgrades.profile_4 import repair_uncataloged_content
@@ -2437,7 +2465,7 @@ class TestRepairUpgradeStep(_PGLayerTest):
         )
         profile_4.repair_uncataloged_content(portal["portal_setup"])
 
-    def test_profile_version_is_7(self):
+    def test_profile_version_is_8(self):
         from pathlib import Path
 
         import plone.pgcatalog
@@ -2445,7 +2473,7 @@ class TestRepairUpgradeStep(_PGLayerTest):
         metadata = (
             Path(plone.pgcatalog.__file__).parent / "profiles/default/metadata.xml"
         ).read_text()
-        assert "<version>7</version>" in metadata
+        assert "<version>8</version>" in metadata
 
 
 class TestPendingBrainSecurity(_PGLayerTest):
@@ -2530,6 +2558,31 @@ class TestReindexSecurity(_PGLayerTest):
         assert roles == ["Anonymous"]
         assert idx == stale[1]  # nothing in idx changed
         assert tid == stale[2]  # not written to the ZODB
+
+    def test_paths_subset_only_touches_given_rows(self, pg_functional):
+        from plone.pgcatalog.maintenance import reindex_security
+
+        portal = self._make_stale(pg_functional)
+        doc, folder = "/plone/sec-folder/sec-doc", "/plone/sec-folder"
+        before_folder = self._row(pg_functional, folder)
+        before_doc = self._row(pg_functional, doc)
+        result = reindex_security(portal["portal_catalog"], portal, paths=[doc])
+        transaction.commit()
+        assert result.checked == 1 and result.failed == []
+        roles, idx, tid = self._row(pg_functional, doc)
+        assert roles == ["Anonymous"]
+        assert idx == before_doc[1] and tid == before_doc[2]
+        # still ["Stale"], untouched
+        assert self._row(pg_functional, folder) == before_folder
+
+    def test_paths_unresolvable_counts_as_failed(self, pg_functional):
+        from plone.pgcatalog.maintenance import reindex_security
+
+        portal = self._make_stale(pg_functional)
+        result = reindex_security(
+            portal["portal_catalog"], portal, paths=["/plone/nope"]
+        )
+        assert result.checked == 0 and result.failed == ["/plone/nope"]
 
     def test_upgrade_step_repairs(self, pg_functional):
         from plone.pgcatalog.upgrades.profile_6 import reindex_security_indexes

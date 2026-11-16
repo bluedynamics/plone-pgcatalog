@@ -510,7 +510,7 @@ class SecurityReindexResult(NamedTuple):
     failed: list
 
 
-def reindex_security(catalog, site, *, batch_size=_REBUILD_BATCH):
+def reindex_security(catalog, site, *, batch_size=_REBUILD_BATCH, paths=None):
     """Reindex only the security indexes of every cataloged object.
 
     Repairs stale ``allowedRolesAndUsers`` (#271): cross-container moves
@@ -521,6 +521,11 @@ def reindex_security(catalog, site, *, batch_size=_REBUILD_BATCH):
     minimizes the ZODB cache every *batch_size* objects; idempotent, so
     an interrupted run is simply repeated.
 
+    With *paths* (an iterable of absolute path strings) only those
+    objects are processed instead of the whole site, for example the rows
+    that pasted containers left with the wrong roles (#291).  A path that
+    does not resolve is logged and reported as failed.
+
     Returns:
         SecurityReindexResult(checked, failed paths)
     """
@@ -529,7 +534,12 @@ def reindex_security(catalog, site, *, batch_size=_REBUILD_BATCH):
     failed = []
     in_batch = 0
     with site_context(site):
-        for obj, path in catalog._walk_site_paths(site):
+        candidates = (
+            catalog._walk_site_paths(site)
+            if paths is None
+            else _resolve_paths(catalog, paths, failed)
+        )
+        for obj, path in candidates:
             if not _is_catalogable(obj, catalog):
                 continue
             idxs = list(getattr(obj, "_cmf_security_indexes", _SECURITY_INDEXES))
@@ -547,6 +557,36 @@ def reindex_security(catalog, site, *, batch_size=_REBUILD_BATCH):
         _commit_and_minimize(jar)
     log.info("reindex_security: %d reindexed, %d failed", checked, len(failed))
     return SecurityReindexResult(checked, failed)
+
+
+def _resolve_paths(catalog, paths, failed):
+    """Yield ``(obj, path)`` for each path; unresolvable ones go to *failed*."""
+    for path in paths:
+        try:
+            obj = catalog.unrestrictedTraverse(path, None)
+        except Exception:
+            obj = None
+        if obj is None:
+            log.warning("reindex_security: not found %s", path)
+            failed.append(path)
+            continue
+        yield obj, path
+
+
+def manager_only_paths(conn):
+    """Paths of content rows whose ``allowed_roles`` is exactly ``Manager``.
+
+    Candidates for the recomputation after #291: children pasted or
+    restored with their container were indexed as Manager-only.  Rows
+    without ``portal_type`` are not content and are left out.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT path FROM object_state "
+            "WHERE allowed_roles = ARRAY['Manager'] AND idx ? 'portal_type' "
+            "ORDER BY path"
+        )
+        return [row["path"] for row in cur.fetchall()]
 
 
 # Weight 'C' in searchable_text comes only from the Tika merge

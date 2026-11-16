@@ -525,3 +525,32 @@ def _change_seq(conn):
     with conn.cursor() as cur:
         cur.execute("SELECT last_value FROM pgcatalog_change_seq")
         return cur.fetchone()["last_value"]
+
+
+class TestManagerOnlyPaths:
+    def test_returns_only_manager_only_content_rows(self, pg_conn_with_catalog):
+        from plone.pgcatalog.maintenance import manager_only_paths
+
+        conn = pg_conn_with_catalog
+        rows = [
+            (
+                90,
+                "/plone/a",
+                {"allowedRolesAndUsers": ["Manager"], "portal_type": "Image"},
+            ),
+            (
+                91,
+                "/plone/b",
+                {"allowedRolesAndUsers": ["Manager", "Editor"], "portal_type": "Image"},
+            ),
+            (92, "/plone/c", {"allowedRolesAndUsers": ["Manager"]}),
+        ]
+        for zoid, path, idx in rows:
+            insert_object(conn, zoid=zoid)
+            catalog_object(conn, zoid=zoid, path=path, idx=idx)
+        conn.commit()
+        with conn.cursor() as cur:
+            cur.execute("SELECT allowed_roles FROM object_state WHERE zoid = 90")
+            assert cur.fetchone()["allowed_roles"] == ["Manager"]
+
+        assert manager_only_paths(conn) == ["/plone/a"]
