@@ -23,6 +23,22 @@
   7 uncatalogs rows with such paths once; `maintenance.remove_detached_rows()`
   does the same from a script. #290
 
+- Children pasted or re-attached together with their container no longer
+  end up with wrong `allowedRolesAndUsers`. `notifyWorkflowCreated` on the
+  container runs `reindexObjectSecurity`, which finds the children in the
+  pending store, and pgcatalog handed it the bare persistent objects
+  without an acquisition wrapper. Children without a workflow of their own
+  (images, files) then computed `{Manager}` from the Zope default. Since
+  the filter from #290 skips unwrapped objects, the recomputation was
+  silently dropped instead, which left a pasted copy of published content
+  with children visible to `Anonymous` while the copy itself was private.
+  Pending brains now resolve their object by traversing the stored path,
+  as committed brains do, so the recomputation runs on the wrapped object.
+  The upgrade step to profile version 8 recomputes the security indexes of
+  all rows whose `allowed_roles` is exactly `{Manager}` once;
+  `maintenance.reindex_security()` takes a `paths=` argument for the same
+  from a script. #291
+
 ## 1.0.0rc10 (2026-11-09)
 
 ### Fixed

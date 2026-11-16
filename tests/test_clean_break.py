@@ -1094,36 +1094,95 @@ class TestPendingBrainsForPath:
             result = tool._pending_brains_for_path("/plone", set())
         assert result == []
 
-    def test_no_jar_returns_empty(self, tool):
-        """No _p_jar → empty list."""
+    @staticmethod
+    def _fake(zoid):
+        from unittest import mock
+        from ZODB.utils import p64
+
+        fake = mock.Mock()
+        fake._p_oid = p64(zoid)
+        return fake
+
+    @staticmethod
+    @contextmanager
+    def _patched(tool, pending, fast=None, ofs=None, root=None):
+        """Patch pending store, fast traversal and OFS traversal."""
         from unittest import mock
 
+        root = object() if root is None else root
+        with (
+            mock.patch("plone.pgcatalog.catalog._get_pending", return_value=pending),
+            mock.patch.object(tool, "getPhysicalRoot", return_value=root),
+            mock.patch("plone.pgcatalog.catalog._traverse", return_value=fast) as f,
+            mock.patch.object(tool, "unrestrictedTraverse", return_value=ofs) as o,
+        ):
+            yield f, o, root
+
+    def test_matching_path_returns_brain_with_traversed_object(self, tool):
+        """Pending entry is resolved by fast traversal, no OFS traversal needed."""
+        fake_obj = self._fake(1)
         pending = {1: {"path": "/plone/doc1"}}
-        tool._p_jar = None
-        with mock.patch("plone.pgcatalog.catalog._get_pending", return_value=pending):
-            result = tool._pending_brains_for_path("/plone", set())
-        assert result == []
-
-    def test_matching_path_returns_brain(self, tool):
-        """Pending object matching path prefix → returned as brain."""
-        from unittest import mock
-
-        fake_obj = mock.Mock()
-        fake_jar = mock.Mock()
-        fake_jar.get.return_value = fake_obj
-
-        tool._p_jar = fake_jar
-        pending = {1: {"path": "/plone/doc1"}}
-        with mock.patch("plone.pgcatalog.catalog._get_pending", return_value=pending):
+        with self._patched(tool, pending, fast=fake_obj) as (fast, ofs, root):
             result = tool._pending_brains_for_path("/plone", set())
         assert len(result) == 1
         assert result[0].getPath() == "/plone/doc1"
+        assert result[0]._unrestrictedGetObject() is fake_obj
+        fast.assert_called_once_with(root, "/plone/doc1")
+        ofs.assert_not_called()
+
+    def test_falls_back_to_ofs_traversal_when_fast_traverse_misses(self, tool):
+        """Containers with custom traversal are resolved by OFS traversal."""
+        fake_obj = self._fake(1)
+        pending = {1: {"path": "/plone/doc1"}}
+        with self._patched(tool, pending, fast=None, ofs=fake_obj) as (_f, ofs, _r):
+            result = tool._pending_brains_for_path("/plone", set())
+        assert len(result) == 1
+        assert result[0]._unrestrictedGetObject() is fake_obj
+        ofs.assert_called_once_with("/plone/doc1", None)
+
+    def test_no_physical_root_returns_empty(self, tool):
+        """No physical root → nothing can be traversed."""
+        from unittest import mock
+
+        pending = {1: {"path": "/plone/doc1"}}
+        with (
+            mock.patch("plone.pgcatalog.catalog._get_pending", return_value=pending),
+            mock.patch.object(tool, "getPhysicalRoot", side_effect=AttributeError),
+            mock.patch("plone.pgcatalog.catalog._traverse") as fast,
+            mock.patch.object(tool, "unrestrictedTraverse") as ofs,
+        ):
+            result = tool._pending_brains_for_path("/plone", set())
+        assert result == []
+        fast.assert_not_called()
+        ofs.assert_not_called()
+
+    def test_unresolvable_path_skipped(self, tool):
+        """Path that no longer resolves yields no brain."""
+        pending = {1: {"path": "/plone/doc1"}}
+        with self._patched(tool, pending, fast=None, ofs=None):
+            result = tool._pending_brains_for_path("/plone", set())
+        assert result == []
+
+    def test_foreign_object_at_path_skipped(self, tool):
+        """A different object at the stored path yields no brain, no fallback."""
+        pending = {1: {"path": "/plone/doc1"}}
+        with self._patched(tool, pending, fast=self._fake(2)) as (_f, ofs, _r):
+            result = tool._pending_brains_for_path("/plone", set())
+        assert result == []
+        ofs.assert_not_called()
+
+    def test_only_matching_paths_are_traversed(self, tool):
+        """Entries outside the queried subtree are never traversed."""
+        pending = {1: {"path": "/plone/a/doc"}, 2: {"path": "/plone/b/doc"}}
+        with self._patched(tool, pending, fast=self._fake(1)) as (fast, _o, root):
+            result = tool._pending_brains_for_path("/plone/a", set())
+        assert len(result) == 1
+        fast.assert_called_once_with(root, "/plone/a/doc")
 
     def test_already_found_path_skipped(self, tool):
         """Path already in found_paths → skipped."""
         from unittest import mock
 
-        tool._p_jar = mock.Mock()
         pending = {1: {"path": "/plone/doc1"}}
         with mock.patch("plone.pgcatalog.catalog._get_pending", return_value=pending):
             result = tool._pending_brains_for_path("/plone", {"/plone/doc1"})
@@ -1133,7 +1192,6 @@ class TestPendingBrainsForPath:
         """None sentinel (uncatalog) → skipped."""
         from unittest import mock
 
-        tool._p_jar = mock.Mock()
         pending = {1: None}
         with mock.patch("plone.pgcatalog.catalog._get_pending", return_value=pending):
             result = tool._pending_brains_for_path("/plone", set())
@@ -1143,7 +1201,6 @@ class TestPendingBrainsForPath:
         """Path not matching prefix → skipped."""
         from unittest import mock
 
-        tool._p_jar = mock.Mock()
         pending = {1: {"path": "/other/doc1"}}
         with mock.patch("plone.pgcatalog.catalog._get_pending", return_value=pending):
             result = tool._pending_brains_for_path("/plone", set())
@@ -1151,15 +1208,8 @@ class TestPendingBrainsForPath:
 
     def test_dict_path_query(self, tool):
         """Path query as dict → uses 'query' key."""
-        from unittest import mock
-
-        fake_obj = mock.Mock()
-        fake_jar = mock.Mock()
-        fake_jar.get.return_value = fake_obj
-        tool._p_jar = fake_jar
-
         pending = {1: {"path": "/plone/doc1"}}
-        with mock.patch("plone.pgcatalog.catalog._get_pending", return_value=pending):
+        with self._patched(tool, pending, fast=self._fake(1)):
             result = tool._pending_brains_for_path({"query": "/plone"}, set())
         assert len(result) == 1
 
@@ -1167,7 +1217,6 @@ class TestPendingBrainsForPath:
         """Empty prefix string → empty list."""
         from unittest import mock
 
-        tool._p_jar = mock.Mock()
         pending = {1: {"path": "/plone/doc1"}}
         with mock.patch("plone.pgcatalog.catalog._get_pending", return_value=pending):
             result = tool._pending_brains_for_path("", set())
@@ -1177,7 +1226,6 @@ class TestPendingBrainsForPath:
         """Non-string, non-dict path_query → empty list."""
         from unittest import mock
 
-        tool._p_jar = mock.Mock()
         pending = {1: {"path": "/plone/doc1"}}
         with mock.patch("plone.pgcatalog.catalog._get_pending", return_value=pending):
             result = tool._pending_brains_for_path(42, set())
