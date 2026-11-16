@@ -926,6 +926,11 @@ class PlonePGCatalogTool(UniqueObject, Folder):
             try:
                 obj = self.unrestrictedTraverse(obj_path, None)
             except Exception:
+                log.debug(
+                    "_pending_brains_for_path: traversal failed for %s",
+                    obj_path,
+                    exc_info=True,
+                )
                 obj = None
             if obj is not None and getattr(aq_base(obj), "_p_oid", None) == p64(zoid):
                 brains.append(_PendingBrain(obj_path, obj))

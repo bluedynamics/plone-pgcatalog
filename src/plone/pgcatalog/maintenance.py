@@ -524,7 +524,7 @@ def reindex_security(catalog, site, *, batch_size=_REBUILD_BATCH, paths=None):
     With *paths* (an iterable of absolute path strings) only those
     objects are processed instead of the whole site, for example the rows
     that pasted containers left with the wrong roles (#291).  A path that
-    does not resolve is logged and reported as failed.
+    does not resolve, or is not catalogable, is logged and reported as failed.
 
     Returns:
         SecurityReindexResult(checked, failed paths)
@@ -541,6 +541,9 @@ def reindex_security(catalog, site, *, batch_size=_REBUILD_BATCH, paths=None):
         )
         for obj, path in candidates:
             if not _is_catalogable(obj, catalog):
+                if paths is not None:
+                    log.warning("reindex_security: not catalogable %s", path)
+                    failed.append(path)
                 continue
             idxs = list(getattr(obj, "_cmf_security_indexes", _SECURITY_INDEXES))
             try:

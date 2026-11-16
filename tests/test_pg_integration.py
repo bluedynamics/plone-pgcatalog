@@ -2584,6 +2584,15 @@ class TestReindexSecurity(_PGLayerTest):
         )
         assert result.checked == 0 and result.failed == ["/plone/nope"]
 
+    def test_paths_non_catalogable_counts_as_failed(self, pg_functional):
+        from plone.pgcatalog.maintenance import reindex_security
+
+        portal = self._make_stale(pg_functional)
+        result = reindex_security(
+            portal["portal_catalog"], portal, paths=["/plone/portal_catalog"]
+        )
+        assert result.checked == 0 and result.failed == ["/plone/portal_catalog"]
+
     def test_upgrade_step_repairs(self, pg_functional):
         from plone.pgcatalog.upgrades.profile_6 import reindex_security_indexes
 

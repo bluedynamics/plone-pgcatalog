@@ -143,7 +143,7 @@ transaction.commit()
 It commits every 500 objects and can be repeated after an interruption.
 
 [#291](https://github.com/bluedynamics/plone-pgcatalog/issues/291) did the same to children that were pasted or restored together with their container.
-They were indexed with only `Manager` in `allowedRolesAndUsers`, or kept the roles of the source.
+They were indexed with only `Manager` in `allowedRolesAndUsers`.
 The upgrade step to profile version 8 recomputes all rows whose `allowed_roles` is exactly `Manager`.
 To run it from a script:
 

@@ -1,9 +1,8 @@
 """Profile v7 -> v8 upgrade: recompute Manager-only security rows (#291).
 
 Children pasted or restored together with their container were indexed
-with ``allowedRolesAndUsers`` of only ``Manager``, or, after the first
-fix, kept the roles of the source.  This step recomputes the security
-indexes of all rows whose ``allowed_roles`` is exactly ``Manager``, one
+with ``allowedRolesAndUsers`` of only ``Manager``.  This step recomputes
+the security indexes of all rows whose ``allowed_roles`` is exactly ``Manager``, one
 partial reindex per affected row.
 """
 
@@ -11,7 +10,6 @@ from Acquisition import aq_parent
 from plone.pgcatalog.interfaces import IPGCatalogTool
 from plone.pgcatalog.maintenance import manager_only_paths
 from plone.pgcatalog.maintenance import reindex_security
-from plone.pgcatalog.pool import get_pool
 
 import logging
 
@@ -37,12 +35,9 @@ def recompute_manager_only_security(context):
         log.info("recompute_manager_only_security: PG catalog not active; skipping")
         return
 
-    pool = get_pool(catalog)
-    conn = pool.getconn()
-    try:
+    with catalog._pg_connection() as conn:
         paths = manager_only_paths(conn)
-    finally:
-        pool.putconn(conn)
+        conn.commit()
     if not paths:
         log.info("recompute_manager_only_security: no Manager-only rows; skipping")
         return
