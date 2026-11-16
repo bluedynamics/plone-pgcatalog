@@ -463,6 +463,48 @@ class TestRemoveAcquiredUids:
         assert leaked["getId"] == "robots.txt"
 
 
+class TestRemoveDetachedRows:
+    """Data repair for #290: uncatalog rows whose path is not rooted."""
+
+    def test_removes_only_non_rooted_rows(self, pg_conn_with_catalog):
+        from plone.pgcatalog.maintenance import remove_detached_rows
+
+        conn = pg_conn_with_catalog
+        insert_object(conn, zoid=80)
+        catalog_object(conn, zoid=80, path="/plone/doc", idx={"UID": "keep"})
+        insert_object(conn, zoid=81)
+        catalog_object(
+            conn, zoid=81, path="f", idx={"UID": "stale", "portal_type": "Folder"}
+        )
+        conn.commit()
+        seq_before = _change_seq(conn)
+
+        assert remove_detached_rows(conn) == 1
+        conn.commit()
+
+        assert _get_row(conn, 80)["path"] == "/plone/doc"
+        stale = _get_row(conn, 81)
+        assert stale["path"] is None
+        assert stale["parent_path"] is None
+        assert stale["idx"] is None
+        assert _change_seq(conn) > seq_before
+
+    def test_nothing_to_do_returns_zero_and_keeps_sequence(self, pg_conn_with_catalog):
+        from plone.pgcatalog.maintenance import remove_detached_rows
+
+        conn = pg_conn_with_catalog
+        insert_object(conn, zoid=82)
+        catalog_object(conn, zoid=82, path="/plone/doc", idx={"UID": "keep"})
+        conn.commit()
+        seq_before = _change_seq(conn)
+
+        assert remove_detached_rows(conn) == 0
+        conn.commit()
+
+        assert _get_row(conn, 82)["path"] == "/plone/doc"
+        assert _change_seq(conn) == seq_before
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -477,3 +519,9 @@ def _get_row(conn, zoid):
             {"zoid": zoid},
         )
         return cur.fetchone()
+
+
+def _change_seq(conn):
+    with conn.cursor() as cur:
+        cur.execute("SELECT last_value FROM pgcatalog_change_seq")
+        return cur.fetchone()["last_value"]

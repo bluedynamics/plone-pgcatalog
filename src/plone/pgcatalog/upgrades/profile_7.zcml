@@ -1,0 +1,20 @@
+<configure
+    xmlns="http://namespaces.zope.org/zope"
+    xmlns:gs="http://namespaces.zope.org/genericsetup"
+    i18n_domain="plone.pgcatalog"
+    >
+
+  <gs:upgradeStep
+      profile="plone.pgcatalog:default"
+      source="6"
+      destination="7"
+      title="Uncatalog rows left behind by deletes"
+      description="Deleting content could leave a catalog row behind whose
+                   path holds only the id of the removed object, so deleted
+                   content was still found by UID and type queries.  Uncatalog
+                   all rows with such a path once.  This is a single SQL
+                   statement.  See #290."
+      handler=".profile_7.uncatalog_detached_rows"
+      />
+
+</configure>
