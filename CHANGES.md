@@ -22,6 +22,7 @@
   application is refused and logged. The upgrade step to profile version
   7 uncatalogs rows with such paths once; `maintenance.remove_detached_rows()`
   does the same from a script. #290
+
 - Children pasted or re-attached together with their container no longer
   end up with wrong `allowedRolesAndUsers`. `notifyWorkflowCreated` on the
   container runs `reindexObjectSecurity`, which finds the children in the
