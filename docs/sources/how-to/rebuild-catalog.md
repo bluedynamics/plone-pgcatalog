@@ -142,6 +142,26 @@ transaction.commit()
 
 It commits every 500 objects and can be repeated after an interruption.
 
+## Repair rows of deleted content
+
+Before [#290](https://github.com/bluedynamics/plone-pgcatalog/issues/290) was fixed, deleting a folder could leave a catalog row behind.
+This happened when the folder had a relation to an item inside itself.
+The row's `path` held only the id of the removed object, so the deleted content was still found by UID and type queries.
+The upgrade step to profile version 7 repairs this once.
+It clears the catalog data of every row whose `path` does not start with `/`.
+
+To run it outside the upgrade, for example from a script, call the step's handler:
+
+```python
+from plone.pgcatalog.upgrades.profile_7 import uncatalog_detached_rows
+
+uncatalog_detached_rows(portal.portal_setup)
+```
+
+`remove_detached_rows(conn)` in `plone.pgcatalog.maintenance` is the SQL-level function for callers that hold their own connection.
+It does not commit.
+It is a single SQL statement and runs in well under a second.
+
 (undo-follow-up)=
 
 ## Catalog after undo (undo.process_queue)
@@ -237,6 +257,7 @@ This happens automatically and does not trigger ZODB serialization of the object
 | `refreshCatalog(clear=1)` | Yes | Yes | Same | Equivalent to `clearFindAndRebuild()` |
 | `reindexIndex("name")` | No (single key) | Yes (ZODB load) | ~5 ms/obj | Single index changed, new indexer deployed |
 | `repair_uncataloged()` | No | Yes | ~15 ms per repaired object | Content missing from listings and search but present in the ZODB |
+| `remove_detached_rows()` | Yes (affected rows only) | No | One SQL statement | Deleted content is still found by UID or type queries, and the row's `path` holds only an id |
 | `undo.process_queue()` | No | No (queued rows only) | 1–3 ms per security row, ~15 ms per recataloged object | Rows an undo hid are still queued (Catalog tab shows the count) |
 
 **`clearFindAndRebuild()`** NULLs all catalog columns (path, idx,

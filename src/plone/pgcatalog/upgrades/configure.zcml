@@ -4,4 +4,5 @@
   <include file="profile_4.zcml" />
   <include file="profile_5.zcml" />
   <include file="profile_6.zcml" />
+  <include file="profile_7.zcml" />
 </configure>

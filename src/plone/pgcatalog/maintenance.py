@@ -21,6 +21,7 @@ from plone.pgcatalog import undo
 from plone.pgcatalog.backends import get_backend
 from plone.pgcatalog.gopip import sync_folder_ranks
 from plone.pgcatalog.indexing import reindex_object as _sql_reindex
+from plone.pgcatalog.indexing import uncatalog_assignments
 from plone.pgcatalog.pgindex import _maybe_wrap_index
 from plone.pgcatalog.pool import get_pool
 from psycopg import sql as pgsql
@@ -109,6 +110,35 @@ def remove_acquired_uids(conn):
         count = cur.rowcount
 
     log.info("remove_acquired_uids: stripped acquired UID from %d rows", count)
+    return count
+
+
+def remove_detached_rows(conn):
+    """Uncatalog rows whose ``path`` is not rooted (#290).
+
+    Before the fix, a delete could reindex an already detached object
+    (a ``RelationBrokenEvent`` on a relation source removed in the same
+    delete).  The catalog then wrote a full row with the bare id as
+    ``path`` over the uncatalog of the same transaction, so the removed
+    object stayed findable by UID and type queries.  Such rows are
+    identified by a ``path`` that does not start with ``/``.
+
+    One-shot data repair for existing databases; new writes are guarded
+    in ``indexObject``, ``reindexObject``, ``unindexObject`` and
+    ``_set_pg_annotation``.  Does not commit; the caller does.  Returns
+    the number of repaired rows.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            f"UPDATE object_state SET {uncatalog_assignments()} "
+            "WHERE path IS NOT NULL AND path NOT LIKE '/%'"
+        )
+        count = cur.rowcount
+        if count:
+            # Invalidate the query cache, as every catalog write does.
+            cur.execute("SELECT nextval('pgcatalog_change_seq')")
+
+    log.info("remove_detached_rows: uncataloged %d rows", count)
     return count
 
 

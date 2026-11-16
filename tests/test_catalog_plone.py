@@ -7,8 +7,11 @@ from plone.pgcatalog.columns import get_registry
 from plone.pgcatalog.columns import IndexType
 from plone.pgcatalog.extraction import _path_value_to_string
 from plone.pgcatalog.interfaces import IPGCatalogTool
+from tests.conftest import detached_content
+from tests.conftest import fake_content
 from unittest import mock
 
+import logging
 import os
 
 
@@ -586,19 +589,75 @@ class TestPgConnection:
 
 
 class TestIndexObjectReindexObject:
+    def _tool(self):
+        return PlonePGCatalogTool.__new__(PlonePGCatalogTool)
+
     def test_indexObject_calls_set_pg_annotation(self):
-        tool = PlonePGCatalogTool.__new__(PlonePGCatalogTool)
-        obj = mock.Mock()
+        tool = self._tool()
+        obj = fake_content()
         with mock.patch.object(tool, "_set_pg_annotation") as ann_mock:
             tool.indexObject(obj)
             ann_mock.assert_called_once_with(obj)
 
     def test_reindexObject_calls_set_pg_annotation(self):
-        tool = PlonePGCatalogTool.__new__(PlonePGCatalogTool)
-        obj = mock.Mock()
+        tool = self._tool()
+        obj = fake_content()
         with mock.patch.object(tool, "_set_pg_annotation") as ann_mock:
             tool.reindexObject(obj, uid="/plone/doc")
             ann_mock.assert_called_once_with(obj, "/plone/doc")
+
+    def test_indexObject_skips_detached(self):
+        tool = self._tool()
+        with mock.patch.object(tool, "_set_pg_annotation") as ann_mock:
+            tool.indexObject(detached_content())
+            ann_mock.assert_not_called()
+
+    def test_reindexObject_skips_detached(self):
+        tool = self._tool()
+        with mock.patch.object(tool, "_set_pg_annotation") as ann_mock:
+            tool.reindexObject(detached_content())
+            ann_mock.assert_not_called()
+
+    def test_reindexObject_partial_skips_detached(self):
+        tool = self._tool()
+        with (
+            mock.patch.object(tool, "_set_pg_annotation") as ann_mock,
+            mock.patch.object(tool, "_partial_reindex") as partial_mock,
+        ):
+            tool.reindexObject(detached_content(), idxs=["portal_type"])
+            ann_mock.assert_not_called()
+            partial_mock.assert_not_called()
+
+    def test_reindexObject_skips_object_not_in_parent(self):
+        tool = self._tool()
+        with mock.patch.object(tool, "_set_pg_annotation") as ann_mock:
+            tool.reindexObject(fake_content(contained=False))
+            ann_mock.assert_not_called()
+
+    def test_reindexObject_skips_request_parent(self):
+        tool = self._tool()
+        with mock.patch.object(tool, "_set_pg_annotation") as ann_mock:
+            tool.reindexObject(fake_content(request_parent=True))
+            ann_mock.assert_not_called()
+
+    def test_indexObject_without_getId_is_indexed(self):
+        tool = self._tool()
+        obj = fake_content(with_get_id=False)
+        with mock.patch.object(tool, "_set_pg_annotation") as ann_mock:
+            tool.indexObject(obj)
+            ann_mock.assert_called_once_with(obj)
+
+    def test_unindexObject_skips_detached(self):
+        tool = self._tool()
+        with mock.patch.object(tool, "uncatalog_object") as uncat_mock:
+            tool.unindexObject(detached_content())
+            uncat_mock.assert_not_called()
+
+    def test_unindexObject_not_in_parent_still_uncatalogs(self):
+        tool = self._tool()
+        with mock.patch.object(tool, "uncatalog_object") as uncat_mock:
+            tool.unindexObject(fake_content(contained=False))
+            uncat_mock.assert_called_once_with("/plone/doc")
 
 
 # ---------------------------------------------------------------------------
@@ -1468,3 +1527,68 @@ class TestCodecRoundTrip:
         assert restored["a"] is None
         assert restored["b"] == ""
         assert restored["c"] == 0
+
+
+# ---------------------------------------------------------------------------
+# _set_pg_annotation: defence in depth against non-rooted paths (#290)
+# ---------------------------------------------------------------------------
+
+
+class TestSetPgAnnotationRefusesNonRootedPath:
+    def _tool(self):
+        return PlonePGCatalogTool.__new__(PlonePGCatalogTool)
+
+    def test_explicit_uid_without_root_is_refused(self, caplog):
+        tool = self._tool()
+        caplog.set_level(logging.WARNING, "plone.pgcatalog.catalog")
+        with (
+            mock.patch("plone.pgcatalog.catalog.set_pending") as pending_mock,
+            mock.patch.object(tool, "_obj_to_zoid") as zoid_mock,
+        ):
+            assert tool._set_pg_annotation(fake_content(), uid="doc") is False
+            pending_mock.assert_not_called()
+            zoid_mock.assert_not_called()
+        assert "non-rooted path" in caplog.text
+
+    def test_derived_path_of_detached_object_is_refused(self, caplog):
+        tool = self._tool()
+        caplog.set_level(logging.WARNING, "plone.pgcatalog.catalog")
+        with (
+            mock.patch("plone.pgcatalog.catalog.set_pending") as pending_mock,
+            mock.patch.object(tool, "_obj_to_zoid") as zoid_mock,
+        ):
+            assert tool._set_pg_annotation(detached_content()) is False
+            pending_mock.assert_not_called()
+            zoid_mock.assert_not_called()
+        assert "non-rooted path" in caplog.text
+
+    def test_rooted_path_passes_the_guard(self):
+        tool = self._tool()
+        obj = fake_content()
+        with (
+            mock.patch.object(tool, "_obj_to_zoid", return_value=None),
+            mock.patch.object(tool, "_wrap_object", return_value=obj),
+            mock.patch.object(tool, "_extract_idx", return_value={}),
+            mock.patch.object(tool, "_extract_searchable_text", return_value=None),
+            mock.patch("plone.pgcatalog.catalog.register_parent"),
+        ):
+            assert tool._set_pg_annotation(obj, uid="/plone/doc") is True
+
+    def test_partial_reindex_of_detached_object_is_refused(self, caplog):
+        tool = self._tool()
+        caplog.set_level(logging.WARNING, "plone.pgcatalog.catalog")
+        with (
+            mock.patch.object(tool, "_obj_to_zoid", return_value=42),
+            mock.patch.object(tool, "_wrap_object", side_effect=lambda o: o),
+            mock.patch.object(
+                tool, "_extract_idx", return_value={"portal_type": "Folder"}
+            ),
+            mock.patch("plone.pgcatalog.catalog.note_pool"),
+            mock.patch("plone.pgcatalog.catalog.get_pool"),
+            mock.patch("plone.pgcatalog.catalog.set_partial_pending") as partial_mock,
+            mock.patch("plone.pgcatalog.catalog.set_pending") as pending_mock,
+        ):
+            tool.catalog_object(detached_content(), idxs=["portal_type"])
+            partial_mock.assert_not_called()
+            pending_mock.assert_not_called()
+        assert "non-rooted path" in caplog.text
