@@ -1,5 +1,28 @@
 # Changelog
 
+## 1.0.0rc11 (unreleased)
+
+### Fixed
+
+- Deleting a subtree no longer leaves catalog rows of removed objects
+  behind. When a removed object was the target of a relation whose source
+  was removed in the same delete (an item with a relation to an image
+  inside itself), z3c.relationfield's `RelationBrokenEvent` reindexed the
+  source after it had been detached, five.intid handed over the unwrapped
+  object, and the catalog wrote a full row with the bare id as `path`,
+  overwriting the uncatalog of the same transaction. The row kept the
+  object findable by UID and type queries, so `uuidToObject()` raised
+  instead of returning `None`. Stock Plone is protected by
+  `filterTemporaryItems` in CMFCore's queue-aware `indexObject`,
+  `reindexObject` and `unindexObject`; pgcatalog overrides exactly these
+  methods and had dropped the filter. The three methods now apply it, so
+  detached objects, objects below a request and objects no longer
+  contained in their parent are skipped as in stock Plone. As a second
+  line of defence, a catalog write with a path that is not rooted at the
+  application is refused and logged. The upgrade step to profile version
+  7 uncatalogs rows with such paths once; `maintenance.remove_detached_rows()`
+  does the same from a script. #290
+
 ## 1.0.0rc10 (2026-11-09)
 
 ### Fixed

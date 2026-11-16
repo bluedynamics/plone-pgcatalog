@@ -62,6 +62,7 @@ from plone.pgcatalog.query import _MAX_PATHS
 from plone.pgcatalog.query import apply_security_filters
 from plone.pgcatalog.search import _PendingBrain
 from plone.pgcatalog.search import _run_search
+from Products.CMFCore.indexing import filterTemporaryItems
 from Products.CMFCore.permissions import AccessInactivePortalContent
 from Products.CMFCore.utils import _checkPermission
 from Products.CMFCore.utils import UniqueObject
@@ -611,24 +612,45 @@ class PlonePGCatalogTool(UniqueObject, Folder):
 
         During move operations, returns immediately — descendants' paths
         will be fixed by a single bulk SQL UPDATE in finalize().
+
+        Detached, request-parented and no-longer-contained objects are
+        skipped, mirroring CMFCore's queue-aware ``indexObject`` (#290).
         """
         from plone.pgcatalog.move import is_move_in_progress
 
         if is_move_in_progress():
             return
-        self._set_pg_annotation(object)
+        obj = filterTemporaryItems(object)
+        if obj is None:
+            log.debug(
+                "indexObject: skipping detached or temporary %s", type(object).__name__
+            )
+            return
+        self._set_pg_annotation(obj)
 
     def unindexObject(self, object):  # noqa: A002
         """Queue-aware: enqueue unindex request.
 
         During move operations, returns immediately — no need to NULL
         paths that will be bulk-updated.
+
+        Detached and request-parented objects are skipped, mirroring
+        CMFCore's queue-aware ``unindexObject`` (#290).  The containment
+        check is off (``checkId=False``) so a late unindex of an object
+        already removed from its parent still uncatalogs.
         """
         from plone.pgcatalog.move import is_move_in_progress
 
         if is_move_in_progress():
             return
-        url = self.__url(object)
+        obj = filterTemporaryItems(object, checkId=False)
+        if obj is None:
+            log.debug(
+                "unindexObject: skipping detached or temporary %s",
+                type(object).__name__,
+            )
+            return
+        url = self.__url(obj)
         self.uncatalog_object(url)
 
     def reindexObject(self, object, idxs=None, update_metadata=1, uid=None):  # noqa: A002
@@ -639,10 +661,21 @@ class PlonePGCatalogTool(UniqueObject, Folder):
         a JSONB merge update (no ZODB serialization, no ``_p_changed``).
 
         When ``idxs`` is empty/None, performs a full reindex.
+
+        Detached, request-parented and no-longer-contained objects are
+        skipped before any work, mirroring CMFCore's queue-aware
+        ``reindexObject`` (#290).
         """
-        if idxs and self._partial_reindex(object, idxs):
+        obj = filterTemporaryItems(object)
+        if obj is None:
+            log.debug(
+                "reindexObject: skipping detached or temporary %s",
+                type(object).__name__,
+            )
             return
-        self._set_pg_annotation(object, uid)
+        if idxs and self._partial_reindex(obj, idxs):
+            return
+        self._set_pg_annotation(obj, uid)
 
     # -- Direct (non-queued) methods called by CMFCore.indexing.PortalCatalogProcessor
 

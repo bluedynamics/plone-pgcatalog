@@ -10,6 +10,7 @@ from plone.pgcatalog.maintenance import _CatalogCompat
 from plone.pgcatalog.schema import install_catalog_schema
 from psycopg.rows import dict_row
 from tests.conftest import DSN
+from tests.conftest import fake_content
 from tests.conftest import insert_object
 from tests.conftest import TABLES_TO_DROP
 from zodb_pgjsonb.schema import HISTORY_FREE_SCHEMA
@@ -891,8 +892,7 @@ class TestCMFCoreProcessorBehavior:
         """unindexObject calls uncatalog_object with url."""
         from unittest import mock
 
-        obj = mock.Mock()
-        obj.getPhysicalPath.return_value = ("", "plone", "doc1")
+        obj = fake_content("doc1")
         with mock.patch.object(tool, "uncatalog_object") as uncat_mock:
             tool.unindexObject(obj)
             uncat_mock.assert_called_once_with("/plone/doc1")
@@ -1052,7 +1052,7 @@ class TestReindexObjectPartialPath:
         """reindexObject returns early when _partial_reindex succeeds."""
         from unittest import mock
 
-        obj = mock.Mock()
+        obj = fake_content()
         with (
             mock.patch.object(tool, "_partial_reindex", return_value=True) as pr_mock,
             mock.patch.object(tool, "_set_pg_annotation") as ann_mock,

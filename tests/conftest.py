@@ -1,5 +1,8 @@
 """Shared test configuration for plone.pgcatalog tests."""
 
+from Acquisition import aq_inner
+from Acquisition import aq_parent
+from Acquisition import Implicit
 from plone.app.testing import PLONE_FIXTURE
 from plone.pgcatalog.columns import get_registry
 from plone.pgcatalog.columns import IndexType
@@ -10,6 +13,8 @@ from psycopg.types.json import Json
 from types import SimpleNamespace
 from zodb_pgjsonb.schema import HISTORY_FREE_SCHEMA
 from zodb_pgjsonb.testing import get_test_dsn
+from zope.interface import alsoProvides
+from zope.publisher.interfaces.browser import IBrowserRequest
 from zope.pytestlayer import fixture
 
 import os
@@ -322,3 +327,72 @@ def insert_object(conn, zoid, tid=1, class_mod="myapp", class_name="Doc", state=
         )
     conn.commit()
     return zoid
+
+
+# ---------------------------------------------------------------------------
+# Fake content for indexObject / reindexObject / unindexObject unit tests
+# ---------------------------------------------------------------------------
+
+
+class _FakeContainer(Implicit):
+    """Parent that knows its children by id; may deny containment."""
+
+    def __init__(self, path, contained=True):
+        self._path = path
+        self._contained = contained
+
+    def getPhysicalPath(self):
+        return self._path
+
+    def __contains__(self, key):
+        return self._contained
+
+
+class _RequestContainer(_FakeContainer):
+    """Parent that looks like a browser request (portal_factory style)."""
+
+
+class _FakeContent(Implicit):
+    """Content with getId, without isTemporary."""
+
+    def __init__(self, content_id):
+        self._id = content_id
+
+    def getId(self):
+        return self._id
+
+    def getPhysicalPath(self):
+        parent = aq_parent(aq_inner(self))
+        base = parent.getPhysicalPath() if parent is not None else ()
+        return (*base, self._id)
+
+
+class _FakeContentWithoutGetId(Implicit):
+    def __init__(self, content_id):
+        self._id = content_id
+
+    def getPhysicalPath(self):
+        parent = aq_parent(aq_inner(self))
+        base = parent.getPhysicalPath() if parent is not None else ()
+        return (*base, self._id)
+
+
+def fake_content(
+    id="doc",  # noqa: A002
+    *,
+    contained=True,
+    request_parent=False,
+    with_get_id=True,
+):
+    """Content wrapped in a fake container at ``/plone``."""
+    cls = _FakeContent if with_get_id else _FakeContentWithoutGetId
+    container_cls = _RequestContainer if request_parent else _FakeContainer
+    container = container_cls(("", "plone"), contained=contained)
+    if request_parent:
+        alsoProvides(container, IBrowserRequest)
+    return cls(id).__of__(container)
+
+
+def detached_content(id="doc"):  # noqa: A002
+    """Bare content, no acquisition parent: getPhysicalPath() is ``(id,)``."""
+    return _FakeContent(id)

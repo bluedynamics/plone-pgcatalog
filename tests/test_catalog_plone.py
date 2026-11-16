@@ -7,6 +7,8 @@ from plone.pgcatalog.columns import get_registry
 from plone.pgcatalog.columns import IndexType
 from plone.pgcatalog.extraction import _path_value_to_string
 from plone.pgcatalog.interfaces import IPGCatalogTool
+from tests.conftest import detached_content
+from tests.conftest import fake_content
 from unittest import mock
 
 import os
@@ -586,19 +588,75 @@ class TestPgConnection:
 
 
 class TestIndexObjectReindexObject:
+    def _tool(self):
+        return PlonePGCatalogTool.__new__(PlonePGCatalogTool)
+
     def test_indexObject_calls_set_pg_annotation(self):
-        tool = PlonePGCatalogTool.__new__(PlonePGCatalogTool)
-        obj = mock.Mock()
+        tool = self._tool()
+        obj = fake_content()
         with mock.patch.object(tool, "_set_pg_annotation") as ann_mock:
             tool.indexObject(obj)
             ann_mock.assert_called_once_with(obj)
 
     def test_reindexObject_calls_set_pg_annotation(self):
-        tool = PlonePGCatalogTool.__new__(PlonePGCatalogTool)
-        obj = mock.Mock()
+        tool = self._tool()
+        obj = fake_content()
         with mock.patch.object(tool, "_set_pg_annotation") as ann_mock:
             tool.reindexObject(obj, uid="/plone/doc")
             ann_mock.assert_called_once_with(obj, "/plone/doc")
+
+    def test_indexObject_skips_detached(self):
+        tool = self._tool()
+        with mock.patch.object(tool, "_set_pg_annotation") as ann_mock:
+            tool.indexObject(detached_content())
+            ann_mock.assert_not_called()
+
+    def test_reindexObject_skips_detached(self):
+        tool = self._tool()
+        with mock.patch.object(tool, "_set_pg_annotation") as ann_mock:
+            tool.reindexObject(detached_content())
+            ann_mock.assert_not_called()
+
+    def test_reindexObject_partial_skips_detached(self):
+        tool = self._tool()
+        with (
+            mock.patch.object(tool, "_set_pg_annotation") as ann_mock,
+            mock.patch.object(tool, "_partial_reindex") as partial_mock,
+        ):
+            tool.reindexObject(detached_content(), idxs=["portal_type"])
+            ann_mock.assert_not_called()
+            partial_mock.assert_not_called()
+
+    def test_reindexObject_skips_object_not_in_parent(self):
+        tool = self._tool()
+        with mock.patch.object(tool, "_set_pg_annotation") as ann_mock:
+            tool.reindexObject(fake_content(contained=False))
+            ann_mock.assert_not_called()
+
+    def test_reindexObject_skips_request_parent(self):
+        tool = self._tool()
+        with mock.patch.object(tool, "_set_pg_annotation") as ann_mock:
+            tool.reindexObject(fake_content(request_parent=True))
+            ann_mock.assert_not_called()
+
+    def test_indexObject_without_getId_is_indexed(self):
+        tool = self._tool()
+        obj = fake_content(with_get_id=False)
+        with mock.patch.object(tool, "_set_pg_annotation") as ann_mock:
+            tool.indexObject(obj)
+            ann_mock.assert_called_once_with(obj)
+
+    def test_unindexObject_skips_detached(self):
+        tool = self._tool()
+        with mock.patch.object(tool, "uncatalog_object") as uncat_mock:
+            tool.unindexObject(detached_content())
+            uncat_mock.assert_not_called()
+
+    def test_unindexObject_not_in_parent_still_uncatalogs(self):
+        tool = self._tool()
+        with mock.patch.object(tool, "uncatalog_object") as uncat_mock:
+            tool.unindexObject(fake_content(contained=False))
+            uncat_mock.assert_called_once_with("/plone/doc")
 
 
 # ---------------------------------------------------------------------------

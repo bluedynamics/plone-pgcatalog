@@ -17,6 +17,12 @@ from plone.app.testing import TEST_USER_ID
 from plone.app.testing import TEST_USER_NAME
 from plone.folder.default import DefaultOrdering
 from plone.pgcatalog.testing import PGCATALOG_PG_FIXTURE
+from z3c.relationfield.relation import RelationValue
+from zc.relation.interfaces import ICatalog
+from zope.component import getUtility
+from zope.event import notify
+from zope.intid.interfaces import IIntIds
+from zope.lifecycleevent import ObjectModifiedEvent
 from zope.pytestlayer import fixture
 
 import pytest
@@ -786,6 +792,45 @@ class TestSearchResultsEndToEnd(_PGLayerTest):
 
 class TestUncatalogDeleteFlow(_PGLayerTest):
     """Test that deleting content NULLs catalog columns in PG."""
+
+    def test_delete_folder_with_relation_to_own_child_leaves_no_row(
+        self, pg_functional
+    ):
+        """#290: RelationBrokenEvent reindexes the detached source during the delete."""
+        portal = pg_functional["portal"]
+        setRoles(portal, TEST_USER_ID, ["Manager"])
+        portal.invokeFactory("Folder", "f", title="F")
+        folder = portal["f"]
+        folder.invokeFactory("Image", "img", title="Img")
+        intids = getUtility(IIntIds)
+        folder.relatedItems = [RelationValue(intids.getId(folder["img"]))]
+        notify(ObjectModifiedEvent(folder))
+        transaction.commit()
+        folder_uid = folder.UID()
+        folder_zoid = int.from_bytes(folder._p_oid, "big")
+        assert list(
+            getUtility(ICatalog).findRelations({"to_id": intids.getId(folder["img"])})
+        )
+
+        portal.manage_delObjects(["f"])
+        transaction.commit()
+
+        assert (
+            _query_pg(
+                pg_functional,
+                "SELECT zoid, path FROM object_state WHERE path IS NOT NULL AND path NOT LIKE '/%%'",
+            )
+            == []
+        )
+        assert _query_pg(
+            pg_functional,
+            "SELECT path, idx FROM object_state WHERE zoid = %s",
+            (folder_zoid,),
+        ) == [(None, None)]
+        assert (
+            list(portal["portal_catalog"].unrestrictedSearchResults(UID=folder_uid))
+            == []
+        )
 
     def test_delete_nulls_catalog_columns(self, pg_functional):
         """Deleting content sets idx to NULL in PG."""
