@@ -497,6 +497,15 @@ class PlonePGCatalogTool(UniqueObject, Folder):
                 )
                 return False
 
+        if not uid.startswith("/"):
+            log.warning(
+                "_set_pg_annotation: refusing non-rooted path %r for %s; "
+                "detached object reindexed? (#290)",
+                uid,
+                type(obj).__name__,
+            )
+            return False
+
         zoid = self._obj_to_zoid(obj)
 
         wrapper = self._wrap_object(obj)

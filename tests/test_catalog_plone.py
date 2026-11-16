@@ -11,6 +11,7 @@ from tests.conftest import detached_content
 from tests.conftest import fake_content
 from unittest import mock
 
+import logging
 import os
 
 
@@ -1526,3 +1527,49 @@ class TestCodecRoundTrip:
         assert restored["a"] is None
         assert restored["b"] == ""
         assert restored["c"] == 0
+
+
+# ---------------------------------------------------------------------------
+# _set_pg_annotation: defence in depth against non-rooted paths (#290)
+# ---------------------------------------------------------------------------
+
+
+class TestSetPgAnnotationRefusesNonRootedPath:
+    def _tool(self):
+        return PlonePGCatalogTool.__new__(PlonePGCatalogTool)
+
+    def test_explicit_uid_without_root_is_refused(self, caplog):
+        tool = self._tool()
+        caplog.set_level(logging.WARNING, "plone.pgcatalog.catalog")
+        with (
+            mock.patch("plone.pgcatalog.catalog.set_pending") as pending_mock,
+            mock.patch.object(tool, "_obj_to_zoid") as zoid_mock,
+        ):
+            assert tool._set_pg_annotation(fake_content(), uid="doc") is False
+            pending_mock.assert_not_called()
+            zoid_mock.assert_not_called()
+        assert "non-rooted path" in caplog.text
+
+    def test_derived_path_of_detached_object_is_refused(self, caplog):
+        tool = self._tool()
+        caplog.set_level(logging.WARNING, "plone.pgcatalog.catalog")
+        with (
+            mock.patch("plone.pgcatalog.catalog.set_pending") as pending_mock,
+            mock.patch.object(tool, "_obj_to_zoid") as zoid_mock,
+        ):
+            assert tool._set_pg_annotation(detached_content()) is False
+            pending_mock.assert_not_called()
+            zoid_mock.assert_not_called()
+        assert "non-rooted path" in caplog.text
+
+    def test_rooted_path_passes_the_guard(self):
+        tool = self._tool()
+        obj = fake_content()
+        with (
+            mock.patch.object(tool, "_obj_to_zoid", return_value=None),
+            mock.patch.object(tool, "_wrap_object", return_value=obj),
+            mock.patch.object(tool, "_extract_idx", return_value={}),
+            mock.patch.object(tool, "_extract_searchable_text", return_value=None),
+            mock.patch("plone.pgcatalog.catalog.register_parent"),
+        ):
+            assert tool._set_pg_annotation(obj, uid="/plone/doc") is True
