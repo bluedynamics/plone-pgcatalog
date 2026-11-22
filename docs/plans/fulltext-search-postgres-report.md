@@ -4,6 +4,14 @@
 
 *February 2026*
 
+> **Correction (November 2026).** This report is kept as written in February 2026. Its license and status statements for two extensions are wrong or outdated. See [issue 289](https://github.com/bluedynamics/plone-pgcatalog/issues/289).
+>
+> - **VectorChord-BM25 is not Apache-2.0 licensed.** It is dual-licensed under AGPL-3.0 or Elastic License 2.0 and already was in February 2026. Only pg_tokenizer.rs is Apache-2.0. Affected: sections 5.3, 7 (comparison table, "Best open-source path") and 8 (license row of the feature matrix).
+> - **pg_textsearch is under the PostgreSQL License.** Section 5.1 says Apache-2.0. The comparison table in section 7 has it right.
+> - **pg_textsearch has left preview and replicates.** Version 1.0.0 (March 2026) is generally available. Version 1.2.0 (May 2026) added physical replication. Affected: sections 5.1 and 7.
+>
+> The corrected evaluation is in [`bm25-design.md`](../sources/explanation/bm25-design.md). The re-evaluation of pg_textsearch is tracked in [issue 294](https://github.com/bluedynamics/plone-pgcatalog/issues/294).
+
 ---
 
 ## Table of Contents

@@ -10,6 +10,9 @@ When BM25 extensions are available, plone.pgcatalog switches from `TsvectorBacke
 
 ## Step 1: install VectorChord-BM25
 
+VectorChord-BM25 is dual-licensed under AGPL-3.0 or Elastic License 2.0.
+See {ref}`bm25-design-why-vectorchord` for how that weighs against the alternatives.
+
 ### Docker (recommended)
 
 ```bash
