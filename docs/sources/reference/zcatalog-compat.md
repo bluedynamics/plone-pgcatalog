@@ -18,7 +18,7 @@ These methods behave identically to their ZCatalog counterparts:
 | `catalog_object(obj, uid, idxs)` | Manage ZCatalog Entries | Index an object |
 | `uncatalog_object(uid)` | Manage ZCatalog Entries | Remove an object from the catalog |
 | `refreshCatalog(clear)` | Manage ZCatalog Entries | Re-catalog all objects |
-| `reindexIndex(name)` | Manage ZCatalog Entries | Re-apply a single index |
+| `reindexIndex(name)` | Manage ZCatalog Entries | Re-apply one index or a list of indexes |
 | `clearFindAndRebuild()` | Manage ZCatalog Entries | Clear and rebuild from content |
 | `getpath(rid)` | Search ZCatalog | Physical path for a record ID (ZOID) |
 | `getrid(path)` | Search ZCatalog | Record ID (ZOID) for a path |

@@ -102,6 +102,12 @@ PSEUDO_INDEX_TYPES = frozenset({IndexType.ZOID})
 # composite logic that can't be expressed as a simple JSONB key.
 SPECIAL_INDEXES = frozenset({"SearchableText", "effectiveRange", "path"})
 
+# Special indexes that are only a view on plain idx keys.  effectiveRange has
+# no storage of its own: its query reads idx->>'effective' and idx->>'expires'
+# (``_handle_date_range`` in query.py).  Reindexing it means reindexing those
+# keys, which a partial reindex can do (#284).
+DERIVED_INDEX_KEYS = {"effectiveRange": ("effective", "expires")}
+
 
 # --------------------------------------------------------------------------
 # Dynamic index registry

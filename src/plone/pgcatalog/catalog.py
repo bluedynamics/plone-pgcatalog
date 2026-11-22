@@ -31,6 +31,7 @@ from plone.pgcatalog import undo
 from plone.pgcatalog.backends import BM25Backend
 from plone.pgcatalog.backends import get_backend
 from plone.pgcatalog.brain import CatalogSearchResults
+from plone.pgcatalog.columns import DERIVED_INDEX_KEYS
 from plone.pgcatalog.columns import get_registry
 from plone.pgcatalog.extraction import extract_from_translators
 from plone.pgcatalog.extraction import extract_idx
@@ -40,6 +41,7 @@ from plone.pgcatalog.extraction import wrap_object
 from plone.pgcatalog.gopip import register_parent
 from plone.pgcatalog.indexing import uncatalog_object as _sql_uncatalog
 from plone.pgcatalog.interfaces import IPGCatalogTool
+from plone.pgcatalog.interfaces import IPGIndexTranslator
 from plone.pgcatalog.maintenance import _CatalogCompat
 from plone.pgcatalog.maintenance import _commit_and_minimize
 from plone.pgcatalog.maintenance import _make_unsupported
@@ -68,8 +70,11 @@ from Products.CMFCore.permissions import AccessInactivePortalContent
 from Products.CMFCore.utils import _checkPermission
 from Products.CMFCore.utils import UniqueObject
 from Products.ZCatalog.interfaces import IZCatalog
+from urllib.parse import quote_plus
+from zExceptions import BadRequest
 from zExceptions import Unauthorized
 from ZODB.utils import p64
+from zope.component import queryUtility
 from zope.component.hooks import getSite
 from zope.interface import implementer
 
@@ -586,16 +591,20 @@ class PlonePGCatalogTool(UniqueObject, Folder):
         if not self.__url(obj).startswith("/"):
             return False
 
-        # Special indexes (SearchableText, effectiveRange, path) need
-        # full reindex because they use dedicated columns, not idx JSONB.
+        # effectiveRange is a view on the effective and expires keys and is
+        # reindexed through them.  SearchableText and path need a full
+        # reindex because they use dedicated columns, not idx JSONB (#284).
         registry = get_registry()
+        names = []
         for name in idxs:
+            names.extend(DERIVED_INDEX_KEYS.get(name, (name,)))
+        for name in names:
             entry = registry.get(name)
             if entry is not None and entry[1] is None:  # idx_key is None
                 return False
 
         wrapper = self._wrap_object(obj)
-        idx_updates = self._extract_idx(wrapper, idxs=idxs)
+        idx_updates = self._extract_idx(wrapper, idxs=names)
 
         if not idx_updates:
             return True  # Nothing to update, but partial path handled it
@@ -993,17 +1002,43 @@ class PlonePGCatalogTool(UniqueObject, Folder):
         log.info("refreshCatalog: re-indexed %d objects", count)
         return count
 
-    def reindexIndex(self, name, REQUEST=None, pghandler=None):
-        """Re-extract a specific index from all cataloged ZODB objects.
+    def _reindex_names(self, name):
+        """Normalize the ``name`` argument of ``reindexIndex`` to a list.
 
-        Iterates all cataloged paths, loads each object via
-        ``unrestrictedTraverse``, extracts the requested index value,
-        and writes a JSONB merge update.  Commits every
+        ZCatalog takes an index name or a sequence of names.  A name that
+        is neither an index nor a metadata column raises ``KeyError``, as
+        in ZCatalog; it used to be reported as reindexed (#284).
+        """
+        names = [name] if isinstance(name, str) else list(name)
+        registry = get_registry()
+        for index_name in names:
+            if not (
+                index_name in registry
+                or index_name in registry.metadata
+                or queryUtility(IPGIndexTranslator, name=index_name) is not None
+                or index_name in self._catalog.indexes
+            ):
+                raise KeyError(index_name)
+        return names
+
+    def reindexIndex(self, name, REQUEST=None, pghandler=None):
+        """Re-extract one or more indexes from all cataloged ZODB objects.
+
+        ``name`` is an index name or a sequence of names, as in ZCatalog.
+
+        Iterates all cataloged paths and loads each object via
+        ``unrestrictedTraverse``.  Indexes stored as keys of the ``idx``
+        JSONB get a JSONB merge update without a ZODB write; that includes
+        ``effectiveRange``, which is the ``effective`` and ``expires`` keys.
+        ``SearchableText`` and ``path`` live in dedicated columns that
+        only a full reindex writes, so a request that names one of them
+        reindexes each object completely (#284).  Commits every
         ``_REBUILD_BATCH`` objects to keep memory flat.
 
         ``pghandler`` is accepted for ZCatalog API compatibility
         but ignored.
         """
+        names = self._reindex_names(name)
         jar = self._p_jar
         if jar is None:
             return 0
@@ -1032,22 +1067,36 @@ class PlonePGCatalogTool(UniqueObject, Folder):
             if obj is None:
                 continue
 
-            if self._partial_reindex(obj, [name]):
-                count += 1
-                if count % _REBUILD_BATCH == 0:
-                    _commit_and_minimize(jar)
-                    log.info("reindexIndex(%r): %d objects re-indexed", name, count)
+            # Not partial: SearchableText or path was requested, which only
+            # a full reindex of the object writes (#284).
+            if not (self._partial_reindex(obj, names) or self._set_pg_annotation(obj)):
+                continue
+            count += 1
+            if count % _REBUILD_BATCH == 0:
+                _commit_and_minimize(jar)
+                log.info("reindexIndex(%r): %d objects re-indexed", names, count)
 
         if count > 0:
             _commit_and_minimize(jar)
-        log.info("reindexIndex(%r): %d objects re-indexed total", name, count)
+        log.info("reindexIndex(%r): %d objects re-indexed total", names, count)
         return count
 
-    def manage_reindexIndex(self, name, REQUEST=None):
-        """ZMI action: re-extract a specific index from all objects."""
-        count = self.reindexIndex(name)
+    def manage_reindexIndex(
+        self, ids=None, REQUEST=None, RESPONSE=None, URL1=None, name=None
+    ):
+        """ZMI action: re-extract one or more indexes from all objects.
+
+        ``ids`` is ZCatalog's argument, an index name or a list of names.
+        ``name`` is what the Indexes tab of pgcatalog sends.
+        """
+        names = ids or name
+        if not names:
+            raise BadRequest("No items specified")
+        if isinstance(names, str):
+            names = [names]
+        count = self.reindexIndex(names)
         if REQUEST is not None:
-            msg = f"Re-indexed+{count}+objects+for+index+{name}"
+            msg = quote_plus(f"Re-indexed {count} objects for index {', '.join(names)}")
             REQUEST.RESPONSE.redirect(
                 f"{self.absolute_url()}/manage_catalogIndexesAndMetadata"
                 f"?manage_tabs_message={msg}"

@@ -17,6 +17,27 @@
   cannot shadow the fresh value in `idx`. Rows that already lost keys are
   repaired by a full reindex, for example `refreshCatalog()`. #296
 
+- `reindexIndex()` no longer does nothing for `SearchableText`,
+  `effectiveRange` and `path`. For these three it returned 0 and left the
+  data as it was, also through the "Reindex" action on the Indexes tab:
+  `_partial_reindex` signals that they need a full reindex, and
+  `reindexIndex()` did not act on it. `SearchableText` and `path` now get
+  a full reindex of each object, as `reindexObject(idxs=[...])` already
+  did. That writes the objects to the ZODB, and with Tika configured the
+  files are enqueued for extraction again. `effectiveRange` has no storage
+  of its own, it is queried from the `effective` and `expires` keys of
+  `idx`. A reindex of it, through `reindexIndex()` or
+  `reindexObject(idxs=["effectiveRange"])`, now updates those two keys
+  without a ZODB write. #284
+
+- `reindexIndex()` and `manage_reindexIndex()` accept what ZCatalog
+  accepts. `reindexIndex()` takes a name or a sequence of names; a
+  sequence used to change nothing. `manage_reindexIndex(ids=[...])`,
+  ZCatalog's signature, raised `TypeError`; the `name` argument of the
+  Indexes tab keeps working. A name that is neither an index nor a
+  metadata column now raises `KeyError`, as in ZCatalog. It used to
+  report all objects as reindexed. #284
+
 ### Documentation
 
 - Correct the BM25 backend evaluation in "BM25 design decisions".
