@@ -9,6 +9,7 @@ actually arrives in PostgreSQL with correct catalog columns, paths,
 and searchable text.
 """
 
+from DateTime import DateTime
 from datetime import UTC
 from plone.app.testing import login
 from plone.app.testing import logout
@@ -3127,6 +3128,97 @@ class TestPartialOnlyTransactions(_PGLayerTest):
 
         connection = pg_functional["portal"]._p_jar
         assert connection.sortKey() < PendingDataManager(None).sortKey()
+
+
+def _reindex_doc(pg_functional, doc_id):
+    portal = pg_functional["portal"]
+    setRoles(portal, TEST_USER_ID, ["Manager"])
+    portal.invokeFactory("Document", doc_id, title="Real words")
+    transaction.commit()
+    return portal["portal_catalog"], f"/plone/{doc_id}"
+
+
+def _meta_keys(pg_functional, path):
+    rows = _query_pg(
+        pg_functional,
+        "SELECT ARRAY(SELECT jsonb_object_keys(meta) ORDER BY 1) "
+        "FROM object_state WHERE path = %s",
+        (path,),
+    )
+    return rows[0][0]
+
+
+# Metadata of a stock Document whose values are not JSON-native.
+_STOCK_META = ["created", "effective", "expires", "modified"]
+
+
+class TestPartialReindexKeepsMeta(_PGLayerTest):
+    """A partial reindex patches the meta column, it does not replace it (#296)."""
+
+    def test_other_keys_survive(self, pg_functional):
+        catalog, path = _reindex_doc(pg_functional, "pm-doc")
+        assert _meta_keys(pg_functional, path) == _STOCK_META
+
+        pg_functional["portal"]["pm-doc"].reindexObject(idxs=["effective", "expires"])
+        transaction.commit()
+
+        assert _meta_keys(pg_functional, path) == _STOCK_META
+        (brain,) = catalog.unrestrictedSearchResults(path=path)
+        assert isinstance(brain.created, DateTime)
+        assert isinstance(brain.modified, DateTime)
+
+    def test_requested_key_is_updated(self, pg_functional):
+        catalog, path = _reindex_doc(pg_functional, "pm-update")
+        doc = pg_functional["portal"]["pm-update"]
+        doc.modification_date = DateTime("2001/02/03 04:05:06 UTC")
+
+        doc.reindexObject(idxs=["modified"])
+        transaction.commit()
+
+        (brain,) = catalog.unrestrictedSearchResults(path=path)
+        assert brain.modified == DateTime("2001/02/03 04:05:06 UTC")
+        assert isinstance(brain.created, DateTime)
+
+    def test_partial_after_full_in_one_transaction(self, pg_functional):
+        portal = pg_functional["portal"]
+        setRoles(portal, TEST_USER_ID, ["Manager"])
+        portal.invokeFactory("Document", "pm-new", title="New")
+        portal["pm-new"].reindexObject(idxs=["modified"])
+        transaction.commit()
+
+        assert _meta_keys(pg_functional, "/plone/pm-new") == _STOCK_META
+
+    def test_two_partials_in_one_transaction(self, pg_functional):
+        _catalog, path = _reindex_doc(pg_functional, "pm-twice")
+        doc = pg_functional["portal"]["pm-twice"]
+
+        doc.reindexObject(idxs=["effective"])
+        doc.reindexObject(idxs=["expires"])
+        transaction.commit()
+
+        assert _meta_keys(pg_functional, path) == _STOCK_META
+
+    def test_value_turned_json_native_leaves_meta(self, pg_functional):
+        """A stale encoded value would shadow the fresh one in idx."""
+        catalog, path = _reindex_doc(pg_functional, "pm-native")
+        doc = pg_functional["portal"]["pm-native"]
+        catalog.addColumn("pm_flex")
+        try:
+            doc.pm_flex = DateTime("2020/01/01 UTC")
+            doc.reindexObject()
+            transaction.commit()
+            assert "pm_flex" in _meta_keys(pg_functional, path)
+
+            doc.pm_flex = "plain"
+            doc.reindexObject(idxs=["pm_flex"])
+            transaction.commit()
+
+            assert _meta_keys(pg_functional, path) == _STOCK_META
+            (brain,) = catalog.unrestrictedSearchResults(path=path)
+            assert brain.pm_flex == "plain"
+        finally:
+            catalog.delColumn("pm_flex")
+            transaction.abort()
 
 
 def _keyword_sections(portal):

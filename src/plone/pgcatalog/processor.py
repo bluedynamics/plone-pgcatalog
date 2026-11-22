@@ -98,6 +98,28 @@ def _collect_ref_oids(state):
 ANNOTATION_KEY = "_pgcatalog_pending"
 
 
+def _partial_meta_update(idx_updates):
+    """Pop ``@meta`` from a partial update; return its SET clause and params.
+
+    The ``@meta`` of a partial update is a patch for the ``meta`` column
+    (#296): keys with a value are set, keys with ``None`` are removed, all
+    other keys of the stored value stay.
+    """
+    patch = idx_updates.pop("@meta", None)
+    if not patch:
+        return "", {}
+    return (
+        ", meta = (COALESCE(meta, '{}'::jsonb) - %(meta_removed)s::text[])"
+        " || %(meta_patch)s::jsonb",
+        {
+            "meta_removed": [name for name, value in patch.items() if value is None],
+            "meta_patch": Json(
+                {name: value for name, value in patch.items() if value is not None}
+            ),
+        },
+    )
+
+
 class CatalogStateProcessor:
     """Extracts ``_pgcatalog_pending`` from object state -> extra PG columns.
 
@@ -256,6 +278,7 @@ class CatalogStateProcessor:
         partial = pop_all_partial_pending()
         if partial:
             for zoid, idx_updates in partial.items():
+                meta_set, meta_params = _partial_meta_update(idx_updates)
                 # Extract extra idx columns before merging into idx JSONB
                 extra = extract_extra_idx_columns(idx_updates)
                 extra_set = "".join(
@@ -269,9 +292,14 @@ class CatalogStateProcessor:
                 cursor.execute(
                     "UPDATE object_state SET "
                     "idx = COALESCE(idx, '{}'::jsonb) || %(patch)s::jsonb"
-                    f"{extra_set} "
+                    f"{meta_set}{extra_set} "
                     "WHERE zoid = %(zoid)s AND idx IS NOT NULL",
-                    {"zoid": zoid, "patch": Json(idx_updates), **extra_params},
+                    {
+                        "zoid": zoid,
+                        "patch": Json(idx_updates),
+                        **meta_params,
+                        **extra_params,
+                    },
                 )
 
         # Execute bulk path moves (one SQL per moved subtree).

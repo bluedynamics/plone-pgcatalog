@@ -2,6 +2,21 @@
 
 ## 1.0.0rc12 (unreleased)
 
+### Fixed
+
+- A partial reindex no longer drops metadata from the `meta` column.
+  `reindexObject(idxs=[...])` and `reindexIndex()` wrote the
+  non-JSON-native metadata of the requested names as the complete `meta`
+  value, so all other keys were gone: after
+  `reindexObject(idxs=["effective"])`, `brain.created` and `brain.modified`
+  came back as ISO strings instead of `DateTime`. The same happened when
+  an object was created and partially reindexed in one transaction, and
+  when two partial reindexes hit one object in the same transaction. The
+  `@meta` of a partial update is now a patch that is applied key by key.
+  A name whose value became JSON-native is removed from `meta`, so it
+  cannot shadow the fresh value in `idx`. Rows that already lost keys are
+  repaired by a full reindex, for example `refreshCatalog()`. #296
+
 ### Documentation
 
 - Correct the BM25 backend evaluation in "BM25 design decisions".
