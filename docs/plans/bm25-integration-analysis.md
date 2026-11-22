@@ -4,6 +4,14 @@
 
 *February 2026*
 
+> **Correction (November 2026).** This analysis is kept as written in February 2026. Three of its statements are wrong or outdated. See [issue 289](https://github.com/bluedynamics/plone-pgcatalog/issues/289).
+>
+> - **VectorChord-BM25 is not Apache-2.0 licensed.** It is dual-licensed under AGPL-3.0 or Elastic License 2.0 and already was in February 2026. Only pg_tokenizer.rs is Apache-2.0. The licensing risk is the one this document states for ParadeDB Community. Affected: sections 5 (candidate table, assessment, scoring matrix), 6 (reason 1 for VectorChord-BM25), 8 (licensing risk table) and 9 (decision summary).
+> - **The scoring matrix total for pg_textsearch is 88, not 82.** With the VectorChord-BM25 license score corrected from 5 to 2, the totals are 88 / 89 / 90.
+> - **pg_textsearch has left preview and replicates.** Version 1.0.0 (March 2026) is generally available. Version 1.2.0 (May 2026) added physical replication. Affected: sections 5, 6, 8 and 9.
+>
+> The corrected evaluation is in [`bm25-design.md`](../sources/explanation/bm25-design.md). The re-evaluation of pg_textsearch is tracked in [issue 294](https://github.com/bluedynamics/plone-pgcatalog/issues/294).
+
 ---
 
 ## Table of Contents

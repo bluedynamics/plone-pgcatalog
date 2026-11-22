@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.0.0rc12 (unreleased)
+
+### Documentation
+
+- Correct the BM25 backend evaluation in "BM25 design decisions".
+  VectorChord-BM25 is dual-licensed under AGPL-3.0 or Elastic License 2.0.
+  The page stated Apache-2.0, which is the license of the companion
+  pg_tokenizer only. The evaluation matrix now scores the license like
+  the one of pg_search, and the pg_textsearch total is corrected from 82
+  to 88: the totals read 88 / 89 / 90 instead of 82 / 89 / 102. The page
+  now presents the choice as the February 2026 decision it was, driven by
+  the replication requirement. A new section records that pg_textsearch
+  has since left preview and gained physical replication; the
+  re-evaluation is tracked in #294. The how-to "Enable BM25 ranking"
+  states the license. The two BM25 planning documents under `docs/plans/`
+  carry a correction note and are otherwise left as written. #289
+
 ## 1.0.0rc11 (2026-11-17)
 
 ### Fixed

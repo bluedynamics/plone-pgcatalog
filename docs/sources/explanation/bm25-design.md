@@ -72,21 +72,29 @@ If the extensions are present, they are used.
 If not,
 the system falls back gracefully to Level 1.
 
+(bm25-design-why-vectorchord)=
+
 ## Why VectorChord-BM25?
 
-Three PostgreSQL BM25 extensions were evaluated for plone.pgcatalog.
-The evaluation
-considered license compatibility, language support, cloud-native deployment, maturity,
-and feature completeness.
+Three PostgreSQL BM25 extensions were evaluated for plone.pgcatalog in February 2026.
+The evaluation considered license compatibility, language support, cloud-native deployment, maturity, and feature completeness.
+The assessments in this section describe the extensions as they were at that time.
+{ref}`bm25-design-since-evaluation` covers what changed afterwards.
 
-### pg_textsearch (Tiger data)
+```{note}
+Versions of this page published before November 2026 described VectorChord-BM25 as Apache-2.0 licensed and showed weighted totals of 82, 89, and 102.
+Both were errors.
+Review the license terms if you adopted VectorChord-BM25 on the basis of that statement.
+```
+
+### pg_textsearch (Tiger Data)
 
 The most natural fit architecturally -- it extends PostgreSQL's native tsvector/tsquery
 with BM25 scoring, requiring minimal changes to the query and write paths.
 
 However, at the time of evaluation it was a preview release with no WAL support.
-BM25 indexes do not replicate to standby servers, which is a hard blocker for
-CloudNativePG deployments where read replicas must have working search indexes.
+BM25 indexes did not replicate to standby servers.
+That was a hard blocker for CloudNativePG deployments, where read replicas must have working search indexes.
 
 ### pg_search (ParadeDB)
 
@@ -106,10 +114,9 @@ However, two factors weighed against it:
 
 ### VectorChord-BM25
 
-VectorChord-BM25 scored highest in the evaluation (102/130 weighted points):
-
-- **Apache-2.0 license.** No friction for distribution or organizational policies.
-  Plone can freely recommend it in documentation without caveats.
+In the evaluation, VectorChord-BM25 was the only extension whose indexes replicated to standbys without a commercial license.
+That decided the choice.
+Further properties supported it:
 
 - **WAL replication confirmed.** Source code analysis shows that all writes use
   PostgreSQL's `GenericXLogStart()`/`GenericXLogFinish()` API, and storage goes
@@ -131,18 +138,46 @@ VectorChord-BM25 scored highest in the evaluation (102/130 weighted points):
   already transforms text at write time; adding a `bm25vector` column is the same
   pattern with a different output type.
 
+The license is a drawback.
+VectorChord-BM25 is dual-licensed under [AGPL-3.0 or Elastic License 2.0](https://github.com/tensorchord/VectorChord-bm25/blob/main/LICENSE).
+The reservation about AGPL stated for pg_search applies to VectorChord-BM25 in the same way.
+Only the companion tokenizer extension, pg_tokenizer, is Apache-2.0 licensed.
+
 ### Evaluation matrix
+
+The scores are those of February 2026.
 
 | Criterion (weight) | pg_textsearch | pg_search | VectorChord-BM25 |
 |---|---|---|---|
 | Search quality (5) | 4 | 5 | 4 |
 | PG-native integration (4) | 5 | 2 | 3 |
-| License (4) | 5 | 2 | 5 |
+| License (4) | 5 | 2 | 2 |
 | CNPG / HA (4) | 1 | 3 | 5 |
 | Multilingual (3) | 3 | 4 | 5 |
 | Maturity (3) | 1 | 5 | 3 |
 | Operational simplicity (3) | 4 | 3 | 2 |
-| **Weighted total** | **82 / 130** | **89 / 130** | **102 / 130** |
+| **Weighted total** | **88 / 130** | **89 / 130** | **90 / 130** |
+
+The totals lie within two points of each other.
+The decision rested on the replication requirement, which is a hard constraint.
+A hard constraint filters the candidates before any totals are compared.
+In February 2026 it left VectorChord-BM25 as the only candidate that needs no commercial license.
+
+(bm25-design-since-evaluation)=
+
+### Changes since the evaluation
+
+Both reasons for setting pg_textsearch aside have since been addressed upstream.
+[Version 1.0.0](https://github.com/timescale/pg_textsearch/releases/tag/v1.0.0) (March 2026) is the first generally available release.
+[Version 1.2.0](https://github.com/timescale/pg_textsearch/releases/tag/v1.2.0) (May 2026) added physical replication.
+[Version 1.3.0](https://github.com/timescale/pg_textsearch/releases/tag/v1.3.0) (May 2026) keeps recent index writes in WAL-logged index pages instead of shared memory.
+pg_textsearch is under the PostgreSQL License, the most permissive license of the three extensions.
+
+These facts come from the pg_textsearch release notes.
+Replication on CloudNativePG is untested with plone.pgcatalog.
+The CNPG / HA and maturity scores in the matrix still show the state of February 2026.
+A higher score in either row puts pg_textsearch ahead of the other two extensions.
+[Issue 294](https://github.com/bluedynamics/plone-pgcatalog/issues/294) tracks the re-evaluation and a possible `PgTextsearchBackend`.
 
 ## Per-language column strategy
 
@@ -266,8 +301,7 @@ is registered.
 
 The thin abstraction makes it straightforward to add new backends if the PostgreSQL
 BM25 landscape changes.
-If pg_textsearch ships WAL support and leaves preview, a
-`PgTextsearchBackend` could be added without modifying any existing code outside the
-backend module.
+pg_textsearch is the first such case, as {ref}`bm25-design-since-evaluation` describes.
+A `PgTextsearchBackend` can be added without modifying any existing code outside the backend module.
 The rest of plone.pgcatalog (security filters, path queries, field
 indexes, keyword indexes, pagination, brain loading) is backend-agnostic.
