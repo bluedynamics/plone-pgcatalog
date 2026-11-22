@@ -9,6 +9,7 @@ actually arrives in PostgreSQL with correct catalog columns, paths,
 and searchable text.
 """
 
+from DateTime import DateTime
 from datetime import UTC
 from plone.app.testing import login
 from plone.app.testing import logout
@@ -19,6 +20,7 @@ from plone.folder.default import DefaultOrdering
 from plone.pgcatalog.testing import PGCATALOG_PG_FIXTURE
 from z3c.relationfield.relation import RelationValue
 from zc.relation.interfaces import ICatalog
+from zExceptions import BadRequest
 from zope.component import getUtility
 from zope.event import notify
 from zope.intid.interfaces import IIntIds
@@ -3127,6 +3129,279 @@ class TestPartialOnlyTransactions(_PGLayerTest):
 
         connection = pg_functional["portal"]._p_jar
         assert connection.sortKey() < PendingDataManager(None).sortKey()
+
+
+def _reindex_doc(pg_functional, doc_id):
+    portal = pg_functional["portal"]
+    setRoles(portal, TEST_USER_ID, ["Manager"])
+    portal.invokeFactory("Document", doc_id, title="Real words")
+    transaction.commit()
+    return portal["portal_catalog"], f"/plone/{doc_id}"
+
+
+def _meta_keys(pg_functional, path):
+    rows = _query_pg(
+        pg_functional,
+        "SELECT ARRAY(SELECT jsonb_object_keys(meta) ORDER BY 1) "
+        "FROM object_state WHERE path = %s",
+        (path,),
+    )
+    return rows[0][0]
+
+
+# Metadata of a stock Document whose values are not JSON-native.
+_STOCK_META = ["created", "effective", "expires", "modified"]
+
+
+class TestPartialReindexKeepsMeta(_PGLayerTest):
+    """A partial reindex patches the meta column, it does not replace it (#296)."""
+
+    def test_other_keys_survive(self, pg_functional):
+        catalog, path = _reindex_doc(pg_functional, "pm-doc")
+        assert _meta_keys(pg_functional, path) == _STOCK_META
+
+        pg_functional["portal"]["pm-doc"].reindexObject(idxs=["effective", "expires"])
+        transaction.commit()
+
+        assert _meta_keys(pg_functional, path) == _STOCK_META
+        (brain,) = catalog.unrestrictedSearchResults(path=path)
+        assert isinstance(brain.created, DateTime)
+        assert isinstance(brain.modified, DateTime)
+
+    def test_requested_key_is_updated(self, pg_functional):
+        catalog, path = _reindex_doc(pg_functional, "pm-update")
+        doc = pg_functional["portal"]["pm-update"]
+        doc.modification_date = DateTime("2001/02/03 04:05:06 UTC")
+
+        doc.reindexObject(idxs=["modified"])
+        transaction.commit()
+
+        (brain,) = catalog.unrestrictedSearchResults(path=path)
+        assert brain.modified == DateTime("2001/02/03 04:05:06 UTC")
+        assert isinstance(brain.created, DateTime)
+
+    def test_partial_after_full_in_one_transaction(self, pg_functional):
+        portal = pg_functional["portal"]
+        setRoles(portal, TEST_USER_ID, ["Manager"])
+        portal.invokeFactory("Document", "pm-new", title="New")
+        portal["pm-new"].reindexObject(idxs=["modified"])
+        transaction.commit()
+
+        assert _meta_keys(pg_functional, "/plone/pm-new") == _STOCK_META
+
+    def test_two_partials_in_one_transaction(self, pg_functional):
+        _catalog, path = _reindex_doc(pg_functional, "pm-twice")
+        doc = pg_functional["portal"]["pm-twice"]
+
+        doc.reindexObject(idxs=["effective"])
+        doc.reindexObject(idxs=["expires"])
+        transaction.commit()
+
+        assert _meta_keys(pg_functional, path) == _STOCK_META
+
+    def test_value_turned_json_native_leaves_meta(self, pg_functional):
+        """A stale encoded value would shadow the fresh one in idx."""
+        catalog, path = _reindex_doc(pg_functional, "pm-native")
+        doc = pg_functional["portal"]["pm-native"]
+        catalog.addColumn("pm_flex")
+        try:
+            doc.pm_flex = DateTime("2020/01/01 UTC")
+            doc.reindexObject()
+            transaction.commit()
+            assert "pm_flex" in _meta_keys(pg_functional, path)
+
+            doc.pm_flex = "plain"
+            doc.reindexObject(idxs=["pm_flex"])
+            transaction.commit()
+
+            assert _meta_keys(pg_functional, path) == _STOCK_META
+            (brain,) = catalog.unrestrictedSearchResults(path=path)
+            assert brain.pm_flex == "plain"
+        finally:
+            catalog.delColumn("pm_flex")
+            transaction.abort()
+
+
+def _execute_pg(pg_functional, sql, params):
+    with pg_functional["pgTestDB"].connection.cursor() as cur:
+        cur.execute(sql, params)
+        assert cur.rowcount == 1
+
+
+def _stale_effective(pg_functional, path):
+    _execute_pg(
+        pg_functional,
+        "UPDATE object_state "
+        "SET idx = jsonb_set(idx, '{effective}', '\"2099-01-01T00:00:00+00:00\"') "
+        "WHERE path = %s",
+        (path,),
+    )
+
+
+def _stored_effective(pg_functional, path):
+    return _query_pg(
+        pg_functional,
+        "SELECT idx->>'effective' FROM object_state WHERE path = %s",
+        (path,),
+    )[0][0]
+
+
+def _stale_searchable_text(pg_functional, path):
+    _execute_pg(
+        pg_functional,
+        "UPDATE object_state SET searchable_text = to_tsvector('simple', 'stale') "
+        "WHERE path = %s",
+        (path,),
+    )
+
+
+def _stored_searchable_text(pg_functional, path):
+    return _query_pg(
+        pg_functional,
+        "SELECT searchable_text::text FROM object_state WHERE path = %s",
+        (path,),
+    )[0][0]
+
+
+def _stored_tid(pg_functional, path):
+    """The tid changes with every ZODB write of the object."""
+    return _query_pg(
+        pg_functional, "SELECT tid FROM object_state WHERE path = %s", (path,)
+    )[0][0]
+
+
+class TestReindexIndexSpecialIndexes(_PGLayerTest):
+    """reindexIndex() on indexes that are not a plain idx JSONB key (#284)."""
+
+    def test_searchable_text(self, pg_functional):
+        catalog, path = _reindex_doc(pg_functional, "ri-text")
+        _stale_searchable_text(pg_functional, path)
+
+        count = catalog.reindexIndex("SearchableText")
+
+        assert count > 0
+        stored = _stored_searchable_text(pg_functional, path)
+        assert "real" in stored
+        assert "stale" not in stored
+
+    def test_path(self, pg_functional):
+        catalog, path = _reindex_doc(pg_functional, "ri-path")
+        _execute_pg(
+            pg_functional,
+            "UPDATE object_state SET parent_path = '/stale', path_depth = 99 "
+            "WHERE path = %s",
+            (path,),
+        )
+
+        count = catalog.reindexIndex("path")
+
+        assert count > 0
+        assert _query_pg(
+            pg_functional,
+            "SELECT parent_path, path_depth FROM object_state WHERE path = %s",
+            (path,),
+        ) == [("/plone", 2)]
+
+    def test_effective_range(self, pg_functional):
+        catalog, path = _reindex_doc(pg_functional, "ri-range")
+        _stale_effective(pg_functional, path)
+
+        count = catalog.reindexIndex("effectiveRange")
+
+        assert count > 0
+        assert not _stored_effective(pg_functional, path).startswith("2099")
+
+    def test_effective_range_needs_no_zodb_write(self, pg_functional):
+        """effectiveRange is the effective and expires keys of idx."""
+        catalog, path = _reindex_doc(pg_functional, "ri-light")
+        tid = _stored_tid(pg_functional, path)
+
+        catalog.reindexIndex("effectiveRange")
+
+        assert _stored_tid(pg_functional, path) == tid
+        assert _meta_keys(pg_functional, path) == _STOCK_META
+
+    def test_reindex_object_effective_range_stays_partial(self, pg_functional):
+        _catalog, path = _reindex_doc(pg_functional, "ri-object")
+        _stale_effective(pg_functional, path)
+        tid = _stored_tid(pg_functional, path)
+
+        pg_functional["portal"]["ri-object"].reindexObject(idxs=["effectiveRange"])
+        transaction.commit()
+
+        assert not _stored_effective(pg_functional, path).startswith("2099")
+        assert _stored_tid(pg_functional, path) == tid
+
+    def test_several_names_in_one_pass(self, pg_functional):
+        """ZCatalog.reindexIndex takes a name or a sequence of names."""
+        catalog, path = _reindex_doc(pg_functional, "ri-seq")
+        _stale_title(pg_functional, path)
+        _stale_searchable_text(pg_functional, path)
+
+        catalog.reindexIndex(("Title", "SearchableText"), None)
+
+        assert _stored_title(pg_functional, path) == "Real words"
+        assert "stale" not in _stored_searchable_text(pg_functional, path)
+
+    def test_unknown_index_name_raises(self, pg_functional):
+        """As in ZCatalog; it used to report all objects as reindexed."""
+        catalog, _path = _reindex_doc(pg_functional, "ri-unknown")
+
+        with pytest.raises(KeyError):
+            catalog.reindexIndex("no_such_index")
+
+    def test_metadata_only_name_is_reindexed(self, pg_functional):
+        catalog, path = _reindex_doc(pg_functional, "ri-meta")
+        assert "getObjSize" not in catalog.indexes()
+        _execute_pg(
+            pg_functional,
+            "UPDATE object_state SET idx = jsonb_set(idx, '{getObjSize}', '\"stale\"') "
+            "WHERE path = %s",
+            (path,),
+        )
+
+        catalog.reindexIndex("getObjSize")
+
+        assert _query_pg(
+            pg_functional,
+            "SELECT idx->>'getObjSize' FROM object_state WHERE path = %s",
+            (path,),
+        ) != [("stale",)]
+
+
+class TestManageReindexIndex(_PGLayerTest):
+    """manage_reindexIndex() takes ZCatalog's arguments and our own (#284)."""
+
+    def test_zcatalog_ids_argument(self, pg_functional):
+        """The add-on setup handler idiom: manage_reindexIndex(ids=[...])."""
+        catalog, path = _reindex_doc(pg_functional, "mr-ids")
+        _stale_title(pg_functional, path)
+
+        catalog.manage_reindexIndex(ids=["Title"])
+
+        assert _stored_title(pg_functional, path) == "Real words"
+
+    def test_name_argument_of_the_indexes_tab(self, pg_functional):
+        catalog, path = _reindex_doc(pg_functional, "mr-name")
+        _stale_title(pg_functional, path)
+
+        catalog.manage_reindexIndex(name="Title")
+
+        assert _stored_title(pg_functional, path) == "Real words"
+
+    def test_single_name_as_first_argument(self, pg_functional):
+        catalog, path = _reindex_doc(pg_functional, "mr-positional")
+        _stale_title(pg_functional, path)
+
+        catalog.manage_reindexIndex("Title")
+
+        assert _stored_title(pg_functional, path) == "Real words"
+
+    def test_without_a_name(self, pg_functional):
+        catalog, _path = _reindex_doc(pg_functional, "mr-none")
+
+        with pytest.raises(BadRequest):
+            catalog.manage_reindexIndex()
 
 
 def _keyword_sections(portal):

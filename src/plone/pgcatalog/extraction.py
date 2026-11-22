@@ -214,6 +214,24 @@ def _encode_meta(idx, meta_nonstandard):
         log.debug("Failed to encode @meta for pickle", exc_info=True)
 
 
+def _mark_removed_meta(idx, registry, idxs):
+    """Turn the ``@meta`` of a partial extraction into a patch (#296).
+
+    A partial extraction covers only the requested names, so its ``@meta``
+    is not the complete value.  Every requested metadata name is listed in
+    it: with its encoded value, or with ``None`` when the value is
+    JSON-native now or the attribute is gone.  ``None`` removes the key
+    from the ``meta`` column.  A stale encoded value left there would
+    shadow the fresh one in ``idx``, because brains read ``meta`` first.
+    """
+    patch = dict(idx.get("@meta") or {})
+    for name in registry.metadata:
+        if name in idxs and name not in patch:
+            patch[name] = None
+    if patch:
+        idx["@meta"] = patch
+
+
 def extract_idx(wrapper, idxs=None):
     """Extract all idx values from a wrapped indexable object.
 
@@ -225,11 +243,16 @@ def extract_idx(wrapper, idxs=None):
     PATH-type indexes with ``idx_key`` set (additional path indexes
     like ``tgpath``) store the path value plus derived ``_parent``
     and ``_depth`` keys in the idx JSONB.
+
+    With ``idxs`` the result is a patch for a partial reindex.  Its
+    ``@meta`` is a patch too, see ``_mark_removed_meta``.
     """
     registry = get_registry()
     idx = _extract_index_values(wrapper, registry, idxs)
     meta_nonstandard = _extract_metadata_values(wrapper, registry, idxs, idx)
     _encode_meta(idx, meta_nonstandard)
+    if idxs:
+        _mark_removed_meta(idx, registry, idxs)
 
     # IPGIndexTranslator fallback: custom extractors
     extract_from_translators(wrapper, idx, idxs=idxs)

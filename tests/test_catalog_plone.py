@@ -1,11 +1,13 @@
 """Tests for PlonePGCatalogTool — helper methods and write path."""
 
 from contextlib import contextmanager
+from DateTime import DateTime
 from datetime import UTC
 from plone.pgcatalog.catalog import PlonePGCatalogTool
 from plone.pgcatalog.columns import get_registry
 from plone.pgcatalog.columns import IndexType
 from plone.pgcatalog.extraction import _path_value_to_string
+from plone.pgcatalog.extraction import decode_meta
 from plone.pgcatalog.interfaces import IPGCatalogTool
 from tests.conftest import detached_content
 from tests.conftest import fake_content
@@ -13,6 +15,13 @@ from unittest import mock
 
 import logging
 import os
+
+
+class _Attrs:
+    """Wrapper stand-in: unknown names raise AttributeError, unlike a Mock."""
+
+    def __init__(self, **attrs):
+        self.__dict__.update(attrs)
 
 
 class TestImplementsInterface:
@@ -411,6 +420,45 @@ class TestExtractIdxDynamic:
         finally:
             registry._indexes.pop("dyn_a", None)
             registry._indexes.pop("dyn_b", None)
+
+    def test_partial_reindex_meta_is_a_patch(self, populated_registry):
+        """Every requested metadata name is listed: encoded value or None (#296)."""
+        registry = get_registry()
+        names = ("flex_encoded", "flex_native", "flex_gone", "flex_unrequested")
+        for name in names:
+            registry.add_metadata(name)
+        try:
+            when = DateTime("2026/01/01 UTC")
+            wrapper = _Attrs(
+                flex_encoded=when, flex_native="plain", flex_unrequested=when
+            )
+
+            idx = self._make_tool()._extract_idx(
+                wrapper, idxs=["flex_encoded", "flex_native", "flex_gone", "no_meta"]
+            )
+
+            assert idx["flex_native"] == "plain"
+            meta = idx["@meta"]
+            assert set(meta) == {"flex_encoded", "flex_native", "flex_gone"}
+            assert meta["flex_native"] is None
+            assert meta["flex_gone"] is None
+            assert decode_meta({"flex_encoded": meta["flex_encoded"]}) == {
+                "flex_encoded": when
+            }
+        finally:
+            for name in names:
+                registry._metadata.discard(name)
+
+    def test_full_extraction_has_no_meta_markers(self, populated_registry):
+        registry = get_registry()
+        registry.add_metadata("flex_native")
+        try:
+            idx = self._make_tool()._extract_idx(_Attrs(flex_native="plain"))
+
+            assert idx["flex_native"] == "plain"
+            assert "@meta" not in idx
+        finally:
+            registry._metadata.discard("flex_native")
 
     def test_skips_special_indexes(self, populated_registry):
         """Indexes with idx_key=None (special) should be skipped in extraction."""

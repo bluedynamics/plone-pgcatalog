@@ -2,6 +2,42 @@
 
 ## 1.0.0rc12 (unreleased)
 
+### Fixed
+
+- A partial reindex no longer drops metadata from the `meta` column.
+  `reindexObject(idxs=[...])` and `reindexIndex()` wrote the
+  non-JSON-native metadata of the requested names as the complete `meta`
+  value, so all other keys were gone: after
+  `reindexObject(idxs=["effective"])`, `brain.created` and `brain.modified`
+  came back as ISO strings instead of `DateTime`. The same happened when
+  an object was created and partially reindexed in one transaction, and
+  when two partial reindexes hit one object in the same transaction. The
+  `@meta` of a partial update is now a patch that is applied key by key.
+  A name whose value became JSON-native is removed from `meta`, so it
+  cannot shadow the fresh value in `idx`. Rows that already lost keys are
+  repaired by a full reindex, for example `refreshCatalog()`. #296
+
+- `reindexIndex()` no longer does nothing for `SearchableText`,
+  `effectiveRange` and `path`. For these three it returned 0 and left the
+  data as it was, also through the "Reindex" action on the Indexes tab:
+  `_partial_reindex` signals that they need a full reindex, and
+  `reindexIndex()` did not act on it. `SearchableText` and `path` now get
+  a full reindex of each object, as `reindexObject(idxs=[...])` already
+  did. That writes the objects to the ZODB, and with Tika configured the
+  files are enqueued for extraction again. `effectiveRange` has no storage
+  of its own, it is queried from the `effective` and `expires` keys of
+  `idx`. A reindex of it, through `reindexIndex()` or
+  `reindexObject(idxs=["effectiveRange"])`, now updates those two keys
+  without a ZODB write. #284
+
+- `reindexIndex()` and `manage_reindexIndex()` accept what ZCatalog
+  accepts. `reindexIndex()` takes a name or a sequence of names; a
+  sequence used to change nothing. `manage_reindexIndex(ids=[...])`,
+  ZCatalog's signature, raised `TypeError`; the `name` argument of the
+  Indexes tab keeps working. A name that is neither an index nor a
+  metadata column now raises `KeyError`, as in ZCatalog. It used to
+  report all objects as reindexed. #284
+
 ### Documentation
 
 - Correct the BM25 backend evaluation in "BM25 design decisions".

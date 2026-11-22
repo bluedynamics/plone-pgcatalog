@@ -39,18 +39,33 @@ At the end, the rebuild runs `ANALYZE object_state`, so the query planner sees t
 If you write your own bulk (re)catalog tool, call `plone.pgcatalog.maintenance.analyze_object_state(conn)` (or run `ANALYZE object_state`) when it is done.
 Until then, queries can ignore the catalog indexes and become very slow.
 
+(selective-reindex)=
+
 ## Selective reindex (reindexIndex)
 
-Re-extracts a single index from all ZODB objects:
+Re-extracts one or more indexes from all cataloged objects:
 
 ```python
 catalog.reindexIndex("review_state")
+catalog.reindexIndex(["start", "end"])
 import transaction
 
 transaction.commit()
 ```
 
 Useful after changing an indexer or adding a new index.
+Pass the name of an index or of a metadata column, or a list of names.
+An unknown name raises `KeyError`.
+
+Most indexes are keys of the `idx` JSONB column.
+For those, the method writes a JSONB merge update without a ZODB write.
+`effectiveRange` belongs to this group.
+It has no storage of its own and is queried from the `effective` and `expires` keys.
+
+`SearchableText` and `path` live in dedicated columns that only a full reindex writes.
+A call that names one of them reindexes each object completely.
+It then costs as much as `refreshCatalog(clear=0)`.
+When Tika extraction is configured, the files are also enqueued for extraction again.
 
 ## Repair uncataloged content (repair_uncataloged)
 
@@ -260,6 +275,7 @@ Sites that undid transactions on a history-preserving storage with an older plon
 
 When Plone calls `reindexObject(idxs=["review_state"])`, plone.pgcatalog uses a lightweight JSONB merge (`||` operator) instead of full re-extraction.
 This happens automatically and does not trigger ZODB serialization of the object.
+A call that names `SearchableText` or `path` reindexes the object completely, see {ref}`selective-reindex`.
 
 ## Choosing the right operation
 
@@ -268,7 +284,7 @@ This happens automatically and does not trigger ZODB serialization of the object
 | `clearFindAndRebuild()` | Yes | Yes | ~15 ms/obj | Schema changes, corrupt data, major upgrades |
 | `refreshCatalog(clear=0)` | No | Re-catalogs existing | ~15 ms/obj | Reindex all without losing uncataloged objects |
 | `refreshCatalog(clear=1)` | Yes | Yes | Same | Equivalent to `clearFindAndRebuild()` |
-| `reindexIndex("name")` | No (single key) | Yes (ZODB load) | ~5 ms/obj | Single index changed, new indexer deployed |
+| `reindexIndex("name")` | No (single key) | Yes (ZODB load) | ~5 ms/obj, ~15 ms/obj for `SearchableText` and `path` | Single index changed, new indexer deployed |
 | `repair_uncataloged()` | No | Yes | ~15 ms per repaired object | Content missing from listings and search but present in the ZODB |
 | `remove_detached_rows()` | Yes (affected rows only) | No | One SQL statement | Deleted content is still found by UID or type queries, and the row's `path` holds only an id |
 | `undo.process_queue()` | No | No (queued rows only) | 1–3 ms per security row, ~15 ms per recataloged object | Rows an undo hid are still queued (Catalog tab shows the count) |
@@ -298,6 +314,7 @@ Use `clearFindAndRebuild()` for the initial population.
 `unrestrictedTraverse`, extracts the requested index value, and writes
 a JSONB merge update. This is faster than `refreshCatalog()` because
 it only re-extracts the single requested index, not all of them.
+`SearchableText` and `path` are the exception, see {ref}`selective-reindex`.
 Available via ZMI: Indexes & Metadata tab > [reindex] button per index.
 
 ## Troubleshooting

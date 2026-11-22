@@ -1033,6 +1033,57 @@ class TestPartialPending:
         set_partial_pending(42, {"allowedRolesAndUsers": ["Manager"]})
         assert 42 in _get_partial_pending()
 
+    def test_partial_meta_merges_by_key(self):
+        """``@meta`` of a partial update is a patch, not the whole value (#296)."""
+        from plone.pgcatalog.pending import pop_all_partial_pending
+        from plone.pgcatalog.pending import set_partial_pending
+
+        set_partial_pending(42, {"@meta": {"effective": {"enc": 1}}})
+        set_partial_pending(42, {"@meta": {"expires": {"enc": 2}, "start": None}})
+
+        assert pop_all_partial_pending()[42] == {
+            "@meta": {"effective": {"enc": 1}, "expires": {"enc": 2}, "start": None}
+        }
+
+    def test_partial_meta_patches_full_pending(self):
+        """A full entry applies the patch and keeps no removal markers (#296)."""
+        from plone.pgcatalog.pending import _get_pending
+        from plone.pgcatalog.pending import set_partial_pending
+        from plone.pgcatalog.pending import set_pending
+
+        full_meta = {"created": {"enc": 1}, "start": {"enc": 2}}
+        set_pending(
+            42, {"path": "/doc", "idx": {"@meta": full_meta}, "searchable_text": None}
+        )
+        set_partial_pending(42, {"@meta": {"modified": {"enc": 3}, "start": None}})
+
+        assert _get_pending()[42]["idx"]["@meta"] == {
+            "created": {"enc": 1},
+            "modified": {"enc": 3},
+        }
+
+    def test_partial_meta_can_empty_full_pending(self):
+        from plone.pgcatalog.pending import _get_pending
+        from plone.pgcatalog.pending import set_partial_pending
+        from plone.pgcatalog.pending import set_pending
+
+        idx = {"portal_type": "Doc", "@meta": {"start": {"enc": 1}}}
+        set_pending(42, {"path": "/doc", "idx": idx, "searchable_text": None})
+        set_partial_pending(42, {"@meta": {"start": None}})
+
+        assert _get_pending()[42]["idx"] == {"portal_type": "Doc"}
+
+    def test_partial_meta_merge_keeps_savepoint_snapshot(self):
+        from plone.pgcatalog.pending import _get_partial_pending
+        from plone.pgcatalog.pending import set_partial_pending
+
+        set_partial_pending(42, {"@meta": {"effective": {"enc": 1}}})
+        sp = transaction.savepoint()
+        set_partial_pending(42, {"@meta": {"expires": {"enc": 2}}})
+        sp.rollback()
+
+        assert _get_partial_pending()[42] == {"@meta": {"effective": {"enc": 1}}}
+
     def test_partial_joins_transaction(self):
         from plone.pgcatalog.pending import PendingDataManager
         from plone.pgcatalog.pending import set_partial_pending

@@ -84,6 +84,29 @@ def pop_pending(zoid):
     return _get_pending().pop(zoid, _MISSING)
 
 
+def _merge_idx_updates(idx, idx_updates, *, apply_removals):
+    """Return *idx* updated with *idx_updates*; neither dict is mutated.
+
+    ``@meta`` in a partial update is a patch (#296): its keys are merged
+    into the existing ``@meta``, and ``None`` marks a key to remove.  With
+    ``apply_removals`` the marked keys are dropped right away (a full
+    entry holds the complete value).  Without it the markers stay for
+    ``CatalogStateProcessor.finalize()`` to apply in SQL.
+    """
+    merged = {**idx, **idx_updates}
+    patch = idx_updates.get("@meta")
+    if patch is None:
+        return merged
+    meta = {**(idx.get("@meta") or {}), **patch}
+    if apply_removals:
+        meta = {name: value for name, value in meta.items() if value is not None}
+    if meta:
+        merged["@meta"] = meta
+    else:
+        del merged["@meta"]
+    return merged
+
+
 def set_partial_pending(zoid, idx_updates):
     """Register partial idx updates for a zoid.
 
@@ -104,12 +127,12 @@ def set_partial_pending(zoid, idx_updates):
     if zoid in full and full[zoid] is not None:
         # Full pending exists: create new entry with merged idx.
         old = full[zoid]
-        full[zoid] = {**old, "idx": {**old.get("idx", {}), **idx_updates}}
+        idx = _merge_idx_updates(old.get("idx", {}), idx_updates, apply_removals=True)
+        full[zoid] = {**old, "idx": idx}
         return
     # Standalone partial: create new merged dict (savepoint-safe).
     pp = _get_partial_pending()
-    existing = pp.get(zoid, {})
-    pp[zoid] = {**existing, **idx_updates}
+    pp[zoid] = _merge_idx_updates(pp.get(zoid, {}), idx_updates, apply_removals=False)
     _ensure_joined()
 
 
